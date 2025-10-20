@@ -3,7 +3,13 @@ import yaml
 from json import loads
 from pathlib import Path
 
-from fabric_cicd import FabricWorkspace, publish_all_items, unpublish_all_orphan_items
+from fabric_cicd import (
+    FabricWorkspace,
+    publish_all_items,
+    unpublish_all_orphan_items,
+    append_feature_flag,
+)
+from fabric_cicd.constants import ACCEPTED_ITEM_TYPES  # CopyJob, Noteook, Report, &c
 
 SEP = "=" * 60
 
@@ -53,44 +59,8 @@ def detect_lakehouse(repo_dir: Path) -> str:
     return lakehouse_name
 
 
-def main(args: argparse.Namespace):
-    repo_dir = args.directory
-    no_cleanup = args.no_cleanup
-
-    # Ensure we're in a valid workspace directory
-    repo_dir = repo_dir.resolve()
-    if not repo_dir.exists():
-        raise FileNotFoundError(f"Directory does not exist: {repo_dir}")
-
-    # Find parameter.yml
-    param_file = repo_dir / "parameter.yml"
-    if not param_file.exists():
-        raise FileNotFoundError(
-            f"parameter.yml not found in {repo_dir}. "
-            "Make sure you're running this from a Fabric workspace directory"
-        )
-
-    workspace_id, environment = extract_config_from_parameters(param_file)
-
-    lakehouse_name: str = detect_lakehouse(repo_dir)
-    print(f"Detected lakehouse: {lakehouse_name}")
-
-    target_workspace = FabricWorkspace(
-        workspace_id=workspace_id,
-        repository_directory=str(repo_dir),
-        environment=environment,
-    )
-
-    print(f"\n{SEP}\nFabric CI/CD Deployment\n{SEP}")
-    print(f"Workspace ID: {workspace_id}")
-    print(SEP + "\n")
-    _ = publish_all_items(target_workspace)
-    if not no_cleanup:
-        unpublish_all_orphan_items(target_workspace, lakehouse_name)
-    print(f"{SEP}\nDeployment complete!\n{SEP}")
-
-
-if __name__ == "__main__":
+def parse_args():
+    """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
         prog="fabric-cicd",
         description="Deploy Fabric workspace items - auto-detects configuration from parameter.yml",
@@ -105,9 +75,99 @@ if __name__ == "__main__":
     )
     _ = parser.add_argument(
         "--no-cleanup",
+        "-n",
         action="store_true",
         help="Skip unpublishing orphaned items",
     )
+    _ = parser.add_argument(
+        "--item-types",
+        "-t",
+        nargs="+",
+        help="Specific item types to deploy (e.g., Notebook DataPipeline Environment)",
+    )
+    _ = parser.add_argument(
+        "--exclude-types",
+        "-x",
+        nargs="+",
+        help="Item types to exclude from deployment (e.g., Report SemanticModel)",
+    )
+    _ = parser.add_argument(
+        "--include-items",
+        "-i",
+        nargs="+",
+        help='Include only specific items (format: "ItemName.ItemType", e.g., "MyNotebook.Notebook")',
+    )
+    return parser.parse_args()
 
-    args = parser.parse_args()
-    main(args)
+
+def main():
+    args = parse_args()
+
+    repo_dir = args.directory
+    no_cleanup = args.no_cleanup
+    item_types = args.item_types
+    exclude_types = args.exclude_types
+    include_items = args.include_items
+
+    # Enable experimental feature flags if name-based filtering is requested
+    if include_items:
+        append_feature_flag("enable_experimental_features")
+        append_feature_flag("enable_items_to_include")
+        print(
+            "\n⚠️  Warning: Name-based item filtering is experimental.\n"
+            "Selective deployment may cause dependency issues. Use at your own risk.\n"
+        )
+
+    # Ensure we're in a valid workspace directory
+    repo_dir = repo_dir.resolve()
+    if not repo_dir.exists():
+        raise FileNotFoundError(f"Directory does not exist: {repo_dir}")
+
+    # Find parameter.yml
+    param_file = repo_dir / "parameter.yml"
+    if not param_file.exists():
+        raise FileNotFoundError(
+            f"parameter.yml not found in {repo_dir}. "
+            "Make sure you're running this from a Fabric workspace directory"
+        )
+
+    workspace_id, _ = extract_config_from_parameters(param_file)
+
+    lakehouse_name: str = detect_lakehouse(repo_dir)
+
+    # Build item_type_in_scope based on include/exclude flags
+    item_type_in_scope = None
+    if item_types:
+        item_type_in_scope = item_types
+    elif exclude_types:
+        # All supported types minus excluded ones
+        item_type_in_scope = [t for t in ACCEPTED_ITEM_TYPES if t not in exclude_types]
+
+    print(f"\n{SEP}\nFabric CI/CD Deployment\n{SEP}")
+    print(f"Detected lakehouse name: {lakehouse_name}")
+    print(f"Workspace ID: {workspace_id}")
+    if item_type_in_scope:
+        print(f"Item types in scope: {', '.join(item_type_in_scope)}")
+    else:
+        print("Item types in scope: All supported types")
+    if include_items:
+        print(f"Including items: {', '.join(include_items)}")
+    print(SEP + "\n")
+
+    target_workspace = FabricWorkspace(
+        workspace_id=workspace_id,
+        repository_directory=str(repo_dir),
+        item_type_in_scope=item_type_in_scope,
+    )
+
+    _ = publish_all_items(target_workspace, items_to_include=include_items)
+
+    if not no_cleanup:
+        unpublish_all_orphan_items(
+            target_workspace, item_name_exclude_regex=lakehouse_name
+        )
+    print("\nDeployment complete!")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,10 +1,8 @@
 # fabric-deploy
 
-A thin CLI wrapper around Microsoft's [`fabric-cicd`](https://github.com/microsoft/fabric-cicd) package that simplifies deployment by auto-detecting configuration from `parameter.yml` files.
+CLI wrapper around Microsoft's [fabric-cicd](https://github.com/microsoft/fabric-cicd) that auto-detects workspace configuration from `parameter.yml`.
 
-## Why This Tool?
-
-Eliminates the need for per-workspace `cicd.py` scripts. Instead of maintaining deployment scripts in each workspace, just run one command.
+Eliminates per-workspace `cicd.py` scripts.
 
 ## Installation
 
@@ -12,63 +10,82 @@ Eliminates the need for per-workspace `cicd.py` scripts. Instead of maintaining 
 pip install fabric-deploy
 ```
 
-Or with `uv`:
-```bash
-uv pip install fabric-deploy
-```
-
-## Quick Start
-
-From your Fabric workspace directory:
-
-```bash
-fabric-cicd
-```
-
-That's it! The tool auto-detects everything from your `parameter.yml`.
-
 ## Usage
 
+Deploy a Fabric workspace:
+
 ```bash
-# Deploy using auto-detected configuration
+cd path/to/workspace
 fabric-cicd
-
-# Deploy from a specific directory
-fabric-cicd /path/to/workspace
-
-# Skip orphan cleanup
-fabric-cicd --no-cleanup
 ```
 
-## How It Works
+**Requirements**:
 
-The CLI automatically detects:
-1. **Workspace ID**: From the first entry's `replace_value` in `parameter.yml`
-2. **Environment**: From the environment keys used in `replace_value` (must be consistent)
-3. **Lakehouse Name**: From `*.Lakehouse/.platform` metadata files
+1. `parameter.yml` must exist in workspace directory
+2. Authenticate using `az login` or `az account set -s "Credential Name"`
 
-### Example parameter.yml
+The deployment:
+
+- Auto-detects workspace ID and environment from `parameter.yml`
+- Publishes all items to target workspace
+- Applies find/replace transformations
+- Cleans up orphaned items (unless `--no-cleanup` specified)
+
+## CLI Options
+
+```bash
+fabric-cicd [DIRECTORY] [OPTIONS]
+
+Arguments:
+  DIRECTORY              Workspace directory (default: current)
+
+Options:
+  --no-cleanup, -n       Skip unpublishing orphaned items
+  --item-types, -t       Deploy specific types (e.g., Notebook DataPipeline)
+  --exclude-types, -x    Exclude types (e.g., Report SemanticModel)
+  --include-items, -i    Include specific items by name (experimental)
+```
+
+### Examples
+
+```bash
+# Deploy from current directory
+fabric-cicd
+
+# Deploy specific directory without cleanup
+fabric-cicd /path/to/workspace --no-cleanup
+
+# Deploy only notebooks and pipelines
+fabric-cicd --item-types Notebook DataPipeline
+
+# Exclude reports and semantic models
+fabric-cicd --exclude-types Report SemanticModel
+```
+
+## Configuration
+
+**parameter.yml** (in workspace):
 
 ```yaml
 find_replace:
-  # The first entry's replace_value is used to determine workspace ID and environment
+  # First entry determines workspace ID and environment
   - find_value: "14141414-1414-1414-1414-141414141414"
     replace_value:
-      prod: "15151515-1515-1515-1515-151515151515"  # Destination workspace ID
+      prod: "15151515-1515-1515-1515-151515151515"  # Destination workspace
     item_type: ["Notebook", "CopyJob"]
 
-  # Additional find/replace entries for parameter substitution
+  # Additional find/replace entries
   - find_value: "dev-lakehouse-id"
     replace_value:
-      prod: "prod-lakehouse-id"  # Must use same environment key (prod)
+      prod: "prod-lakehouse-id"  # Must use same environment key
     item_type: ["Notebook", "SemanticModel"]
 ```
 
-**Important**: All `replace_value` entries must use the same environment key. The CLI validates this consistency.
+**Important**: All `replace_value` entries must use the same environment key (e.g., all `prod` or all `dev`).
 
-## Replacing cicd.py
+## Replaces cicd.py
 
-This tool is designed to replace workspace-specific `cicd.py` scripts. Instead of maintaining this in each workspace:
+**Before** (in each workspace):
 
 ```python
 from fabric_cicd import FabricWorkspace, publish_all_items, unpublish_all_orphan_items
@@ -83,118 +100,27 @@ publish_all_items(target_workspace)
 unpublish_all_orphan_items(target_workspace, lakehouse_name)
 ```
 
-Just run:
+**After**:
 
 ```bash
 fabric-cicd
-```
-
-The CLI reads your `parameter.yml` to determine the workspace ID and environment automatically.
-
-## CLI Options
-
-```
-fabric-cicd [DIRECTORY] [OPTIONS]
-
-Arguments:
-  DIRECTORY              Path to workspace directory (default: current directory)
-
-Options:
-  --no-cleanup           Skip unpublishing orphaned items
-  --help                 Show help message
-```
-
-## What Gets Deployed
-
-The tool uses Microsoft's `fabric-cicd` package to:
-1. **Publish all items** from your repository to the target workspace
-2. **Apply find/replace** transformations from `parameter.yml`
-3. **Clean up orphaned items** (optional) - removes items that exist in the workspace but not in the repository
-
-### Supported Item Types
-
-All Fabric item types supported by Microsoft's `fabric-cicd` package:
-- **Data**: Lakehouse, Warehouse, SQLDatabase, MirroredDatabase
-- **Compute**: Notebook, Environment, DataPipeline, Dataflow
-- **Analytics**: Report, SemanticModel, KQLDashboard, Eventhouse
-- **Integration**: CopyJob, Eventstream, GraphQLApi, VariableLibrary
-- **Jobs**: ApacheAirflowJob, Reflex, MountedDataFactory
-
-### Orphan Cleanup
-
-By default, the tool removes items that exist in the workspace but not in your repository. The lakehouse's default semantic model is automatically excluded from cleanup.
-
-To skip orphan cleanup:
-```bash
-fabric-cicd --no-cleanup
 ```
 
 ## Development
 
-### Project Structure
-
-```
-fabric-deploy/
-├── src/fabric_deploy/
-│   ├── __init__.py      # Package initialization
-│   └── cli.py           # CLI entry point with auto-detection
-├── pyproject.toml       # Package configuration
-└── example_parameter.yml # Example configuration file
-```
-
-### Building from Source
-
 ```bash
-# Install with uv
-uv sync
-
-# Build distribution
+# Build from source
 uv build
 
-# Install locally for development
+# Install locally
 pip install -e .
-
-# Run locally
-fabric-cicd
 ```
 
 ## Requirements
 
 - Python 3.13
-- `fabric-cicd>=0.1.29` (Microsoft's official package)
-- `pyyaml` (for parsing parameter.yml)
-
-## Troubleshooting
-
-### Common Errors
-
-**"parameter.yml not found"**
-- Run the command from your Fabric workspace directory
-- Ensure `parameter.yml` exists in the workspace root
-
-**"No environments found in parameter.yml"**
-- Check that `find_replace` entries have `replace_value` dictionaries
-- Verify at least one environment key exists (e.g., `prod`, `dev`)
-
-**"Multiple different environments found"**
-- All `replace_value` entries must use the same environment key
-- Update entries to use consistent naming (all `prod` or all `dev`, etc.)
-
-**"No lakehouse found in repository directory"**
-- Ensure at least one `*.Lakehouse` directory exists
-- Verify the directory contains a `.platform` metadata file
-
-## How It's Different
-
-Unlike per-workspace `cicd.py` scripts, this tool:
-- Works across all workspaces without modification
-- Auto-detects configuration from existing `parameter.yml` files
-- Eliminates code duplication across workspace repositories
-- Provides consistent CLI interface for all deployments
-
-## License
-
-CLI tool for Microsoft Fabric deployments
+- `fabric-cicd>=0.1.29`
+- `pyyaml`
 
 ## See Also
 

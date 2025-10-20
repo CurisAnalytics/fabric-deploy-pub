@@ -3,7 +3,7 @@ name = "fabric-deploy"
 version = "0.1.0"
 description = "CLI tool for Microsoft Fabric workspace deployments"
 readme = "README.md"
-requires-python = "==3.13.*"
+requires-python = ">=3.11"
 dependencies = [
     "fabric-cicd>=0.1.29",
     "pyyaml",
