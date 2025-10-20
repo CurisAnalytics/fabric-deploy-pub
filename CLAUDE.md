@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-`fabric-deploy` is a **thin CLI wrapper** around Microsoft's official [`fabric-cicd`](https://github.com/microsoft/fabric-cicd) package. It simplifies deployment by auto-detecting configuration from `parameter.yml` files, eliminating the need for inline `cicd.py` scripts in each workspace repository.
+`fabric-deploy` is a **thin CLI wrapper** around Microsoft's official [`fabric-cicd`](https://github.com/microsoft/fabric-cicd) package. It auto-detects workspace configuration from `parameter.yml` files, eliminating per-workspace `cicd.py` scripts.
 
 ## Purpose
 
@@ -17,9 +17,10 @@
 fabric-deploy/
 ├── src/fabric_deploy/     # Package directory
 │   ├── __init__.py            # Package initialization
-│   └── cli.py                 # CLI entry point with auto-detection
+│   └── cli.py                 # CLI entry point with parse_args() and main()
 ├── pyproject.toml             # Package configuration, depends on fabric-cicd
-└── example_parameter.yml      # Example configuration file
+├── example_parameter.yml      # Example configuration file
+└── README.md                  # Brief usage documentation
 ```
 
 **Key Point**: This package wraps `fabric-cicd` from PyPI, it does not reimplement any functionality.
@@ -43,20 +44,21 @@ unpublish_all_orphan_items(target_workspace, lakehouse_name)
 **New way** (CLI wrapper):
 ```bash
 pip install fabric-deploy  # Installs Microsoft's fabric-cicd as dependency
-cd Workspaces/MyClient
+cd path/to/workspace
 fabric-cicd  # Auto-detects workspace_id and environment from parameter.yml
 ```
 
 ## CLI Flow
 
-1. User runs `fabric-cicd` from workspace directory
-2. CLI reads `parameter.yml` to extract:
+1. `parse_args()` parses command-line arguments
+2. `main()` reads `parameter.yml` to extract:
    - **Workspace ID**: From first entry's `replace_value[environment]`
    - **Environment**: Auto-detected from keys in `replace_value` (must be consistent across entries)
 3. Auto-detects lakehouse name from `*.Lakehouse/.platform` metadata file
-4. Creates `FabricWorkspace` instance (from Microsoft's package)
-5. Calls `publish_all_items()` (from Microsoft's package)
-6. Optionally calls `unpublish_all_orphan_items()` (from Microsoft's package) unless `--no-cleanup` is specified
+4. Applies item type filtering based on CLI flags (`--item-types`, `--exclude-types`, `--include-items`)
+5. Creates `FabricWorkspace` instance (from Microsoft's package)
+6. Calls `publish_all_items()` with optional item filtering (from Microsoft's package)
+7. Optionally calls `unpublish_all_orphan_items()` (from Microsoft's package) unless `--no-cleanup` is specified
 
 ## What This Package Does
 
@@ -113,26 +115,47 @@ The CLI correctly imports from `fabric-cicd`:
 # cli.py
 from fabric_cicd import FabricWorkspace, publish_all_items, unpublish_all_orphan_items
 
-# Extract workspace_id and environment from parameter.yml
-workspace_id, environment = extract_config_from_parameters(param_file)
+def parse_args():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(...)
+    # Configure argument parser
+    return parser.parse_args()
 
-# Detect lakehouse name from .platform metadata
-lakehouse_name = detect_lakehouse(repo_dir)
-
-# Create workspace using Microsoft's class
-target_workspace = FabricWorkspace(
-    workspace_id=workspace_id,
-    repository_directory=str(repo_dir),
-    environment=environment,
-)
-
-# Call Microsoft's deployment functions
-publish_all_items(target_workspace)
-if not no_cleanup:
-    unpublish_all_orphan_items(target_workspace, lakehouse_name)
+def main():
+    args = parse_args()
+    
+    # Extract workspace_id and environment from parameter.yml
+    workspace_id, environment = extract_config_from_parameters(param_file)
+    
+    # Detect lakehouse name from .platform metadata
+    lakehouse_name = detect_lakehouse(repo_dir)
+    
+    # Apply item type filtering from CLI args
+    item_type_in_scope = None
+    if args.item_types:
+        item_type_in_scope = args.item_types
+    elif args.exclude_types:
+        item_type_in_scope = [t for t in ACCEPTED_ITEM_TYPES if t not in args.exclude_types]
+    
+    # Create workspace using Microsoft's class
+    target_workspace = FabricWorkspace(
+        workspace_id=workspace_id,
+        repository_directory=str(repo_dir),
+        item_type_in_scope=item_type_in_scope,
+    )
+    
+    # Call Microsoft's deployment functions
+    publish_all_items(target_workspace, items_to_include=args.include_items)
+    if not args.no_cleanup:
+        unpublish_all_orphan_items(target_workspace, item_name_exclude_regex=lakehouse_name)
 ```
 
 ### Key Functions
+
+**`parse_args() -> argparse.Namespace`**
+- Configures argument parser with all CLI options
+- Returns parsed arguments including `directory`, `no_cleanup`, `item_types`, `exclude_types`, `include_items`
+- Separated from `main()` for testability
 
 **`extract_config_from_parameters(param_file: Path) -> tuple[str, str]`**
 - Reads `parameter.yml` and extracts workspace ID and environment
@@ -143,6 +166,10 @@ if not no_cleanup:
 - Searches for `*.Lakehouse` directories
 - Reads `.platform` metadata file to extract `displayName`
 - Returns lakehouse name for orphan cleanup exclusions
+
+**`main() -> None`**
+- Orchestrates the entire deployment workflow
+- Calls `parse_args()`, validates inputs, creates `FabricWorkspace`, and deploys items
 
 ## Microsoft's fabric-cicd Package
 
@@ -169,7 +196,10 @@ Arguments:
   DIRECTORY              Path to workspace directory (default: current directory)
 
 Options:
-  --no-cleanup           Skip unpublishing orphaned items
+  --no-cleanup, -n       Skip unpublishing orphaned items
+  --item-types, -t       Deploy specific types (e.g., Notebook DataPipeline)
+  --exclude-types, -x    Exclude types (e.g., Report SemanticModel)
+  --include-items, -i    Include specific items by name (experimental)
   --help                 Show help message
 ```
 
@@ -183,6 +213,15 @@ fabric-cicd /path/to/workspace
 
 # Deploy without cleaning up orphaned items
 fabric-cicd --no-cleanup
+
+# Deploy only notebooks and pipelines
+fabric-cicd --item-types Notebook DataPipeline
+
+# Exclude reports and semantic models
+fabric-cicd --exclude-types Report SemanticModel
+
+# Deploy specific items by name (experimental)
+fabric-cicd --include-items "MyNotebook.Notebook" "MyPipeline.DataPipeline"
 ```
 
 ## Error Handling
