@@ -15,14 +15,14 @@
 
 ```
 fabric-deploy/
-├── src/fabric_cicd/           # Note: Different package name, same import path
-│   ├── __init__.py            # Re-exports from fabric-cicd (optional)
-│   ├── cli.py                 # CLI entry point with auto-detection
-│   └── parameters.py          # YAML parameter handling (if needed)
-└── pyproject.toml             # Depends on fabric-cicd from pip
+├── src/fabric_deploy/     # Package directory
+│   ├── __init__.py            # Package initialization
+│   └── cli.py                 # CLI entry point with auto-detection
+├── pyproject.toml             # Package configuration, depends on fabric-cicd
+└── example_parameter.yml      # Example configuration file
 ```
 
-**Key Point**: This package wraps `fabric-cicd` from PyPI, not reimplements it.
+**Key Point**: This package wraps `fabric-cicd` from PyPI, it does not reimplement any functionality.
 
 ## Usage Pattern
 
@@ -52,11 +52,11 @@ fabric-cicd  # Auto-detects workspace_id and environment from parameter.yml
 1. User runs `fabric-cicd` from workspace directory
 2. CLI reads `parameter.yml` to extract:
    - **Workspace ID**: From first entry's `replace_value[environment]`
-   - **Environment**: From keys in `replace_value` (defaults to "env")
-3. Auto-detects lakehouse from `*.Lakehouse/.platform` (if present)
+   - **Environment**: Auto-detected from keys in `replace_value` (must be consistent across entries)
+3. Auto-detects lakehouse name from `*.Lakehouse/.platform` metadata file
 4. Creates `FabricWorkspace` instance (from Microsoft's package)
 5. Calls `publish_all_items()` (from Microsoft's package)
-6. Calls `unpublish_all_orphan_items()` (from Microsoft's package)
+6. Optionally calls `unpublish_all_orphan_items()` (from Microsoft's package) unless `--no-cleanup` is specified
 
 ## What This Package Does
 
@@ -89,31 +89,25 @@ dependencies = [
 **parameter.yml** (in workspace repo):
 ```yaml
 find_replace:
-  # First entry's replace_value is used to detect workspace ID
+  # First entry's replace_value is used to detect workspace ID and environment
   - find_value: "364abdbe-c061-4f74-b34a-9631bc7e3e4d"
     replace_value:
       prod: "6c5304f1-2e84-4add-bd46-25a1e943cdec"  # CLI uses this as workspace_id
-      dev: "abc123..."
-      env: "def456..."
     item_type: ["Notebook", "CopyJob"]
-  
+
   # Additional find/replace entries for parameter replacement
   - find_value: "dev-lakehouse-id"
     replace_value:
-      prod: "prod-lakehouse-id"
-      dev: "dev-lakehouse-id"
+      prod: "prod-lakehouse-id"  # All entries must use the same environment key
     item_type: ["Notebook", "SemanticModel"]
 ```
 
-The CLI extracts the destination `workspace_id` from the first entry's `replace_value` based on the target environment.
+**Important**: All `replace_value` entries must use the same environment key (e.g., all use `prod` or all use `dev`). The CLI validates this consistency and extracts the destination `workspace_id` from the first entry.
 
-## Implementation Notes
+## Implementation Details
 
-### Current State (INCORRECT)
-The codebase currently **reimplements** `FabricWorkspace`, `publish_all_items()`, and `unpublish_all_orphan_items()` with stub implementations. This is wrong.
-
-### Correct Implementation
-Should **import** these from `fabric-cicd`:
+### Current Implementation
+The CLI correctly imports from `fabric-cicd`:
 
 ```python
 # cli.py
@@ -121,6 +115,9 @@ from fabric_cicd import FabricWorkspace, publish_all_items, unpublish_all_orphan
 
 # Extract workspace_id and environment from parameter.yml
 workspace_id, environment = extract_config_from_parameters(param_file)
+
+# Detect lakehouse name from .platform metadata
+lakehouse_name = detect_lakehouse(repo_dir)
 
 # Create workspace using Microsoft's class
 target_workspace = FabricWorkspace(
@@ -131,17 +128,21 @@ target_workspace = FabricWorkspace(
 
 # Call Microsoft's deployment functions
 publish_all_items(target_workspace)
-unpublish_all_orphan_items(target_workspace, lakehouse_name)
+if not no_cleanup:
+    unpublish_all_orphan_items(target_workspace, lakehouse_name)
 ```
 
-### Files That Should Be Removed
-- `src/fabric_cicd/workspace.py` - Use Microsoft's `FabricWorkspace` instead
-- `src/fabric_cicd/deployment.py` - Use Microsoft's functions instead
-- Possibly `src/fabric_cicd/__init__.py` - No need to re-export
+### Key Functions
 
-### Files That Should Exist
-- `src/fabric_cicd/cli.py` - CLI entry point with auto-detection
-- Possibly `src/fabric_cicd/parameters.py` - Only if Microsoft's package doesn't handle `parameter.yml` parsing
+**`extract_config_from_parameters(param_file: Path) -> tuple[str, str]`**
+- Reads `parameter.yml` and extracts workspace ID and environment
+- Validates that all `replace_value` entries use the same environment key
+- Returns tuple of `(workspace_id, environment)`
+
+**`detect_lakehouse(repo_dir: Path) -> str`**
+- Searches for `*.Lakehouse` directories
+- Reads `.platform` metadata file to extract `displayName`
+- Returns lakehouse name for orphan cleanup exclusions
 
 ## Microsoft's fabric-cicd Package
 
@@ -159,16 +160,84 @@ unpublish_all_orphan_items(target_workspace, lakehouse_name)
 - Warehouse, SQLDatabase, KQLDashboard, Dataflow, GraphQLApi
 - ApacheAirflowJob, MountedDataFactory
 
-## Development Strategy
+## CLI Arguments
 
-1. **Add dependency**: `pip install fabric-cicd` to `pyproject.toml`
-2. **Simplify cli.py**: Import from `fabric-cicd`, remove custom implementations
-3. **Remove unnecessary files**: Delete `workspace.py` and `deployment.py`
-4. **Test parameter detection**: Ensure workspace_id extraction from `parameter.yml` works
-5. **Test end-to-end**: Verify deployment works with Microsoft's package
+```
+fabric-cicd [DIRECTORY] [OPTIONS]
+
+Arguments:
+  DIRECTORY              Path to workspace directory (default: current directory)
+
+Options:
+  --no-cleanup           Skip unpublishing orphaned items
+  --help                 Show help message
+```
+
+**Example usage**:
+```bash
+# Deploy from current directory
+fabric-cicd
+
+# Deploy from specific directory
+fabric-cicd /path/to/workspace
+
+# Deploy without cleaning up orphaned items
+fabric-cicd --no-cleanup
+```
+
+## Error Handling
+
+The CLI validates:
+- Workspace directory exists
+- `parameter.yml` exists in the workspace directory
+- At least one `find_replace` entry exists
+- All `replace_value` entries use the same environment key
+- At least one `*.Lakehouse` directory exists
+- Lakehouse `.platform` metadata file is readable
+
+## Development
+
+### Building the Package
+
+```bash
+# Install dependencies (requires uv)
+uv sync
+
+# Build distribution
+uv build
+
+# Install locally
+pip install -e .
+```
+
+### Testing
+
+Test with an example workspace:
+```bash
+cd /path/to/workspace
+fabric-cicd --no-cleanup  # Preview without orphan cleanup
+```
 
 ## Related Projects
 
 - **[microsoft/fabric-cicd](https://github.com/microsoft/fabric-cicd)**: The underlying library this wraps
 - **Workspaces/**: Client workspace repos that will use this CLI tool
 - **example-fabric-etl**: Core Python ETL framework (separate concern)
+
+## Troubleshooting
+
+**"parameter.yml not found"**
+- Ensure you're running the command from a Fabric workspace directory
+- Check that `parameter.yml` exists in the workspace root
+
+**"No environments found in parameter.yml"**
+- Verify `find_replace` entries have `replace_value` dictionaries
+- Check that at least one environment key exists (e.g., `prod`, `dev`, `env`)
+
+**"Multiple different environments found"**
+- All `replace_value` entries must use the same environment key
+- Fix: Update all entries to use consistent environment naming
+
+**"No lakehouse found in repository directory"**
+- Ensure at least one `*.Lakehouse` directory exists
+- Check that the directory contains a `.platform` metadata file
