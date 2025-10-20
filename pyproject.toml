@@ -1,0 +1,25 @@
+[project]
+name = "fabric-deploy"
+version = "0.1.0"
+description = "CLI tool for Microsoft Fabric workspace deployments"
+readme = "README.md"
+requires-python = "==3.13.*"
+dependencies = [
+    "fabric-cicd>=0.1.29",
+    "pyyaml",
+]
+
+[project.scripts]
+fabric-cicd = "fabric_deploy.cli:main"
+
+[build-system]
+requires = ["uv_build"]
+build-backend = "uv_build"
+
+[tool.basedpyright]
+include = ["src"]
+reportMissingImports = "error"
+reportMissingTypeStubs = false
+reportImplicitStringConcatenation = false
+reportAny = false
+reportUnknownVariableType = false
