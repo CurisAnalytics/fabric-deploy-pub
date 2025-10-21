@@ -29,6 +29,23 @@ Options:
   --include-items, -i    Include specific items by name
 ```
 
+## Authentication
+
+Manage Azure accounts for Fabric deployments:
+
+```bash
+# List available accounts
+fabric-cicd auth list
+
+# Show current account
+fabric-cicd auth current
+
+# Switch to different account
+fabric-cicd auth switch <subscription-id>
+```
+
+**Common issue**: If deployment fails with "workspace not found", you may be authenticated to the wrong tenant. Use `fabric-cicd auth list` to see available accounts and `fabric-cicd auth switch` to change.
+
 ## Configuration
 
 **parameter.yml**:

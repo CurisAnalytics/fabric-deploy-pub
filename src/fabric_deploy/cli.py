@@ -1,4 +1,5 @@
 import argparse
+import sys
 import yaml
 from json import loads
 from pathlib import Path
@@ -12,7 +13,8 @@ from fabric_cicd import (
 )
 from fabric_cicd.constants import ACCEPTED_ITEM_TYPES  # CopyJob, Noteook, Report, &c
 
-from .logging import get_logger, print_header
+from .logging import get_logger, print_header, print_error
+from .auth import list_accounts, get_current_account, switch_account, is_auth_error
 
 
 @final
@@ -156,72 +158,193 @@ class FabricDeployer:
             item_type_in_scope=item_type_in_scope,
         )
 
-        _ = publish_all_items(target_workspace, items_to_include=include_items)
+        try:
+            _ = publish_all_items(target_workspace, items_to_include=include_items)
 
-        if not no_cleanup:
-            assert self.lakehouse_name is not None
-            unpublish_all_orphan_items(
-                target_workspace, item_name_exclude_regex=self.lakehouse_name
-            )
+            if not no_cleanup:
+                assert self.lakehouse_name is not None
+                unpublish_all_orphan_items(
+                    target_workspace, item_name_exclude_regex=self.lakehouse_name
+                )
 
-        self.logger.info("\nDeployment complete!")
+            print()
+            self.logger.info("Deployment complete!")
+        except Exception as e:
+            error_msg = str(e)
+            if is_auth_error(error_msg):
+                self._handle_auth_error()
+            raise
+
+    def _handle_auth_error(self) -> None:
+        """Print helpful auth troubleshooting info."""
+        print_error("\n" + "=" * 80)
+        self.logger.error("Authentication/Authorization Error Detected")
+        print_error("=" * 80)
+
+        try:
+            current = get_current_account()
+            if current:
+                print()
+                self.logger.info("Current account:")
+                self.logger.info(f"\tUser: {current['user']['name']}")
+                self.logger.info(f"\tTenant: {current['tenantId']}")
+                self.logger.info(f"\tSubscription: {current['name']}")
+
+            accounts = list_accounts()
+            if len(accounts) > 1:
+                print()
+                self.logger.info("Available accounts:")
+                for acct in accounts:
+                    marker = " [CURRENT]" if acct.get("isDefault") else ""
+                    self.logger.info(f"  • {acct['name']}{marker}")
+                    self.logger.info(f"    User: {acct['user']['name']}")
+                    self.logger.info(f"    Subscription: {acct['id']}")
+
+                print()
+                self.logger.info("To switch accounts:")
+                self.logger.info("  fabric-cicd auth switch <subscription-id>")
+        except Exception:
+            pass
+
+        print()
+        self.logger.info("Common causes:")
+        self.logger.info(
+            "  • Wrong tenant/subscription (workspace may be in different org)"
+        )
+        self.logger.info("  • Expired token (run: az login)")
+        print_error(f"\n{'=' * 80}\n")
 
 
 def parse_args():
     """Parse command-line arguments."""
+    # Check if first arg is a known subcommand; if not, inject 'deploy'
+    if len(sys.argv) > 1 and sys.argv[1] not in ("auth", "deploy", "-h", "--help"):
+        sys.argv.insert(1, "deploy")
+
     parser = argparse.ArgumentParser(
         prog="fabric-cicd",
         description="Deploy Fabric workspace items - auto-detects configuration from parameter.yml",
         epilog="Run from your Fabric workspace directory.",
     )
-    _ = parser.add_argument(
+
+    # Create subparsers for commands
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # Auth subcommand
+    auth_parser = subparsers.add_parser("auth", help="Manage Azure authentication")
+    auth_subparsers = auth_parser.add_subparsers(
+        dest="auth_command", required=True, help="Auth actions"
+    )
+    _ = auth_subparsers.add_parser("list", help="List available Azure accounts")
+    _ = auth_subparsers.add_parser("current", help="Show current account")
+    switch_parser = auth_subparsers.add_parser(
+        "switch", help="Switch to different account"
+    )
+    _ = switch_parser.add_argument(
+        "subscription_id", help="Subscription ID to switch to"
+    )
+
+    # Deploy subcommand (default when no subcommand given)
+    deploy_parser = subparsers.add_parser(
+        "deploy",
+        help="Deploy Fabric workspace items (default command)",
+        description="Deploy Fabric workspace items - auto-detects configuration from parameter.yml",
+    )
+    _ = deploy_parser.add_argument(
         "directory",
         nargs="?",
         default=".",
         type=Path,
         help="Workspace directory (defaults to current directory)",
     )
-    _ = parser.add_argument(
+    _ = deploy_parser.add_argument(
         "--no-cleanup",
         "-n",
         action="store_true",
         help="Skip unpublishing orphaned items",
     )
-    _ = parser.add_argument(
+    _ = deploy_parser.add_argument(
         "--item-types",
         "-t",
         nargs="+",
         help="Specific item types to deploy (e.g., Notebook DataPipeline Environment)",
     )
-    _ = parser.add_argument(
+    _ = deploy_parser.add_argument(
         "--exclude-types",
         "-x",
         nargs="+",
         help="Item types to exclude from deployment (e.g., Report SemanticModel)",
     )
-    _ = parser.add_argument(
+    _ = deploy_parser.add_argument(
         "--include-items",
         "-i",
         nargs="+",
         help='Include only specific items (format: "ItemName.ItemType", e.g., "MyNotebook.Notebook")',
     )
-    return parser.parse_args()
+
+    # Parse args - default command injection already handled above
+    args = parser.parse_args()
+
+    # If still no command (empty argv), default to deploy with current directory
+    if args.command is None:
+        sys.argv.insert(1, "deploy")
+        args = parser.parse_args()
+
+    return args
+
+
+def handle_auth_command(args):
+    """Handle auth subcommands."""
+    if args.auth_command == "list":
+        accounts = list_accounts()
+        print(f"\nAvailable accounts ({len(accounts)}):\n")
+        for acct in accounts:
+            marker = " [CURRENT]" if acct.get("isDefault") else ""
+            print(f"{acct['name']}{marker}")
+            print(f"  User: {acct['user']['name']}")
+            print(f"  Tenant: {acct['tenantId']}")
+            print(f"  Subscription: {acct['id']}\n")
+
+    elif args.auth_command == "current":
+        current = get_current_account()
+        if current:
+            print("\nCurrent account:")
+            print(f"  Name: {current['name']}")
+            print(f"  User: {current['user']['name']}")
+            print(f"  Tenant: {current['tenantId']}")
+            print(f"  Subscription: {current['id']}\n")
+        else:
+            print("\nNo default account set.\n")
+
+    elif args.auth_command == "switch":
+        switch_account(args.subscription_id)
+        print(f"\nSwitched to subscription: {args.subscription_id}\n")
 
 
 def main():
     """CLI entry point."""
     args = parse_args()
 
-    deployer = FabricDeployer(
-        repo_dir=args.directory, logger_name="fabric_deploy.cli"
-    )
+    # Handle auth subcommands
+    if args.command == "auth":
+        handle_auth_command(args)
+        return
 
-    deployer.deploy(
-        no_cleanup=args.no_cleanup,
-        item_types=args.item_types,
-        exclude_types=args.exclude_types,
-        include_items=args.include_items,
-    )
+    # Handle deployment
+    if args.command == "deploy":
+        deployer = FabricDeployer(
+            repo_dir=args.directory, logger_name="fabric_deploy.cli"
+        )
+
+        deployer.deploy(
+            no_cleanup=args.no_cleanup,
+            item_types=args.item_types,
+            exclude_types=args.exclude_types,
+            include_items=args.include_items,
+        )
+    else:
+        print(f"Unknown command: {args.command}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

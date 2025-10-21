@@ -5,7 +5,7 @@ from typing import ClassVar, override
 from fabric_cicd._common._color import Fore, Style
 from fabric_cicd._common._logging import print_header
 
-__all__ = ["get_logger", "print_header"]
+__all__ = ["get_logger", "print_header", "print_error"]
 
 
 class CustomFormatter(logging.Formatter):
@@ -49,3 +49,8 @@ def get_logger(name: str) -> logging.Logger:
         log.addHandler(handler)
         log.setLevel(logging.INFO)
     return log
+
+
+def print_error(message: str) -> None:
+    """Print error message without log prefix (useful for stack traces, etc)."""
+    print(f"{Fore.RED}{message}{Style.RESET_ALL}")
