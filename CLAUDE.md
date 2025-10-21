@@ -18,6 +18,7 @@ fabric-deploy/
 ├── src/fabric_deploy/     # Package directory
 │   ├── __init__.py            # Package initialization, exports FabricDeployer
 │   ├── cli.py                 # FabricDeployer class + CLI entry point
+│   ├── auth.py                # Azure authentication utilities (az CLI wrapper)
 │   └── logging.py             # Custom logging configuration
 ├── examples/
 │   └── programmatic_usage.py  # Examples of library usage
@@ -243,10 +244,12 @@ def main():
 - Warehouse, SQLDatabase, KQLDashboard, Dataflow, GraphQLApi
 - ApacheAirflowJob, MountedDataFactory
 
-## CLI Arguments
+## CLI Commands
+
+### Deployment (default command)
 
 ```
-fabric-cicd [DIRECTORY] [OPTIONS]
+fabric-cicd [deploy] [DIRECTORY] [OPTIONS]
 
 Arguments:
   DIRECTORY              Path to workspace directory (default: current directory)
@@ -257,6 +260,17 @@ Options:
   --exclude-types, -x    Exclude types (e.g., Report SemanticModel)
   --include-items, -i    Include specific items by name (experimental)
   --help                 Show help message
+```
+
+### Authentication Management
+
+```
+fabric-cicd auth <command>
+
+Commands:
+  list                   List current and all available Azure accounts
+  switch <sub-id>        Switch to different subscription
+  rename <sub-id> <name> Rename a subscription
 ```
 
 **Example usage**:
@@ -278,7 +292,37 @@ fabric-cicd --exclude-types Report SemanticModel
 
 # Deploy specific items by name (experimental)
 fabric-cicd --include-items "MyNotebook.Notebook" "MyPipeline.DataPipeline"
+
+# Authentication commands
+fabric-cicd auth list    # Shows current + all available accounts
+fabric-cicd auth switch xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+fabric-cicd auth rename xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx "Production Subscription"  # Auto-switches if needed
 ```
+
+## Authentication Module
+
+**auth.py** provides Azure CLI wrappers for account management:
+
+```python
+def list_accounts() -> list[dict]:
+    """List all Azure accounts."""
+
+def get_current_account() -> dict | None:
+    """Get currently active account (internal use by auth list and error handler)."""
+
+def switch_account(subscription_id: str) -> None:
+    """Switch to a different account."""
+
+**`rename_subscription(subscription_id: str, new_name: str) -> None`**
+- Rename an Azure subscription. Automatically switches to the subscription if it's not accessible in the current tenant context. Requires Owner permissions on the subscription.
+
+def is_auth_error(error_msg: str) -> bool:
+    """Check if error is authentication/authorization related."""
+```
+
+**Error Detection**: When deployment fails with auth-related errors (401, 403, 404, "not found", "unauthorized", "forbidden"), the CLI automatically displays current account information, lists available accounts, and suggests relevant auth commands.
+
+**Auto-switching**: The `rename` command automatically switches to the target subscription if it's not accessible in the current tenant context, eliminating the need for manual switching before renaming.
 
 ## Error Handling
 
@@ -289,6 +333,8 @@ The CLI validates:
 - All `replace_value` entries use the same environment key
 - At least one `*.Lakehouse` directory exists
 - Lakehouse `.platform` metadata file is readable
+
+**Auth error handling**: Automatically detects and provides guidance for authentication/authorization failures with helpful command suggestions.
 
 ## Development
 
@@ -372,3 +418,8 @@ See `examples/programmatic_usage.py` for more examples.
 **"No lakehouse found in repository directory"**
 - Ensure at least one `*.Lakehouse` directory exists
 - Check that the directory contains a `.platform` metadata file
+
+**Authentication/Authorization Errors**
+- Run `fabric-cicd auth list` to see current and all available accounts
+- Switch accounts with `fabric-cicd auth switch <subscription-id>`
+- Workspace may be in a different tenant than your current authentication

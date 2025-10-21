@@ -34,17 +34,20 @@ Options:
 Manage Azure accounts for Fabric deployments:
 
 ```bash
-# List available accounts
+# List current and available accounts
 fabric-cicd auth list
-
-# Show current account
-fabric-cicd auth current
 
 # Switch to different account
 fabric-cicd auth switch <subscription-id>
+
+# Rename a subscription (requires Owner permissions)
+# Automatically switches to the subscription if needed
+fabric-cicd auth rename <subscription-id> <new-name>
 ```
 
-**Common issue**: If deployment fails with "workspace not found", you may be authenticated to the wrong tenant. Use `fabric-cicd auth list` to see available accounts and `fabric-cicd auth switch` to change.
+**Common issue**: If deployment fails with "workspace not found", you may be authenticated to the wrong tenant. Use `fabric-cicd auth list` to see current and available accounts, then `fabric-cicd auth switch` to change.
+
+**Note**: The `rename` command automatically switches to the target subscription if it's not accessible in your current context. Renaming requires Owner permissions on the subscription. Tenant-level accounts cannot be renamed.
 
 ## Configuration
 
