@@ -4,9 +4,15 @@ CLI wrapper around Microsoft's [fabric-cicd](https://github.com/microsoft/fabric
 
 ## Installation
 
+Install in editable mode:
+
 ```bash
-pip install fabric-deploy
+git clone <repository-url>
+cd fabric-deploy
+pip install -e .
 ```
+
+Changes to the source code will be immediately reflected without reinstalling.
 
 ## Quick Start
 
@@ -15,7 +21,7 @@ cd path/to/workspace
 fabric-cicd
 ```
 
-**Requirements**: `parameter.yml` must exist in workspace directory. Authenticate with `az login`.
+**Requirements**: `parameter.yml` must exist in workspace directory.
 
 ## CLI Options
 
@@ -45,11 +51,12 @@ fabric-cicd auth switch <subscription-id>
 fabric-cicd auth rename <subscription-id> <new-name>
 ```
 
-**Common issue**: If deployment fails with "workspace not found", you may be authenticated to the wrong tenant. Use `fabric-cicd auth list` to see current and available accounts, then `fabric-cicd auth switch` to change.
+**Common issue**: If deployment fails with "workspace not found", you may be authenticated to the wrong tenant. Use `fabric-cicd auth list` to see current and available accounts, then `fabric-cicd auth switch` to change. Add a new tenant with `az login`.
 
-**Note**: The `rename` command automatically switches to the target subscription if it's not accessible in your current context. Renaming requires Owner permissions on the subscription. Tenant-level accounts cannot be renamed.
 
 ## Configuration
+
+The destination Workspace ID is taken from the first `find_replace entry` in the target repo's parameters (see `example_parameter.yml`).
 
 **parameter.yml**:
 
@@ -59,6 +66,7 @@ find_replace:
     replace_value:
       prod: "prod-workspace-id"  # Destination workspace
     item_type: ["Notebook"]
+find_replace: # - find_value, etc.
 ```
 
 All `replace_value` entries must use the same environment key (`prod`, `dev`, etc.).
