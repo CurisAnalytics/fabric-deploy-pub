@@ -4,6 +4,11 @@
 # CI/CD error log -- this is a temporary workaround before archiving is implemented
 fabric_cicd.error.log
 
+# Python environment
+.venv/
+venv/
+env/
+
 # Byte-compiled / optimized / DLL files
 **/__pycache__/
 *.py[codz]
@@ -11,4 +16,26 @@ fabric_cicd.error.log
 
 # Distribution / packaging
 dist/
+build/
+*.egg-info/
 .ropeproject
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Type checking
+.mypy_cache/
+.pytype/
+.pyright/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build tools
+# uv.lock is tracked for reproducible builds

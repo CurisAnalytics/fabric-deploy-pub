@@ -62,14 +62,18 @@ fabric-cicd  # Auto-detects workspace_id and environment from parameter.yml
 3. `FabricDeployer.deploy()` orchestrates deployment
 
 ### FabricDeployer.deploy() Flow
-1. Calls `_load_config()` if not already loaded, which:
+1. Checks if `workspace_id` is set; if not, calls `_load_config()` which:
    - Extracts **workspace ID** from first entry's `replace_value[environment]`
    - Extracts **environment** from keys in `replace_value` (must be consistent across all entries)
-   - Auto-detects lakehouse name from `*.Lakehouse/.platform` metadata
-2. Applies item type filtering based on arguments (`item_types`, `exclude_types`, `include_items`)
-3. Creates `FabricWorkspace` instance (from Microsoft's package)
-4. Calls `publish_all_items()` with optional item filtering (from Microsoft's package)
-5. Optionally calls `unpublish_all_orphan_items()` (from Microsoft's package) unless `no_cleanup=True`
+   - Sets `self.workspace_id` and `self.environment`
+2. Checks if `lakehouse_name` is set; if not, calls `_detect_lakehouse()` which:
+   - Searches for `*.Lakehouse` directories
+   - Reads `.platform` metadata file to extract `displayName`
+   - Sets `self.lakehouse_name`
+3. Applies item type filtering based on arguments (`item_types`, `exclude_types`, `include_items`)
+4. Creates `FabricWorkspace` instance (from Microsoft's package)
+5. Calls `publish_all_items()` with optional item filtering (from Microsoft's package)
+6. Optionally calls `unpublish_all_orphan_items()` (from Microsoft's package) unless `no_cleanup=True`
 
 ## What This Package Does
 
@@ -200,18 +204,20 @@ def main():
 
 **`FabricDeployer._load_config() -> None`**
 - Private method to load and validate workspace configuration
-- Calls `_extract_config_from_parameters()` and `_detect_lakehouse()`
-- Automatically called by `deploy()` if not already loaded
+- Calls `_extract_config_from_parameters()` to extract workspace ID and environment
+- Sets `self.workspace_id` and `self.environment`
+- Automatically called by `deploy()` if `workspace_id` is not set
 
 **`FabricDeployer._extract_config_from_parameters(param_file: Path) -> tuple[str, str]`**
 - Reads `parameter.yml` and extracts workspace ID and environment
 - Validates that all `replace_value` entries use the same environment key
 - Returns tuple of `(workspace_id, environment)`
 
-**`FabricDeployer._detect_lakehouse() -> str`**
+**`FabricDeployer._detect_lakehouse() -> None`**
 - Searches for `*.Lakehouse` directories
 - Reads `.platform` metadata file to extract `displayName`
-- Returns lakehouse name for orphan cleanup exclusions
+- Sets `self.lakehouse_name` for orphan cleanup exclusions
+- Automatically called by `deploy()` if `lakehouse_name` is not set
 
 **`FabricDeployer.deploy(...) -> None`**
 - Main public method for deployment
@@ -380,6 +386,9 @@ deployer._load_config()
 print(f"Workspace: {deployer.workspace_id}")
 print(f"Environment: {deployer.environment}")
 
+deployer._detect_lakehouse()
+print(f"Lakehouse: {deployer.lakehouse_name}")
+
 # Dataclass benefits: clean repr and equality
 print(deployer)  # Shows all field values
 deployer2 = FabricDeployer(repo_dir="/path/to/workspace")
@@ -388,9 +397,10 @@ print(deployer == deployer2)  # True (if same repo_dir and logger_name)
 
 **Benefits:**
 - Dataclass provides automatic `__repr__()`, `__eq__()`, and field introspection
+- Lazy loading: no I/O during initialization
 - Custom logging namespaces for better observability
 - Programmatic control over deployment logic
-- Access to configuration before deployment via `_load_config()`
+- Access to configuration before deployment via `_load_config()` and `_detect_lakehouse()`
 - Integration into larger automation workflows
 
 See `examples/programmatic_usage.py` for more examples.
