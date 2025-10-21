@@ -71,6 +71,24 @@ find_replace: # - find_value, etc.
 
 All `replace_value` entries must use the same environment key (`prod`, `dev`, etc.).
 
+### Parameter File Validation
+
+The CLI automatically validates `parameter.yml` and detects invalid configurations:
+
+**Invalid scenarios** (triggers automatic `.bak` renaming):
+- Duplicate `find_value` entries (same value appears multiple times)
+- Blank or empty destination values (e.g., `prod: ""` or `prod: null`)
+
+**What happens when invalid**:
+1. CLI logs warning messages explaining the validation failures
+2. Renames `parameter.yml` → `parameter.yml.bak`
+3. Deployment continues using workspace ID from first entry only
+4. Microsoft's `fabric-cicd` ignores `.bak` files (no parameter replacement occurs)
+
+This is useful when you want to deploy without parameter replacement (e.g., deploying unchanged items to test workspace configuration).
+
+**Example**: See `example_parameter_invalid.yml` for a file with intentional validation failures.
+
 ## Programmatic Usage
 
 ```python

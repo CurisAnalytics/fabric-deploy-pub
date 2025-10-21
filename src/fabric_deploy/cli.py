@@ -46,22 +46,106 @@ class FabricDeployer:
         self.logger = get_logger(self.logger_name or __name__)
 
     def _load_config(self) -> None:
-        """Load and validate workspace configuration from parameter.yml."""
+        """Load and validate workspace configuration from parameter.yml or parameter.yml.bak."""
         if not self._repo_dir_resolved.exists():
             raise FileNotFoundError(
                 f"Directory does not exist: {self._repo_dir_resolved}"
             )
 
         param_file = self._repo_dir_resolved / "parameter.yml"
+        bak_file = self._repo_dir_resolved / "parameter.yml.bak"
+
+        # Check for parameter.yml, fallback to .bak if not found
         if not param_file.exists():
-            raise FileNotFoundError(
-                f"parameter.yml not found in {self._repo_dir_resolved}. "
-                "Make sure you're running this from a Fabric workspace directory"
-            )
+            if bak_file.exists():
+                print()
+                self.logger.info(f"parameter.yml not found, using {bak_file.name}")
+                param_file = bak_file
+            else:
+                raise FileNotFoundError(
+                    f"parameter.yml not found in {self._repo_dir_resolved}. "
+                    "Make sure you're running this from a Fabric workspace directory"
+                )
+
+        # Validate parameter file and handle invalid cases (only if it's not already .bak)
+        if param_file.suffix != ".bak":
+            self._validate_and_handle_parameter_file(param_file)
+            # If file was renamed to .bak, update param_file reference
+            if bak_file.exists() and not param_file.exists():
+                param_file = bak_file
 
         workspace_id, environment = self._extract_config_from_parameters(param_file)
         self.workspace_id = workspace_id
         self.environment = environment
+
+    def _validate_and_handle_parameter_file(self, param_file: Path) -> None:
+        """
+        Validate parameter file and rename to .bak if invalid.
+
+        Detects invalid scenarios:
+        - File already has .bak extension
+        - Duplicate find_value entries
+        - Blank/empty destination values in replace_value
+
+        Args:
+            param_file: Path to parameter.yml
+        """
+        # Check if already a .bak file
+        if param_file.suffix == ".bak":
+            self.logger.warning(
+                f"Parameter file already has .bak extension: {param_file.name}"
+            )
+            return
+
+        try:
+            with open(param_file) as f:
+                params = yaml.safe_load(f)
+        except Exception as e:
+            self.logger.error(f"Failed to parse parameter file: {e}")
+            return
+
+        find_replace = params.get("find_replace", [])
+        if not find_replace:
+            return
+
+        is_invalid = False
+        reasons: list[str] = []
+
+        # Check for duplicate find_value entries
+        find_values: list[str] = []
+        for entry in find_replace:
+            find_val = entry.get("find_value", "")
+            if find_val in find_values:
+                is_invalid = True
+                reasons.append(f"Duplicate find_value: '{find_val}'")
+            find_values.append(find_val)
+
+        # Check for blank destination values
+        for i, entry in enumerate(find_replace):
+            replace_values = entry.get("replace_value", {})
+            for env, value in replace_values.items():
+                if value == "" or value is None:
+                    is_invalid = True
+                    reasons.append(
+                        f"Entry {i + 1}: Blank destination value for environment '{env}'"
+                    )
+
+        # If invalid, rename to .bak
+        if is_invalid:
+            bak_file = param_file.with_suffix(".yml.bak")
+            print()
+            self.logger.warning("Invalid parameter file detected:")
+            for reason in reasons:
+                self.logger.warning(f"  - {reason}")
+
+            _ = param_file.rename(bak_file)
+            self.logger.warning(
+                f"Renamed parameter file: {param_file.name} -> {bak_file.name}"
+            )
+            print()
+            self.logger.info(
+                "Deployment will proceed using workspace ID from first entry only"
+            )
 
     def _extract_config_from_parameters(self, param_file: Path) -> tuple[str, str]:
         """
@@ -187,7 +271,15 @@ class FabricDeployer:
 
         # Display parameter.yml last modified time
         param_file = self._repo_dir_resolved / "parameter.yml"
-        if param_file.exists():
+        bak_file = param_file.with_suffix(".yml.bak")
+
+        if bak_file.exists() and not param_file.exists():
+            # Using .bak file
+            mtime = datetime.fromtimestamp(bak_file.stat().st_mtime)
+            self.logger.info(
+                f"Parameter file (backup): {bak_file.name} - modified: {mtime.strftime('%d/%m/%Y %H:%M:%S')}"
+            )
+        elif param_file.exists():
             mtime = datetime.fromtimestamp(param_file.stat().st_mtime)
             self.logger.info(
                 f"Parameter file modified: {mtime.strftime('%d/%m/%Y %H:%M:%S')}"
