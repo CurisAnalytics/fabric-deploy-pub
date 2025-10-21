@@ -19,7 +19,7 @@ fabric-deploy/
 │   ├── __init__.py            # Package initialization, exports FabricDeployer
 │   ├── cli.py                 # FabricDeployer class + CLI entry point
 │   ├── auth.py                # Azure authentication utilities (az CLI wrapper)
-│   └── logging.py             # Custom logging configuration
+│   └── logging.py             # Custom logging & console formatting utilities
 ├── examples/
 │   └── programmatic_usage.py  # Examples of library usage
 ├── pyproject.toml             # Package configuration, depends on fabric-cicd
@@ -372,25 +372,54 @@ fabric-cicd auth rename xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx "Production Subscri
 **auth.py** provides Azure CLI wrappers for account management:
 
 ```python
-def list_accounts() -> list[dict]:
+def list_accounts(refresh: bool = True) -> list[AzureAccount]:
     """List all Azure accounts."""
 
-def get_current_account() -> dict | None:
-    """Get currently active account (internal use by auth list and error handler)."""
+def get_current_account() -> AzureAccount | None:
+    """Get currently active account."""
 
 def switch_account(subscription_id: str) -> None:
     """Switch to a different account."""
 
-**`rename_subscription(subscription_id: str, new_name: str) -> None`**
-- Rename an Azure subscription. Automatically switches to the subscription if it's not accessible in the current tenant context. Requires Owner permissions on the subscription.
+def rename_subscription(subscription_id: str, new_name: str) -> bool:
+    """Rename an Azure subscription. Auto-switches if needed. Returns True if switched."""
 
 def is_auth_error(error_msg: str) -> bool:
     """Check if error is authentication/authorization related."""
+
+def handle_auth_command(args: Namespace) -> None:
+    """Handle auth subcommands (list, switch, rename) with formatted output."""
 ```
 
 **Error Detection**: When deployment fails with auth-related errors (401, 403, 404, "not found", "unauthorized", "forbidden"), the CLI automatically displays current account information, lists available accounts, and suggests relevant auth commands.
 
 **Auto-switching**: The `rename` command automatically switches to the target subscription if it's not accessible in the current tenant context, eliminating the need for manual switching before renaming.
+
+## Logging Module
+
+**logging.py** provides custom logging and console formatting utilities:
+
+```python
+def get_logger(name: str) -> logging.Logger:
+    """Configure and return logger with CustomFormatter."""
+
+def print_header(message: str) -> None:
+    """Print styled header (re-exported from fabric-cicd)."""
+
+def print_error(message: str) -> None:
+    """Print error message without log prefix."""
+
+def format_account_list(accounts: list[dict], current_id: str | None = None) -> str:
+    """Format list of Azure accounts with current marker."""
+
+def format_auth_error_message(
+    current_account: dict | None = None,
+    all_accounts: list[dict] | None = None
+) -> str:
+    """Format helpful authentication error message with troubleshooting tips."""
+```
+
+**Design**: Separates presentation/formatting logic from business logic. Auth module handles Azure CLI interactions, logging module handles display formatting.
 
 ## Error Handling
 
