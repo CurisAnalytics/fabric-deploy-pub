@@ -3,6 +3,7 @@ import logging
 import sys
 import yaml
 from dataclasses import dataclass, field
+from datetime import datetime
 from json import loads
 from pathlib import Path
 
@@ -173,13 +174,21 @@ class FabricDeployer:
             ]
 
         print_header("Contoso  𐧾  Fabric CI/CD")
-        self.logger.info(f"Detected lakehouse name: {self.lakehouse_name}")
+        self.logger.info(f"Lakehouse name: {self.lakehouse_name}")
         self.logger.info(f"Workspace ID: {self.workspace_id}")
 
         if item_type_in_scope:
             self.logger.info(f"Item types in scope: {', '.join(item_type_in_scope)}")
         else:
             self.logger.info("Item types in scope: All supported types")
+
+        # Display parameter.yml last modified time
+        param_file = self._repo_dir_resolved / "parameter.yml"
+        if param_file.exists():
+            mtime = datetime.fromtimestamp(param_file.stat().st_mtime)
+            self.logger.info(
+                f"Parameter file modified: {mtime.strftime('%d/%m/%Y %H:%M:%S')}"
+            )
 
         if include_items:
             self.logger.info(f"Including items: {', '.join(include_items)}")
