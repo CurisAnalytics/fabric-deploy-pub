@@ -179,8 +179,11 @@ class FabricDeployer:
 
         if item_type_in_scope:
             self.logger.info(f"Item types in scope: {', '.join(item_type_in_scope)}")
-        else:
-            self.logger.info("Item types in scope: All supported types")
+
+        if include_items:
+            self.logger.info(f"Including items: {', '.join(include_items)}")
+
+        self.logger.info(f"Input directory: {self._repo_dir_resolved}")
 
         # Display parameter.yml last modified time
         param_file = self._repo_dir_resolved / "parameter.yml"
@@ -189,9 +192,6 @@ class FabricDeployer:
             self.logger.info(
                 f"Parameter file modified: {mtime.strftime('%d/%m/%Y %H:%M:%S')}"
             )
-
-        if include_items:
-            self.logger.info(f"Including items: {', '.join(include_items)}")
 
         target_workspace = FabricWorkspace(
             workspace_id=self.workspace_id,
