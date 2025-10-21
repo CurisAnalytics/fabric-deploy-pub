@@ -11,7 +11,9 @@ from fabric_cicd import (
 )
 from fabric_cicd.constants import ACCEPTED_ITEM_TYPES  # CopyJob, Noteook, Report, &c
 
-SEP = "=" * 60
+from .logging import get_logger, print_header
+
+logger = get_logger(__name__)
 
 
 def extract_config_from_parameters(param_file: Path) -> tuple[str, str]:
@@ -49,7 +51,7 @@ def detect_lakehouse(repo_dir: Path) -> str:
     if len(lakehouses) == 0:
         raise ValueError("No lakehouse found in repository directory")
     if len(lakehouses) > 1:
-        print(f"Warning: Multiple lakehouses found: {[d.name for d in lakehouses]}")
+        logger.warning(f"Multiple lakehouses found: {[d.name for d in lakehouses]}")
     try:
         platform_file = lakehouses[0] / ".platform"
         metadata = loads(platform_file.read_text())
@@ -100,22 +102,30 @@ def parse_args():
     return parser.parse_args()
 
 
-def main():
-    args = parse_args()
+def deploy_fabric_workspace(
+    repo_dir: Path,
+    no_cleanup: bool = False,
+    item_types: list[str] | None = None,
+    exclude_types: list[str] | None = None,
+    include_items: list[str] | None = None,
+):
+    """
+    Deploy Fabric workspace items.
 
-    repo_dir = args.directory
-    no_cleanup = args.no_cleanup
-    item_types = args.item_types
-    exclude_types = args.exclude_types
-    include_items = args.include_items
-
+    Args:
+        repo_dir: Path to workspace directory
+        no_cleanup: Skip unpublishing orphaned items
+        item_types: Specific item types to deploy
+        exclude_types: Item types to exclude from deployment
+        include_items: Include only specific items (format: "ItemName.ItemType")
+    """
     # Enable experimental feature flags if name-based filtering is requested
     if include_items:
         append_feature_flag("enable_experimental_features")
         append_feature_flag("enable_items_to_include")
-        print(
-            "\n⚠️  Warning: Name-based item filtering is experimental.\n"
-            "Selective deployment may cause dependency issues. Use at your own risk.\n"
+        logger.warning(
+            "Name-based item filtering is experimental. "
+            "Selective deployment may cause dependency issues. Use at your own risk."
         )
 
     # Ensure we're in a valid workspace directory
@@ -143,16 +153,15 @@ def main():
         # All supported types minus excluded ones
         item_type_in_scope = [t for t in ACCEPTED_ITEM_TYPES if t not in exclude_types]
 
-    print(f"\n{SEP}\nFabric CI/CD Deployment\n{SEP}")
-    print(f"Detected lakehouse name: {lakehouse_name}")
-    print(f"Workspace ID: {workspace_id}")
+    print_header("Contoso  𐧾  Fabric CI/CD")  # \udb85\uddfc
+    logger.info(f"Detected lakehouse name: {lakehouse_name}")
+    logger.info(f"Workspace ID: {workspace_id}")
     if item_type_in_scope:
-        print(f"Item types in scope: {', '.join(item_type_in_scope)}")
+        logger.info(f"Item types in scope: {', '.join(item_type_in_scope)}")
     else:
-        print("Item types in scope: All supported types")
+        logger.info("Item types in scope: All supported types")
     if include_items:
-        print(f"Including items: {', '.join(include_items)}")
-    print(SEP + "\n")
+        logger.info(f"Including items: {', '.join(include_items)}")
 
     target_workspace = FabricWorkspace(
         workspace_id=workspace_id,
@@ -166,7 +175,18 @@ def main():
         unpublish_all_orphan_items(
             target_workspace, item_name_exclude_regex=lakehouse_name
         )
-    print("\nDeployment complete!")
+    logger.info("\nDeployment complete!")
+
+
+def main():
+    args = parse_args()
+    deploy_fabric_workspace(
+        repo_dir=args.directory,
+        no_cleanup=args.no_cleanup,
+        item_types=args.item_types,
+        exclude_types=args.exclude_types,
+        include_items=args.include_items,
+    )
 
 
 if __name__ == "__main__":
