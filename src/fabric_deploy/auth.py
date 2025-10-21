@@ -4,39 +4,43 @@ import json
 import subprocess
 import sys
 from argparse import Namespace
+from typing import TypedDict
 
 # pyright: reportMissingTypeArgument=false, reportUnknownParameterType=false
 
 
-def run_az(args: list[str]) -> dict | list:
-    """Run az CLI command and return JSON output."""
-    result = subprocess.run(
-        ["az", *args, "--output", "json"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+class AzureUser(TypedDict):
+    name: str
+    type: str
+
+
+class AzureAccount(TypedDict):
+    cloudName: str
+    homeTenantId: str
+    id: str
+    isDefault: bool
+    name: str
+    state: str
+    tenantId: str
+    user: AzureUser
+
+
+def list_accounts(refresh: bool = True) -> list[AzureAccount]:
+    """
+    List all Azure accounts.
+    Args: refresh: If True, force refresh from Azure (slower but current data)
+    """
+    cmd = ["az", "account", "list", "--output", "json"]
+    if refresh:
+        cmd.append("--refresh")
+    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
     return json.loads(result.stdout)
 
 
-def list_accounts(refresh: bool = False) -> list[dict]:
-    """
-    List all Azure accounts.
-
-    Args:
-        refresh: If True, force refresh from Azure (slower but current data)
-    """
-    args = ["account", "list"]
-    if refresh:
-        args.append("--refresh")
-    return run_az(args)  # pyright: ignore[reportReturnType]
-
-
-def get_current_account() -> dict | None:
+def get_current_account() -> AzureAccount | None:
     """Get currently active account."""
     accounts = list_accounts()
-    accts = (a for a in accounts if a.get("isDefault"))  # pyright: ignore[reportUnknownMemberType]
-    return next(accts, None)  # pyright: ignore[reportUnknownArgumentType]
+    return next((a for a in accounts if a.get("isDefault")), None)
 
 
 def switch_account(subscription_id: str) -> None:
