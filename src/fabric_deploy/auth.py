@@ -4,25 +4,10 @@ import json
 import subprocess
 import sys
 from argparse import Namespace
-from typing import TypedDict
+
+from .types import AzureAccount
 
 # pyright: reportMissingTypeArgument=false, reportUnknownParameterType=false
-
-
-class AzureUser(TypedDict):
-    name: str
-    type: str
-
-
-class AzureAccount(TypedDict):
-    cloudName: str
-    homeTenantId: str
-    id: str
-    isDefault: bool
-    name: str
-    state: str
-    tenantId: str
-    user: AzureUser
 
 
 def list_accounts(refresh: bool = True) -> list[AzureAccount]:
@@ -164,66 +149,6 @@ def is_auth_error(error_msg: str) -> bool:
     return any(i in error_msg.lower() for i in indicators)
 
 
-def format_auth_error_message() -> str:
-    """
-    Format helpful authentication error message with current account info.
-
-    Returns:
-        Formatted error message string with account info and troubleshooting tips.
-    """
-    lines = [
-        "\n" + "=" * 80,
-        "Authentication/Authorization Error Detected",
-        "=" * 80,
-    ]
-
-    try:
-        current = get_current_account()
-        if current:
-            msg = f"Current: {current['name']} ({current['user']['name']})"
-            lines.extend(["", msg])
-
-        accounts = list_accounts()
-        if len(accounts) > 1:
-            lines.extend(["", "Available accounts:"])
-            for acct in accounts:
-                marker = " [CURRENT]" if acct.get("isDefault") else ""
-                lines.append(f"  • {acct['name']}{marker}")
-                lines.append(f"    User: {acct['user']['name']}")
-                lines.append(f"    Subscription: {acct['id']}")
-
-            lines.extend(
-                [
-                    "",
-                    "To switch accounts:",
-                    "\tfabric-cicd auth switch <subscription-id>",
-                    "",
-                    "To rename a subscription:",
-                    "\tfabric-cicd auth rename <subscription-id> <new-name>",
-                ]
-            )
-    except Exception:
-        pass
-
-    lines.extend(
-        [
-            "",
-            "Common causes:",
-            "\t• Wrong tenant/subscription (workspace may be in different org)",
-            "\t• Expired token (run: az login)",
-            "",
-            "Helpful commands:",
-            "\t• fabric-cicd auth list   - View current and available accounts",
-            "\t• fabric-cicd auth switch - Switch to different account",
-            "\t• fabric-cicd auth rename - Rename subscription for clarity",
-            "",
-            "=" * 80 + "\n",
-        ]
-    )
-
-    return "\n".join(lines)
-
-
 def handle_auth_command(args: Namespace) -> None:
     """
     Handle auth subcommands with formatted output.
@@ -232,6 +157,8 @@ def handle_auth_command(args: Namespace) -> None:
         args: Parsed argparse namespace with auth_command attribute
     """
     if args.auth_command == "list":
+        from .logging import format_account_list
+
         current = get_current_account()
         accounts = list_accounts(refresh=True)
 
@@ -243,11 +170,8 @@ def handle_auth_command(args: Namespace) -> None:
             print(f"  Subscription: {current['id']}\n")
 
         print(f"Available accounts ({len(accounts)}):\n")
-        for acct in accounts:
-            marker = " [CURRENT]" if acct.get("isDefault") else ""
-            print(f"  • {acct['name']}{marker}")
-            print(f"    User: {acct['user']['name']}")
-            print(f"    Subscription: {acct['id']}\n")
+        print(format_account_list(accounts))
+        print()
 
     elif args.auth_command == "switch":
         switch_account(args.subscription_id)

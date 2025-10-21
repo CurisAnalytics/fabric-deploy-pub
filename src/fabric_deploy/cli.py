@@ -15,8 +15,8 @@ from fabric_cicd import (
 )
 from fabric_cicd.constants import ACCEPTED_ITEM_TYPES
 
-from .logging import get_logger, print_header, print_error
-from .auth import is_auth_error, format_auth_error_message, handle_auth_command
+from .auth import is_auth_error, list_accounts, get_current_account, handle_auth_command
+from .logging import get_logger, print_header, print_error, format_auth_error_message
 
 
 @dataclass
@@ -313,7 +313,13 @@ class FabricDeployer:
 
     def _handle_auth_error(self) -> None:
         """Print helpful auth troubleshooting info."""
-        error_msg = format_auth_error_message()
+        try:
+            current = get_current_account()
+            accounts = list_accounts()
+            error_msg = format_auth_error_message(current, accounts)
+        except Exception:
+            # Fallback if account fetching fails
+            error_msg = format_auth_error_message()
         print_error(error_msg)
 
 

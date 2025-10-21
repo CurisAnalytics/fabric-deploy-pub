@@ -1,11 +1,20 @@
 import logging
 import re
+from collections.abc import Sequence
 from typing import ClassVar, override
 
 from fabric_cicd._common._color import Fore, Style
 from fabric_cicd._common._logging import print_header
 
-__all__ = ["get_logger", "print_header", "print_error"]
+from .types import AzureAccount
+
+__all__ = [
+    "get_logger",
+    "print_header",
+    "print_error",
+    "format_auth_error_message",
+    "format_account_list",
+]
 
 
 class CustomFormatter(logging.Formatter):
@@ -54,3 +63,84 @@ def get_logger(name: str) -> logging.Logger:
 def print_error(message: str) -> None:
     """Print error message without log prefix (useful for stack traces, etc)."""
     print(f"{Fore.RED}{message}{Style.RESET_ALL}")
+
+
+def format_account_list(
+    accounts: Sequence[AzureAccount], current_id: str | None = None
+) -> str:
+    """
+    Format list of Azure accounts with current marker.
+
+    Args:
+        accounts: List of Azure account dictionaries
+        current_id: Subscription ID of current account (for marking)
+
+    Returns:
+        Formatted string with account information
+    """
+    lines: list[str] = []
+    for acct in accounts:
+        is_current = acct.get("isDefault") or acct.get("id") == current_id
+        marker = " [CURRENT]" if is_current else ""
+        lines.append(f"  • {acct['name']}{marker}")
+        lines.append(f"    User: {acct['user']['name']}")
+        lines.append(f"    Subscription: {acct['id']}")
+    return "\n".join(lines)
+
+
+def format_auth_error_message(
+    current_account: AzureAccount | None = None,
+    all_accounts: Sequence[AzureAccount] | None = None,
+) -> str:
+    """
+    Format helpful authentication error message with account info.
+
+    Args:
+        current_account: Current Azure account dict (optional)
+        all_accounts: List of all available Azure accounts (optional)
+
+    Returns:
+        Formatted error message string with troubleshooting tips
+    """
+    lines = [
+        "\n" + "=" * 80,
+        "Authentication/Authorization Error Detected",
+        "=" * 80,
+    ]
+
+    if current_account:
+        msg = f"Current: {current_account['name']} ({current_account['user']['name']})"
+        lines.extend(["", msg])
+
+    if all_accounts and len(all_accounts) > 1:
+        lines.extend(["", "Available accounts:"])
+        lines.append(format_account_list(all_accounts))
+
+        lines.extend(
+            [
+                "",
+                "To switch accounts:",
+                "\tfabric-cicd auth switch <subscription-id>",
+                "",
+                "To rename a subscription:",
+                "\tfabric-cicd auth rename <subscription-id> <new-name>",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "Common causes:",
+            "\t• Wrong tenant/subscription (workspace may be in different org)",
+            "\t• Expired token (run: az login)",
+            "",
+            "Helpful commands:",
+            "\t• fabric-cicd auth list   - View current and available accounts",
+            "\t• fabric-cicd auth switch - Switch to different account",
+            "\t• fabric-cicd auth rename - Rename subscription for clarity",
+            "",
+            "=" * 80 + "\n",
+        ]
+    )
+
+    return "\n".join(lines)
