@@ -16,14 +16,19 @@
 ```
 fabric-deploy/
 ├── src/fabric_deploy/     # Package directory
-│   ├── __init__.py            # Package initialization
-│   └── cli.py                 # CLI entry point with parse_args() and main()
+│   ├── __init__.py            # Package initialization, exports FabricDeployer
+│   ├── cli.py                 # FabricDeployer class + CLI entry point
+│   └── logging.py             # Custom logging configuration
+├── examples/
+│   └── programmatic_usage.py  # Examples of library usage
 ├── pyproject.toml             # Package configuration, depends on fabric-cicd
 ├── example_parameter.yml      # Example configuration file
 └── README.md                  # Brief usage documentation
 ```
 
 **Key Point**: This package wraps `fabric-cicd` from PyPI, it does not reimplement any functionality.
+
+**Core Class**: `FabricDeployer` is a dataclass that encapsulates all deployment logic and can be used both programmatically and via CLI.
 
 ## Usage Pattern
 
@@ -48,17 +53,22 @@ cd path/to/workspace
 fabric-cicd  # Auto-detects workspace_id and environment from parameter.yml
 ```
 
-## CLI Flow
+## Deployment Flow
 
+### CLI Flow
 1. `parse_args()` parses command-line arguments
-2. `main()` reads `parameter.yml` to extract:
-   - **Workspace ID**: From first entry's `replace_value[environment]`
-   - **Environment**: Auto-detected from keys in `replace_value` (must be consistent across entries)
-3. Auto-detects lakehouse name from `*.Lakehouse/.platform` metadata file
-4. Applies item type filtering based on CLI flags (`--item-types`, `--exclude-types`, `--include-items`)
-5. Creates `FabricWorkspace` instance (from Microsoft's package)
-6. Calls `publish_all_items()` with optional item filtering (from Microsoft's package)
-7. Optionally calls `unpublish_all_orphan_items()` (from Microsoft's package) unless `--no-cleanup` is specified
+2. `main()` creates `FabricDeployer` dataclass instance with custom logger name
+3. `FabricDeployer.deploy()` orchestrates deployment
+
+### FabricDeployer.deploy() Flow
+1. Calls `_load_config()` if not already loaded, which:
+   - Extracts **workspace ID** from first entry's `replace_value[environment]`
+   - Extracts **environment** from keys in `replace_value` (must be consistent across all entries)
+   - Auto-detects lakehouse name from `*.Lakehouse/.platform` metadata
+2. Applies item type filtering based on arguments (`item_types`, `exclude_types`, `include_items`)
+3. Creates `FabricWorkspace` instance (from Microsoft's package)
+4. Calls `publish_all_items()` with optional item filtering (from Microsoft's package)
+5. Optionally calls `unpublish_all_orphan_items()` (from Microsoft's package) unless `no_cleanup=True`
 
 ## What This Package Does
 
@@ -67,7 +77,7 @@ fabric-cicd  # Auto-detects workspace_id and environment from parameter.yml
 - Auto-detection from `parameter.yml`
 - Lakehouse name detection from `.platform` files
 - User-friendly output formatting
-- Command-line argument parsing (`--env`, `--dry-run`, etc.)
+- Command-line argument parsing (`--no-cleanup`, `--item-types`, `--exclude-types`, `--include-items`)
 
 ### ❌ Does NOT Provide
 - Fabric REST API implementation (handled by Microsoft's `fabric-cicd`)
@@ -82,7 +92,7 @@ fabric-cicd  # Auto-detects workspace_id and environment from parameter.yml
 [project]
 dependencies = [
     "fabric-cicd>=0.1.29",  # Microsoft's official package
-    "pyyaml",               # For parameter.yml parsing (if not in fabric-cicd)
+    "pyyaml",               # For parameter.yml parsing
 ]
 ```
 
@@ -108,68 +118,114 @@ find_replace:
 
 ## Implementation Details
 
-### Current Implementation
-The CLI correctly imports from `fabric-cicd`:
+### FabricDeployer Dataclass
+The main deployment logic is encapsulated in the `FabricDeployer` dataclass:
 
 ```python
 # cli.py
+from dataclasses import dataclass, field
 from fabric_cicd import FabricWorkspace, publish_all_items, unpublish_all_orphan_items
+
+@dataclass
+class FabricDeployer:
+    """Main deployer class for Fabric workspace items."""
+    
+    repo_dir: Path | str
+    logger_name: str | None = None
+    
+    # Configuration populated by _load_config()
+    workspace_id: str | None = field(default=None, init=False)
+    environment: str | None = field(default=None, init=False)
+    lakehouse_name: str | None = field(default=None, init=False)
+    
+    # Private fields (initialized in __post_init__)
+    _repo_dir_resolved: Path = field(init=False, repr=False)
+    logger: logging.Logger = field(init=False, repr=False)
+    
+    def __post_init__(self):
+        """Initialize derived fields after dataclass initialization."""
+        self._repo_dir_resolved = Path(self.repo_dir).resolve()
+        self.logger = get_logger(self.logger_name or __name__)
+    
+    def _load_config(self) -> None:
+        """Load and validate workspace configuration from parameter.yml."""
+        # Extract workspace_id and environment
+        # Detect lakehouse name
+    
+    def deploy(
+        self,
+        no_cleanup: bool = False,
+        item_types: list[str] | None = None,
+        exclude_types: list[str] | None = None,
+        include_items: list[str] | None = None,
+    ) -> None:
+        """Deploy Fabric workspace items."""
+        # Load config if not already loaded
+        if not self.workspace_id:
+            self._load_config()
+        
+        # Apply item type filtering
+        # Create FabricWorkspace
+        # Call publish_all_items and unpublish_all_orphan_items
 
 def parse_args():
     """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(...)
     # Configure argument parser
     return parser.parse_args()
 
 def main():
+    """CLI entry point."""
     args = parse_args()
-    
-    # Extract workspace_id and environment from parameter.yml
-    workspace_id, environment = extract_config_from_parameters(param_file)
-    
-    # Detect lakehouse name from .platform metadata
-    lakehouse_name = detect_lakehouse(repo_dir)
-    
-    # Apply item type filtering from CLI args
-    item_type_in_scope = None
-    if args.item_types:
-        item_type_in_scope = args.item_types
-    elif args.exclude_types:
-        item_type_in_scope = [t for t in ACCEPTED_ITEM_TYPES if t not in args.exclude_types]
-    
-    # Create workspace using Microsoft's class
-    target_workspace = FabricWorkspace(
-        workspace_id=workspace_id,
-        repository_directory=str(repo_dir),
-        item_type_in_scope=item_type_in_scope,
+    deployer = FabricDeployer(
+        repo_dir=args.directory,
+        logger_name="fabric_deploy.cli"
     )
-    
-    # Call Microsoft's deployment functions
-    publish_all_items(target_workspace, items_to_include=args.include_items)
-    if not args.no_cleanup:
-        unpublish_all_orphan_items(target_workspace, item_name_exclude_regex=lakehouse_name)
+    deployer.deploy(
+        no_cleanup=args.no_cleanup,
+        item_types=args.item_types,
+        exclude_types=args.exclude_types,
+        include_items=args.include_items,
+    )
 ```
 
-### Key Functions
+### Key Components
 
-**`parse_args() -> argparse.Namespace`**
-- Configures argument parser with all CLI options
-- Returns parsed arguments including `directory`, `no_cleanup`, `item_types`, `exclude_types`, `include_items`
-- Separated from `main()` for testability
+**`FabricDeployer` Dataclass**
+- Main dataclass encapsulating all deployment logic
+- Dataclass fields: `repo_dir` (required), `logger_name` (optional)
+- Configuration attributes: `workspace_id`, `environment`, `lakehouse_name` (populated by `_load_config()`)
+- Private fields: `_repo_dir_resolved`, `logger` (initialized in `__post_init__()`)
+- Provides automatic `__repr__()`, `__eq__()`, and field introspection
 
-**`extract_config_from_parameters(param_file: Path) -> tuple[str, str]`**
+**`FabricDeployer._load_config() -> None`**
+- Private method to load and validate workspace configuration
+- Calls `_extract_config_from_parameters()` and `_detect_lakehouse()`
+- Automatically called by `deploy()` if not already loaded
+
+**`FabricDeployer._extract_config_from_parameters(param_file: Path) -> tuple[str, str]`**
 - Reads `parameter.yml` and extracts workspace ID and environment
 - Validates that all `replace_value` entries use the same environment key
 - Returns tuple of `(workspace_id, environment)`
 
-**`detect_lakehouse(repo_dir: Path) -> str`**
+**`FabricDeployer._detect_lakehouse() -> str`**
 - Searches for `*.Lakehouse` directories
 - Reads `.platform` metadata file to extract `displayName`
 - Returns lakehouse name for orphan cleanup exclusions
 
-**`main() -> None`**
+**`FabricDeployer.deploy(...) -> None`**
+- Main public method for deployment
+- Accepts filtering arguments: `no_cleanup`, `item_types`, `exclude_types`, `include_items`
 - Orchestrates the entire deployment workflow
-- Calls `parse_args()`, validates inputs, creates `FabricWorkspace`, and deploys items
+
+**`parse_args() -> argparse.Namespace`**
+- Configures argument parser with all CLI options
+- Returns parsed arguments
+- Separated from `main()` for testability
+
+**`main() -> None`**
+- CLI entry point
+- Creates `FabricDeployer` dataclass instance with custom logger name
+- Calls `deploy()` with parsed arguments
 
 ## Microsoft's fabric-cicd Package
 
@@ -236,8 +292,6 @@ The CLI validates:
 
 ## Development
 
-### Building the Package
-
 ```bash
 # Install dependencies (requires uv)
 uv sync
@@ -247,21 +301,59 @@ uv build
 
 # Install locally
 pip install -e .
-```
 
-### Testing
-
-Test with an example workspace:
-```bash
+# Test CLI
 cd /path/to/workspace
-fabric-cicd --no-cleanup  # Preview without orphan cleanup
+fabric-cicd --no-cleanup
 ```
 
-## Related Projects
+See `examples/programmatic_usage.py` for programmatic usage examples.
 
-- **[microsoft/fabric-cicd](https://github.com/microsoft/fabric-cicd)**: The underlying library this wraps
-- **Workspaces/**: Client workspace repos that will use this CLI tool
-- **example-fabric-etl**: Core Python ETL framework (separate concern)
+## Programmatic Usage
+
+The `FabricDeployer` dataclass can be imported and used in your own Python code:
+
+```python
+from fabric_deploy import FabricDeployer
+
+# Basic deployment
+deployer = FabricDeployer(
+    repo_dir="/path/to/workspace",
+    logger_name="my_app.fabric_deployment",
+)
+deployer.deploy()
+
+# With custom filters
+deployer.deploy(
+    item_types=["Notebook", "DataPipeline"],
+    no_cleanup=False,
+)
+
+# Inspect configuration before deploying
+deployer._load_config()
+print(f"Workspace: {deployer.workspace_id}")
+print(f"Environment: {deployer.environment}")
+
+# Dataclass benefits: clean repr and equality
+print(deployer)  # Shows all field values
+deployer2 = FabricDeployer(repo_dir="/path/to/workspace")
+print(deployer == deployer2)  # True (if same repo_dir and logger_name)
+```
+
+**Benefits:**
+- Dataclass provides automatic `__repr__()`, `__eq__()`, and field introspection
+- Custom logging namespaces for better observability
+- Programmatic control over deployment logic
+- Access to configuration before deployment via `_load_config()`
+- Integration into larger automation workflows
+
+See `examples/programmatic_usage.py` for more examples.
+
+## Related
+
+- **[microsoft/fabric-cicd](https://github.com/microsoft/fabric-cicd)**: The underlying library
+- **Workspace repos**: Use this CLI tool for deployments
+- **example-fabric-etl**: Core Python ETL framework (separate package)
 
 ## Troubleshooting
 
