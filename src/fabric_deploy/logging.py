@@ -5,7 +5,7 @@ from typing import ClassVar, override
 from fabric_cicd._common._color import Fore, Style
 from fabric_cicd._common._logging import print_header
 
-print_header = print_header
+__all__ = ["get_logger", "print_header"]
 
 
 class CustomFormatter(logging.Formatter):
@@ -36,6 +36,7 @@ class CustomFormatter(logging.Formatter):
         # Pad to 8 visual characters
         padding = " " * max(0, 8 - visual_level_length)
         full_message = f"{level_name}{padding} {message}"
+
         return full_message
 
 
