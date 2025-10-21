@@ -63,6 +63,8 @@ fabric-cicd  # Auto-detects workspace_id and environment from parameter.yml
 
 ### FabricDeployer.deploy() Flow
 1. Checks if `workspace_id` is set; if not, calls `_load_config()` which:
+   - Calls `_validate_and_handle_parameter_file()` to check for invalid parameter files
+   - Automatically renames invalid parameter files to `.bak` extension
    - Extracts **workspace ID** from first entry's `replace_value[environment]`
    - Extracts **environment** from keys in `replace_value` (must be consistent across all entries)
    - Sets `self.workspace_id` and `self.environment`
@@ -121,6 +123,42 @@ find_replace:
 
 **Important**: All `replace_value` entries must use the same environment key (e.g., all use `prod` or all use `dev`). The CLI validates this consistency and extracts the destination `workspace_id` from the first entry.
 
+### Parameter File Validation
+
+The CLI automatically validates parameter files and detects invalid configurations:
+
+**Invalid scenarios** (triggers automatic `.bak` renaming):
+- File already has `.bak` extension
+- Duplicate `find_value` entries (same value appears multiple times)
+- Blank or empty destination values in `replace_value` (e.g., `prod: ""` or `prod: null`)
+
+**Behavior when invalid**:
+1. CLI logs warning messages explaining why the file is invalid
+2. Renames `parameter.yml` to `parameter.yml.bak`
+3. Deployment continues using workspace ID from first entry only
+4. Microsoft's `fabric-cicd` package ignores the `.bak` file (preventing parameter replacement)
+
+**Example invalid parameter.yml**:
+```yaml
+find_replace:
+  - find_value: "source-workspace-id"
+    replace_value:
+      prod: "dest-workspace-id"  # Valid workspace ID
+    item_type: ["Notebook"]
+  
+  - find_value: "source-lakehouse-id"
+    replace_value:
+      prod: ""  # INVALID: blank destination value
+    item_type: ["Notebook"]
+  
+  - find_value: "source-workspace-id"  # INVALID: duplicate find_value
+    replace_value:
+      prod: "another-id"
+    item_type: ["DataPipeline"]
+```
+
+This file would be automatically renamed to `parameter.yml.bak`, and deployment would proceed with just the workspace ID from the first entry.
+
 ## Implementation Details
 
 ### FabricDeployer Dataclass
@@ -154,8 +192,8 @@ class FabricDeployer:
     
     def _load_config(self) -> None:
         """Load and validate workspace configuration from parameter.yml."""
+        # Validate parameter file and rename to .bak if invalid
         # Extract workspace_id and environment
-        # Detect lakehouse name
     
     def deploy(
         self,
@@ -204,9 +242,17 @@ def main():
 
 **`FabricDeployer._load_config() -> None`**
 - Private method to load and validate workspace configuration
+- Calls `_validate_and_handle_parameter_file()` to check for invalid parameter files
 - Calls `_extract_config_from_parameters()` to extract workspace ID and environment
 - Sets `self.workspace_id` and `self.environment`
 - Automatically called by `deploy()` if `workspace_id` is not set
+
+**`FabricDeployer._validate_and_handle_parameter_file(param_file: Path) -> None`**
+- Validates parameter file for common invalid scenarios
+- Detects duplicate `find_value` entries
+- Detects blank/empty destination values in `replace_value`
+- Automatically renames invalid files to `.bak` extension
+- Logs warning messages explaining validation failures
 
 **`FabricDeployer._extract_config_from_parameters(param_file: Path) -> tuple[str, str]`**
 - Reads `parameter.yml` and extracts workspace ID and environment
@@ -428,6 +474,12 @@ See `examples/programmatic_usage.py` for more examples.
 **"No lakehouse found in repository directory"**
 - Ensure at least one `*.Lakehouse` directory exists
 - Check that the directory contains a `.platform` metadata file
+
+**"Invalid parameter file detected"**
+- Check logs for specific validation failures (duplicate find_values, blank destinations)
+- Parameter file will be automatically renamed to `.bak`
+- Deployment continues using workspace ID from first entry only
+- Fix the parameter file and rename back to `.yml` to restore parameter replacement
 
 **Authentication/Authorization Errors**
 - Run `fabric-cicd auth list` to see current and all available accounts
