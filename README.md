@@ -26,13 +26,21 @@ fabric-cicd
 ## CLI Options
 
 ```bash
-fabric-cicd [DIRECTORY] [OPTIONS]
+fabric-cicd [deploy] [DIRECTORY] [OPTIONS]
 
 Options:
   --no-cleanup, -n       Skip unpublishing orphaned items
   --item-types, -t       Deploy specific types (e.g., Notebook DataPipeline)
   --exclude-types, -x    Exclude types (e.g., Report SemanticModel)
   --include-items, -i    Include specific items by name
+```
+
+The `deploy` subcommand is optional and defaults when deploy-specific options are used:
+
+```bash
+# These are equivalent:
+fabric-cicd -t DataPipeline
+fabric-cicd deploy -t DataPipeline
 ```
 
 ## Authentication

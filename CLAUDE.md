@@ -213,7 +213,8 @@ class FabricDeployer:
 
 def parse_args():
     """Parse command-line arguments."""
-    # Configure argument parser
+    # Configure argument parser with subparsers for 'auth' and 'deploy'
+    # Automatically injects 'deploy' as default when deploy-specific flags are used
     return parser.parse_args()
 
 def main():
@@ -314,6 +315,18 @@ Options:
   --help                 Show help message
 ```
 
+**Note**: The `deploy` subcommand is optional. When deploy-specific flags are used without specifying a subcommand, the CLI automatically defaults to `deploy`:
+
+```bash
+# These are equivalent:
+fabric-cicd -t DataPipeline
+fabric-cicd deploy -t DataPipeline
+
+# Both work:
+fabric-cicd /path/to/workspace --no-cleanup
+fabric-cicd deploy /path/to/workspace --no-cleanup
+```
+
 ### Authentication Management
 
 ```
@@ -327,7 +340,7 @@ Commands:
 
 **Example usage**:
 ```bash
-# Deploy from current directory
+# Deploy from current directory (deploy subcommand is implicit)
 fabric-cicd
 
 # Deploy from specific directory
@@ -336,14 +349,17 @@ fabric-cicd /path/to/workspace
 # Deploy without cleaning up orphaned items
 fabric-cicd --no-cleanup
 
-# Deploy only notebooks and pipelines
-fabric-cicd --item-types Notebook DataPipeline
+# Deploy only notebooks and pipelines (deploy is inferred from -t flag)
+fabric-cicd -t Notebook DataPipeline
 
 # Exclude reports and semantic models
 fabric-cicd --exclude-types Report SemanticModel
 
 # Deploy specific items by name (experimental)
 fabric-cicd --include-items "MyNotebook.Notebook" "MyPipeline.DataPipeline"
+
+# Explicit deploy subcommand also works
+fabric-cicd deploy -t Notebook DataPipeline
 
 # Authentication commands
 fabric-cicd auth list    # Shows current + all available accounts
