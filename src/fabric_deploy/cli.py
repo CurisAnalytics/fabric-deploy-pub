@@ -313,17 +313,23 @@ def main() -> None:
 
     # Handle deployment
     if args.command == "deploy":
-        deployer = FabricDeployer(
-            repo_dir=args.directory,
-            logger_name="fabric_deploy.cli",
-        )
+        try:
+            deployer = FabricDeployer(
+                repo_dir=args.directory,
+                logger_name="fabric_deploy.cli",
+            )
 
-        deployer.deploy(
-            no_cleanup=args.no_cleanup,
-            item_types=args.item_types,
-            exclude_types=args.exclude_types,
-            include_items=args.include_items,
-        )
+            deployer.deploy(
+                no_cleanup=args.no_cleanup,
+                item_types=args.item_types,
+                exclude_types=args.exclude_types,
+                include_items=args.include_items,
+            )
+        except FileNotFoundError as e:
+            print_error(f"\n{e}\n")
+            print("Usage: fabric-cicd [deploy] [DIRECTORY] [OPTIONS]")
+            print("Run 'fabric-cicd -h' for more information.\n")
+            sys.exit(1)
     else:
         print(f"Unknown command: {args.command}", file=sys.stderr)
         sys.exit(1)

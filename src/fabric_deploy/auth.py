@@ -92,72 +92,62 @@ def rename_subscription(subscription_id: str, new_name: str) -> bool:
         text=True,
     )
 
-    if result.returncode != 0:
-        error_msg = result.stderr.strip() if result.stderr else "Unknown error"
+    if result.returncode == 0:
+        # Force refresh account list to show updated name
+        _ = list_accounts(refresh=True)
+        return False  # No account switch was needed
 
-        # Check if error is due to wrong tenant context
-        if (
-            "not found" in error_msg.lower()
-            or "could not find" in error_msg.lower()
-            or "invalidauthenticationtokentenant" in error_msg.lower()
-            or "wrong issuer" in error_msg.lower()
-        ):
-            # Attempt to switch to the subscription first
-            try:
-                print(
-                    f"Subscription not accessible in current context. Switching to {subscription_id}..."
-                )
-                switch_account(subscription_id)
+    error_msg = result.stderr.strip() if result.stderr else "Unknown error"
 
-                # Retry rename after switching
-                retry_result = subprocess.run(
-                    [
-                        *"az account subscription rename --subscription-id".split(),
-                        subscription_id,
-                        "--name",
-                        new_name,
-                    ],
-                    capture_output=True,
-                    text=True,
-                )
+    # Check if error is due to wrong tenant context
+    if (
+        "not found" in error_msg.lower()
+        or "could not find" in error_msg.lower()
+        or "invalidauthenticationtokentenant" in error_msg.lower()
+        or "wrong issuer" in error_msg.lower()
+    ):
+        # Attempt to switch to the subscription first
+        try:
+            print(
+                f"Subscription not accessible in current context. Switching to {subscription_id}..."
+            )
+            switch_account(subscription_id)
 
-                if retry_result.returncode != 0:
-                    retry_error = (
-                        retry_result.stderr.strip()
-                        if retry_result.stderr
-                        else "Unknown error"
-                    )
-                    raise RuntimeError(
-                        f"Failed to rename subscription after switching context.\n{retry_error}\n\n"
-                        f"Common issues:\n"
-                        f"  • Requires Owner permissions (Microsoft.Subscription/rename/action)\n"
-                        f"  • Cannot rename tenant-level accounts\n"
-                        f"  • Check your permissions on this subscription"
-                    )
+            # Retry rename after switching
+            retry_result = subprocess.run(
+                [
+                    *"az account subscription rename --subscription-id".split(),
+                    subscription_id,
+                    "--name",
+                    new_name,
+                ],
+                capture_output=True,
+                text=True,
+            )
 
-                # Force refresh account list to show updated name
-                _ = list_accounts(refresh=True)
-                return True  # Indicate that we switched accounts
+        except subprocess.CalledProcessError as switch_error:
+            raise RuntimeError(
+                f"Failed to switch to subscription {subscription_id}.\n"
+                f"Original error: {error_msg}\n"
+                f"Switch error: {switch_error}"
+            ) from switch_error
 
-            except subprocess.CalledProcessError as switch_error:
-                raise RuntimeError(
-                    f"Failed to switch to subscription {subscription_id}.\n"
-                    f"Original error: {error_msg}\n"
-                    f"Switch error: {switch_error}"
-                ) from switch_error
+        if retry_result.returncode != 0:
+            retry_error = (
+                retry_result.stderr.strip() if retry_result.stderr else "Unknown error"
+            )
+            raise RuntimeError(
+                f"Failed to rename subscription after switching context.\n{retry_error}\n\n"
+                f"Common issues:\n"
+                f"  • Requires Owner permissions (Microsoft.Subscription/rename/action)\n"
+                f"  • Cannot rename tenant-level accounts\n"
+                f"  • Check your permissions on this subscription"
+            )
 
-        # If not a tenant context issue, raise the original error
-        raise RuntimeError(
-            f"Failed to rename subscription.\n{error_msg}\n\n"
-            f"Common issues:\n"
-            f"  • Requires Owner permissions (Microsoft.Subscription/rename/action)\n"
-            f"  • Cannot rename tenant-level accounts\n"
-            f"  • Check your permissions on this subscription"
-        )
-
-    # Force refresh account list to show updated name
-    _ = list_accounts(refresh=True)
-    return False  # No account switch was needed
+        # Force refresh account list to show updated name
+        _ = list_accounts(refresh=True)
+        return True  # Indicate that we switched accounts
+    return False
 
 
 def is_auth_error(error_msg: str) -> bool:
