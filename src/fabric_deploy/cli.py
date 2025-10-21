@@ -14,7 +14,11 @@ from fabric_cicd import (
 from fabric_cicd.constants import ACCEPTED_ITEM_TYPES  # CopyJob, Noteook, Report, &c
 
 from .logging import get_logger, print_header, print_error
-from .auth import list_accounts, get_current_account, switch_account, is_auth_error
+from .auth import (
+    is_auth_error,
+    format_auth_error_message,
+    handle_auth_command,
+)
 
 
 @final
@@ -177,42 +181,8 @@ class FabricDeployer:
 
     def _handle_auth_error(self) -> None:
         """Print helpful auth troubleshooting info."""
-        print_error("\n" + "=" * 80)
-        self.logger.error("Authentication/Authorization Error Detected")
-        print_error("=" * 80)
-
-        try:
-            current = get_current_account()
-            if current:
-                print()
-                self.logger.info("Current account:")
-                self.logger.info(f"\tUser: {current['user']['name']}")
-                self.logger.info(f"\tTenant: {current['tenantId']}")
-                self.logger.info(f"\tSubscription: {current['name']}")
-
-            accounts = list_accounts()
-            if len(accounts) > 1:
-                print()
-                self.logger.info("Available accounts:")
-                for acct in accounts:
-                    marker = " [CURRENT]" if acct.get("isDefault") else ""
-                    self.logger.info(f"  • {acct['name']}{marker}")
-                    self.logger.info(f"    User: {acct['user']['name']}")
-                    self.logger.info(f"    Subscription: {acct['id']}")
-
-                print()
-                self.logger.info("To switch accounts:")
-                self.logger.info("  fabric-cicd auth switch <subscription-id>")
-        except Exception:
-            pass
-
-        print()
-        self.logger.info("Common causes:")
-        self.logger.info(
-            "  • Wrong tenant/subscription (workspace may be in different org)"
-        )
-        self.logger.info("  • Expired token (run: az login)")
-        print_error(f"\n{'=' * 80}\n")
+        error_msg = format_auth_error_message()
+        print_error(error_msg)
 
 
 def parse_args():
@@ -235,14 +205,18 @@ def parse_args():
     auth_subparsers = auth_parser.add_subparsers(
         dest="auth_command", required=True, help="Auth actions"
     )
-    _ = auth_subparsers.add_parser("list", help="List available Azure accounts")
-    _ = auth_subparsers.add_parser("current", help="Show current account")
+    _ = auth_subparsers.add_parser(
+        "list", help="List current and available Azure accounts"
+    )
     switch_parser = auth_subparsers.add_parser(
         "switch", help="Switch to different account"
     )
     _ = switch_parser.add_argument(
         "subscription_id", help="Subscription ID to switch to"
     )
+    rename_parser = auth_subparsers.add_parser("rename", help="Rename a subscription")
+    _ = rename_parser.add_argument("subscription_id", help="Subscription ID to rename")
+    _ = rename_parser.add_argument("name", help="New subscription name")
 
     # Deploy subcommand (default when no subcommand given)
     deploy_parser = subparsers.add_parser(
@@ -291,34 +265,6 @@ def parse_args():
         args = parser.parse_args()
 
     return args
-
-
-def handle_auth_command(args):
-    """Handle auth subcommands."""
-    if args.auth_command == "list":
-        accounts = list_accounts()
-        print(f"\nAvailable accounts ({len(accounts)}):\n")
-        for acct in accounts:
-            marker = " [CURRENT]" if acct.get("isDefault") else ""
-            print(f"{acct['name']}{marker}")
-            print(f"  User: {acct['user']['name']}")
-            print(f"  Tenant: {acct['tenantId']}")
-            print(f"  Subscription: {acct['id']}\n")
-
-    elif args.auth_command == "current":
-        current = get_current_account()
-        if current:
-            print("\nCurrent account:")
-            print(f"  Name: {current['name']}")
-            print(f"  User: {current['user']['name']}")
-            print(f"  Tenant: {current['tenantId']}")
-            print(f"  Subscription: {current['id']}\n")
-        else:
-            print("\nNo default account set.\n")
-
-    elif args.auth_command == "switch":
-        switch_account(args.subscription_id)
-        print(f"\nSwitched to subscription: {args.subscription_id}\n")
 
 
 def main():

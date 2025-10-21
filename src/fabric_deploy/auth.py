@@ -2,6 +2,8 @@
 
 import json
 import subprocess
+import sys
+from argparse import Namespace
 
 # pyright: reportMissingTypeArgument=false, reportUnknownParameterType=false
 
@@ -17,9 +19,17 @@ def run_az(args: list[str]) -> dict | list:
     return json.loads(result.stdout)
 
 
-def list_accounts() -> list[dict]:
-    """List all Azure accounts."""
-    return run_az(["account", "list"])  # pyright: ignore[reportReturnType]
+def list_accounts(refresh: bool = False) -> list[dict]:
+    """
+    List all Azure accounts.
+
+    Args:
+        refresh: If True, force refresh from Azure (slower but current data)
+    """
+    args = ["account", "list"]
+    if refresh:
+        args.append("--refresh")
+    return run_az(args)  # pyright: ignore[reportReturnType]
 
 
 def get_current_account() -> dict | None:
@@ -38,7 +48,211 @@ def switch_account(subscription_id: str) -> None:
     )
 
 
+def rename_subscription(subscription_id: str, new_name: str) -> bool:
+    """
+    Rename an Azure subscription.
+
+    Automatically switches to the subscription if rename fails due to tenant context.
+    Requires Owner permissions on the subscription.
+
+    Returns:
+        True if account was switched during the operation, False otherwise.
+    """
+    result = subprocess.run(
+        [
+            "az",
+            "account",
+            "subscription",
+            "rename",
+            "--subscription-id",
+            subscription_id,
+            "--name",
+            new_name,
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        error_msg = result.stderr.strip() if result.stderr else "Unknown error"
+
+        # Check if error is due to wrong tenant context
+        if (
+            "not found" in error_msg.lower()
+            or "could not find" in error_msg.lower()
+            or "invalidauthenticationtokentenant" in error_msg.lower()
+            or "wrong issuer" in error_msg.lower()
+        ):
+            # Attempt to switch to the subscription first
+            try:
+                print(
+                    f"Subscription not accessible in current context. Switching to {subscription_id}..."
+                )
+                switch_account(subscription_id)
+
+                # Retry rename after switching
+                retry_result = subprocess.run(
+                    [
+                        "az",
+                        "account",
+                        "subscription",
+                        "rename",
+                        "--subscription-id",
+                        subscription_id,
+                        "--name",
+                        new_name,
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+
+                if retry_result.returncode != 0:
+                    retry_error = (
+                        retry_result.stderr.strip()
+                        if retry_result.stderr
+                        else "Unknown error"
+                    )
+                    raise RuntimeError(
+                        f"Failed to rename subscription after switching context.\n{retry_error}\n\n"
+                        f"Common issues:\n"
+                        f"  • Requires Owner permissions (Microsoft.Subscription/rename/action)\n"
+                        f"  • Cannot rename tenant-level accounts\n"
+                        f"  • Check your permissions on this subscription"
+                    )
+
+                # Force refresh account list to show updated name
+                _ = list_accounts(refresh=True)
+                return True  # Indicate that we switched accounts
+
+            except subprocess.CalledProcessError as switch_error:
+                raise RuntimeError(
+                    f"Failed to switch to subscription {subscription_id}.\n"
+                    f"Original error: {error_msg}\n"
+                    f"Switch error: {switch_error}"
+                ) from switch_error
+
+        # If not a tenant context issue, raise the original error
+        raise RuntimeError(
+            f"Failed to rename subscription.\n{error_msg}\n\n"
+            f"Common issues:\n"
+            f"  • Requires Owner permissions (Microsoft.Subscription/rename/action)\n"
+            f"  • Cannot rename tenant-level accounts\n"
+            f"  • Check your permissions on this subscription"
+        )
+
+    # Force refresh account list to show updated name
+    _ = list_accounts(refresh=True)
+    return False  # No account switch was needed
+
+
 def is_auth_error(error_msg: str) -> bool:
     """Check if error is authentication/authorization related."""
     indicators = ["not found", "unauthorized", "forbidden", "401", "403", "404"]
     return any(i in error_msg.lower() for i in indicators)
+
+
+def format_auth_error_message() -> str:
+    """
+    Format helpful authentication error message with current account info.
+
+    Returns:
+        Formatted error message string with account info and troubleshooting tips.
+    """
+    lines = [
+        "\n" + "=" * 80,
+        "Authentication/Authorization Error Detected",
+        "=" * 80,
+    ]
+
+    try:
+        current = get_current_account()
+        if current:
+            lines.extend(
+                [
+                    "",
+                    f"Current: {current['name']} ({current['user']['name']})",
+                ]
+            )
+
+        accounts = list_accounts()
+        if len(accounts) > 1:
+            lines.extend(["", "Available accounts:"])
+            for acct in accounts:
+                marker = " [CURRENT]" if acct.get("isDefault") else ""
+                lines.append(f"  • {acct['name']}{marker}")
+                lines.append(f"    User: {acct['user']['name']}")
+                lines.append(f"    Subscription: {acct['id']}")
+
+            lines.extend(
+                [
+                    "",
+                    "To switch accounts:",
+                    "\tfabric-cicd auth switch <subscription-id>",
+                    "",
+                    "To rename a subscription:",
+                    "\tfabric-cicd auth rename <subscription-id> <new-name>",
+                ]
+            )
+    except Exception:
+        pass
+
+    lines.extend(
+        [
+            "",
+            "Common causes:",
+            "\t• Wrong tenant/subscription (workspace may be in different org)",
+            "\t• Expired token (run: az login)",
+            "",
+            "Helpful commands:",
+            "\t• fabric-cicd auth list   - View current and available accounts",
+            "\t• fabric-cicd auth switch - Switch to different account",
+            "\t• fabric-cicd auth rename - Rename subscription for clarity",
+            "",
+            "=" * 80 + "\n",
+        ]
+    )
+
+    return "\n".join(lines)
+
+
+def handle_auth_command(args: Namespace) -> None:
+    """
+    Handle auth subcommands with formatted output.
+
+    Args:
+        args: Parsed argparse namespace with auth_command attribute
+    """
+    if args.auth_command == "list":
+        current = get_current_account()
+        accounts = list_accounts(refresh=True)
+
+        if current:
+            print("\nCurrent account:")
+            print(f"  Name: {current['name']}")
+            print(f"  User: {current['user']['name']}")
+            print(f"  Tenant: {current['tenantId']}")
+            print(f"  Subscription: {current['id']}\n")
+
+        print(f"Available accounts ({len(accounts)}):\n")
+        for acct in accounts:
+            marker = " [CURRENT]" if acct.get("isDefault") else ""
+            print(f"  • {acct['name']}{marker}")
+            print(f"    User: {acct['user']['name']}")
+            print(f"    Subscription: {acct['id']}\n")
+
+    elif args.auth_command == "switch":
+        switch_account(args.subscription_id)
+        print(f"\nSwitched to subscription: {args.subscription_id}\n")
+
+    elif args.auth_command == "rename":
+        try:
+            switched = rename_subscription(args.subscription_id, args.name)
+            if switched:
+                print(f"\nSwitched to and renamed subscription to: {args.name}\n")
+            else:
+                print(
+                    f"\nRenamed subscription {args.subscription_id} to: {args.name}\n"
+                )
+        except RuntimeError as e:
+            print(f"\nError: {e}\n", file=sys.stderr)
+            sys.exit(1)
