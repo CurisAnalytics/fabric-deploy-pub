@@ -389,6 +389,29 @@ def parse_args() -> argparse.Namespace:
         help='Include only specific items (format: "ItemName.ItemType")',
     )
 
+    # Check if we should inject 'deploy' as default subcommand
+    # This happens when no subcommand is specified but deploy-specific flags are used
+    argv = sys.argv[1:]
+    if argv and not any(cmd in argv for cmd in ["auth", "deploy"]):
+        # Don't inject deploy if only help flag is present (show main help instead)
+        if argv == ["-h"] or argv == ["--help"]:
+            pass
+        else:
+            # Check if any deploy-specific flags are present
+            deploy_flags = {
+                "-n",
+                "--no-cleanup",
+                "-t",
+                "--item-types",
+                "-x",
+                "--exclude-types",
+                "-i",
+                "--include-items",
+            }
+            if any(arg in deploy_flags or not arg.startswith("-") for arg in argv):
+                # Inject 'deploy' as the first argument
+                sys.argv.insert(1, "deploy")
+
     args = parser.parse_args()
 
     # Default to deploy command if no command specified
