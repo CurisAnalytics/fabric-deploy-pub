@@ -13,12 +13,8 @@ from .types import AzureAccount
 def list_accounts(refresh: bool = True) -> list[AzureAccount]:
     """
     List all Azure accounts.
-
-    Args:
-        refresh: If True, force refresh from Azure (slower but current data)
-
-    Returns:
-        List of Azure accounts
+    Args: refresh: If True, force refresh from Azure (slower but current data)
+    Returns: List of Azure accounts
     """
     cmd = ["az", "account", "list", "--output", "json"]
     if refresh:
@@ -30,9 +26,7 @@ def list_accounts(refresh: bool = True) -> list[AzureAccount]:
 def get_current_account() -> AzureAccount | None:
     """
     Get currently active account.
-
-    Returns:
-        Current account or None if no account is set
+    Returns: Current account or None if no account is set
     """
     accounts = list_accounts()
     return next((a for a in accounts if a.get("isDefault")), None)
@@ -41,9 +35,7 @@ def get_current_account() -> AzureAccount | None:
 def switch_account(subscription_id: str) -> None:
     """
     Switch to a different account.
-
-    Args:
-        subscription_id: Subscription ID to switch to
+    subscription_id: Subscription ID to switch to
     """
     _ = subprocess.run(
         ["az", "account", "set", "--subscription", subscription_id],
@@ -55,7 +47,6 @@ def switch_account(subscription_id: str) -> None:
 def rename_subscription(subscription_id: str, new_name: str) -> bool:
     """
     Rename an Azure subscription.
-
     Automatically switches to the subscription if rename fails due to tenant context.
     Requires Owner permissions on the subscription.
 
@@ -63,8 +54,7 @@ def rename_subscription(subscription_id: str, new_name: str) -> bool:
         subscription_id: Subscription ID to rename
         new_name: New name for the subscription
 
-    Returns:
-        True if account was switched during the operation, False otherwise
+    Returns: True if account was switched during the operation, False otherwise
     """
     result = subprocess.run(
         [
@@ -138,12 +128,8 @@ def rename_subscription(subscription_id: str, new_name: str) -> bool:
 def is_auth_error(error_msg: str) -> bool:
     """
     Check if error is authentication/authorization related.
-
-    Args:
-        error_msg: Error message to check
-
-    Returns:
-        True if error is auth-related, False otherwise
+    Args:error_msg: Error message to check
+    Returns: True if error is auth-related, False otherwise
     """
     indicators = ["not found", "unauthorized", "forbidden", "401", "403", "404"]
     return any(i in error_msg.lower() for i in indicators)
@@ -152,9 +138,7 @@ def is_auth_error(error_msg: str) -> bool:
 def handle_auth_command(args: Namespace) -> None:
     """
     Handle auth subcommands with formatted output.
-
-    Args:
-        args: Parsed argparse namespace with auth_command attribute
+    args: Parsed argparse namespace with auth_command attribute
     """
     if args.auth_command == "list":
         from .logging import format_account_list

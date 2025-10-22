@@ -20,7 +20,7 @@ from .logging import get_logger, print_header, print_error, format_auth_error_me
 
 
 @dataclass
-class FabricDeployer:
+class WorkspaceDeployer:
     """
     Main deployer class for Fabric workspace items.
 
@@ -232,6 +232,7 @@ class FabricDeployer:
             exclude_types: Item types to exclude from deployment
             include_items: Include only specific items (format: "ItemName.ItemType")
         """
+        print_header("Fabric CI/CD")
         # Load config if not already loaded
         if not self.workspace_id:
             self._load_config()
@@ -257,7 +258,6 @@ class FabricDeployer:
                 t for t in ACCEPTED_ITEM_TYPES if t not in exclude_types
             ]
 
-        print_header("Contoso  𐧾  Fabric CI/CD")
         self.logger.info(f"Lakehouse name: {self.lakehouse_name}")
         self.logger.info(f"Workspace ID: {self.workspace_id}")
 
@@ -326,7 +326,7 @@ class FabricDeployer:
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        prog="fabric-cicd",
+        prog="fabdep",
         description="Deploy Fabric workspace items - auto-detects configuration from parameter.yml",
         epilog="Run from your Fabric workspace directory.",
     )
@@ -444,7 +444,7 @@ def main() -> None:
     # Handle deployment
     if args.command == "deploy":
         try:
-            deployer = FabricDeployer(
+            deployer = WorkspaceDeployer(
                 repo_dir=args.directory,
                 logger_name="fabric_deploy.cli",
             )
@@ -457,8 +457,8 @@ def main() -> None:
             )
         except FileNotFoundError as e:
             print_error(f"\n{e}\n")
-            print("Usage: fabric-cicd [deploy] [DIRECTORY] [OPTIONS]")
-            print("Run 'fabric-cicd -h' for more information.\n")
+            print("Usage: fabdep [deploy] [DIRECTORY] [OPTIONS]")
+            print("Run 'fabdep -h' for more information.\n")
             sys.exit(1)
     else:
         print(f"Unknown command: {args.command}", file=sys.stderr)

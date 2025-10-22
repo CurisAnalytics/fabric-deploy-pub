@@ -70,13 +70,10 @@ def format_account_list(
 ) -> str:
     """
     Format list of Azure accounts with current marker.
-
     Args:
         accounts: List of Azure account dictionaries
         current_id: Subscription ID of current account (for marking)
-
-    Returns:
-        Formatted string with account information
+    Returns: Formatted string with account information
     """
     lines: list[str] = []
     for acct in accounts:
@@ -94,13 +91,10 @@ def format_auth_error_message(
 ) -> str:
     """
     Format helpful authentication error message with account info.
-
     Args:
         current_account: Current Azure account dict (optional)
         all_accounts: List of all available Azure accounts (optional)
-
-    Returns:
-        Formatted error message string with troubleshooting tips
+    Returns:  Formatted error message string with troubleshooting tips
     """
     lines = [
         "\n" + "=" * 80,
@@ -120,10 +114,10 @@ def format_auth_error_message(
             [
                 "",
                 "To switch accounts:",
-                "\tfabric-cicd auth switch <subscription-id>",
+                "\tfabdep auth switch <subscription-id>",
                 "",
                 "To rename a subscription:",
-                "\tfabric-cicd auth rename <subscription-id> <new-name>",
+                "\tfabdep auth rename <subscription-id> <new-name>",
             ]
         )
 
@@ -132,12 +126,12 @@ def format_auth_error_message(
             "",
             "Common causes:",
             "\t• Wrong tenant/subscription (workspace may be in different org)",
-            "\t• Expired token (run: az login)",
+            "\t• Expired token (run: az login --allow-no-subscriptions)",
             "",
             "Helpful commands:",
-            "\t• fabric-cicd auth list   - View current and available accounts",
-            "\t• fabric-cicd auth switch - Switch to different account",
-            "\t• fabric-cicd auth rename - Rename subscription for clarity",
+            "\t• fabdep auth list   - View current and available accounts",
+            "\t• fabdep auth switch - Switch to different account",
+            "\t• fabdep auth rename - Rename subscription for clarity",
             "",
             "=" * 80 + "\n",
         ]
