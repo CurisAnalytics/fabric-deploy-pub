@@ -99,11 +99,19 @@ This is useful when you want to deploy without parameter replacement (e.g., depl
 
 ## Programmatic Usage
 
+The `WorkspaceDeployer` class (defined in `workspace.py`) can be imported and used in your own Python code:
+
 ```python
 from fabric_deploy import WorkspaceDeployer
 
 deployer = WorkspaceDeployer(repo_dir="/path/to/workspace")
 deployer.deploy()
+
+# With custom options
+deployer.deploy(
+    item_types=["Notebook", "DataPipeline"],
+    no_cleanup=False,
+)
 ```
 
 

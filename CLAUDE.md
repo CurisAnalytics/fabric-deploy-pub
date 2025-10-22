@@ -17,11 +17,11 @@
 fabric-deploy/
 ├── src/fabric_deploy/         # Package directory
 │   ├── __init__.py            # Package initialization, exports WorkspaceDeployer
-│   ├── cli.py                 # WorkspaceDeployer class + CLI entry point
+│   ├── workspace.py           # WorkspaceDeployer class - workspace abstraction
+│   ├── cli.py                 # CLI entry point (parse_args, main)
 │   ├── auth.py                # Azure authentication utilities (az CLI wrapper)
-│   └── logging.py             # Custom logging & console formatting utilities
-├── examples/
-│   └── programmatic_usage.py  # Examples of library usage
+│   ├── logging.py             # Custom logging & console formatting utilities
+│   └── types.py               # Type definitions
 ├── pyproject.toml             # Package configuration, depends on fabric-cicd
 ├── example_parameter.yml      # Example configuration file
 └── README.md                  # Brief usage documentation
@@ -29,7 +29,7 @@ fabric-deploy/
 
 **Key Point**: This package wraps `fabric-cicd` from PyPI, it does not reimplement any functionality.
 
-**Core Class**: `WorkspaceDeployer` is a dataclass that encapsulates all deployment logic and can be used both programmatically and via CLI.
+**Core Class**: `WorkspaceDeployer` is a dataclass in `workspace.py` that encapsulates all deployment logic and can be used both programmatically and via CLI.
 
 ## Usage Pattern
 
@@ -57,9 +57,9 @@ fabdep  # Auto-detects workspace_id and environment from parameter.yml
 ## Deployment Flow
 
 ### CLI Flow
-1. `parse_args()` parses command-line arguments
-2. `main()` creates `WorkspaceDeployer` dataclass instance with custom logger name
-3. `WorkspaceDeployer.deploy()` orchestrates deployment
+1. `cli.py`: `parse_args()` parses command-line arguments
+2. `cli.py`: `main()` creates `WorkspaceDeployer` dataclass instance with custom logger name
+3. `workspace.py`: `WorkspaceDeployer.deploy()` orchestrates deployment
 
 ### WorkspaceDeployer.deploy() Flow
 1. Checks if `workspace_id` is set; if not, calls `_load_config()` which:
@@ -234,7 +234,8 @@ def main():
 
 ### Key Components
 
-**`WorkspaceDeployer` Dataclass**
+**`workspace.py` - Workspace abstraction module**
+Contains the `WorkspaceDeployer` dataclass:
 - Main dataclass encapsulating all deployment logic
 - Dataclass fields: `repo_dir` (required), `logger_name` (optional)
 - Configuration attributes: `workspace_id`, `environment`, `lakehouse_name` (populated by `_load_config()`)
@@ -271,6 +272,8 @@ def main():
 - Accepts filtering arguments: `no_cleanup`, `item_types`, `exclude_types`, `include_items`
 - Orchestrates the entire deployment workflow
 
+**`cli.py` - CLI interface module**
+
 **`parse_args() -> argparse.Namespace`**
 - Configures argument parser with all CLI options
 - Returns parsed arguments
@@ -280,6 +283,8 @@ def main():
 - CLI entry point
 - Creates `WorkspaceDeployer` dataclass instance with custom logger name
 - Calls `deploy()` with parsed arguments
+
+
 
 ## Microsoft's fabric-cicd Package
 
@@ -450,7 +455,7 @@ cd /path/to/workspace
 fabdep --no-cleanup
 ```
 
-See `examples/programmatic_usage.py` for programmatic usage examples.
+The `WorkspaceDeployer` class is defined in `workspace.py` and can be imported directly for programmatic use.
 
 ## Programmatic Usage
 
@@ -487,14 +492,13 @@ print(deployer == deployer2)  # True (if same repo_dir and logger_name)
 ```
 
 **Benefits:**
+- Clear separation: workspace abstraction (`workspace.py`) vs CLI interface (`cli.py`)
 - Dataclass provides automatic `__repr__()`, `__eq__()`, and field introspection
 - Lazy loading: no I/O during initialization
 - Custom logging namespaces for better observability
 - Programmatic control over deployment logic
 - Access to configuration before deployment via `_load_config()` and `_detect_lakehouse()`
 - Integration into larger automation workflows
-
-See `examples/programmatic_usage.py` for more examples.
 
 ## Related
 
