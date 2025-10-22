@@ -2,12 +2,8 @@
 
 import json
 import subprocess
-import sys
-from argparse import Namespace
 
 from .types import AzureAccount
-
-# pyright: reportMissingTypeArgument=false, reportUnknownParameterType=false
 
 
 def list_accounts(refresh: bool = True) -> list[AzureAccount]:
@@ -123,53 +119,3 @@ def rename_subscription(subscription_id: str, new_name: str) -> bool:
         _ = list_accounts(refresh=True)
         return True  # Indicate that we switched accounts
     return False
-
-
-def is_auth_error(error_msg: str) -> bool:
-    """
-    Check if error is authentication/authorization related.
-    Args:error_msg: Error message to check
-    Returns: True if error is auth-related, False otherwise
-    """
-    indicators = ["not found", "unauthorized", "forbidden", "401", "403", "404"]
-    return any(i in error_msg.lower() for i in indicators)
-
-
-def handle_auth_command(args: Namespace) -> None:
-    """
-    Handle auth subcommands with formatted output.
-    args: Parsed argparse namespace with auth_command attribute
-    """
-    if args.auth_command == "list":
-        from .logging import format_account_list
-
-        current = get_current_account()
-        accounts = list_accounts(refresh=True)
-
-        if current:
-            print("\nCurrent account:")
-            print(f"  Name: {current['name']}")
-            print(f"  User: {current['user']['name']}")
-            print(f"  Tenant: {current['tenantId']}")
-            print(f"  Subscription: {current['id']}\n")
-
-        print(f"Available accounts ({len(accounts)}):\n")
-        print(format_account_list(accounts))
-        print()
-
-    elif args.auth_command == "switch":
-        switch_account(args.subscription_id)
-        print(f"\nSwitched to subscription: {args.subscription_id}\n")
-
-    elif args.auth_command == "rename":
-        try:
-            switched = rename_subscription(args.subscription_id, args.name)
-            if switched:
-                print(f"\nSwitched to and renamed subscription to: {args.name}\n")
-            else:
-                print(
-                    f"\nRenamed subscription {args.subscription_id} to: {args.name}\n"
-                )
-        except RuntimeError as e:
-            print(f"\nError: {e}\n", file=sys.stderr)
-            sys.exit(1)

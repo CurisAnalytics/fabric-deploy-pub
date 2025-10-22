@@ -4,8 +4,14 @@ import argparse
 import sys
 from pathlib import Path
 
-from .auth import handle_auth_command
-from .logging import print_error
+from .auth import (
+    get_current_account,
+    list_accounts,
+    rename_subscription,
+    switch_account,
+)
+from .logging import format_account_list, print_error
+from .rename import rename_items_by_display_name
 from .workspace import WorkspaceDeployer
 
 
@@ -42,6 +48,26 @@ def parse_args() -> argparse.Namespace:
     rename_parser = auth_subparsers.add_parser("rename", help="Rename a subscription")
     _ = rename_parser.add_argument("subscription_id", help="Subscription ID to rename")
     _ = rename_parser.add_argument("name", help="New subscription name")
+
+    # Rename subcommand
+    rename_items_parser = subparsers.add_parser(
+        "rename",
+        help="Rename workspace item directories to match display names",
+        description="Rename workspace item directories based on their .platform displayName metadata",
+    )
+    _ = rename_items_parser.add_argument(
+        "directory",
+        nargs="?",
+        default=".",
+        type=Path,
+        help="Workspace directory (defaults to current directory)",
+    )
+    _ = rename_items_parser.add_argument(
+        "--execute",
+        "-e",
+        action="store_true",
+        help="Actually perform renames (default is dry-run)",
+    )
 
     # Deploy subcommand (default)
     deploy_parser = subparsers.add_parser(
@@ -84,7 +110,7 @@ def parse_args() -> argparse.Namespace:
     # Check if we should inject 'deploy' as default subcommand
     # This happens when no subcommand is specified but deploy-specific flags are used
     argv = sys.argv[1:]
-    if argv and not any(cmd in argv for cmd in ["auth", "deploy"]):
+    if argv and not any(cmd in argv for cmd in ["auth", "deploy", "rename"]):
         # Don't inject deploy if only help flag is present (show main help instead)
         if argv == ["-h"] or argv == ["--help"]:
             pass
@@ -118,30 +144,101 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def main() -> None:
-    """CLI entry point."""
-    args = parse_args()
-    # Handle subcommands
-    if args.command == "auth":
-        handle_auth_command(args)
-        return
-    elif args.command == "deploy":
+def handle_auth_command(args: argparse.Namespace) -> None:
+    """Handle auth subcommand execution."""
+    if args.auth_command == "list":
+        # List current and all available accounts
         try:
-            deployer = WorkspaceDeployer(
-                repo_dir=args.directory,
-                logger_name="fabric_deploy.cli",
+            current_account = get_current_account()
+            all_accounts = list_accounts()
+
+            output = format_account_list(
+                all_accounts, current_account["id"] if current_account else None
             )
-        except FileNotFoundError as e:
-            print_error(f"\n{e}\n")
-            print("Usage: fabdep [OPTIONS]")
-            print("Run 'fabdep -h' for more information.\n")
+            print(output)
+        except Exception as e:
+            print_error(f"Failed to list accounts: {e}")
             sys.exit(1)
+
+    elif args.auth_command == "switch":
+        # Switch to different subscription
+        try:
+            switch_account(args.subscription_id)
+            print(f"\n✓ Switched to subscription: {args.subscription_id}\n")
+        except Exception as e:
+            print_error(f"\nFailed to switch account: {e}\n")
+            sys.exit(1)
+
+    elif args.auth_command == "rename":
+        # Rename subscription (auto-switches if needed)
+        try:
+            switched = rename_subscription(args.subscription_id, args.name)
+            if switched:
+                print(
+                    f"\n✓ Switched to and renamed subscription to: {args.name} ({args.subscription_id})\n"
+                )
+            else:
+                print(
+                    f"\n✓ Renamed subscription to: {args.name} ({args.subscription_id})\n"
+                )
+        except Exception as e:
+            print_error(f"\nFailed to rename subscription: {e}\n")
+            sys.exit(1)
+
+
+def handle_rename_command(args: argparse.Namespace) -> None:
+    """Handle rename subcommand execution."""
+    try:
+        rename_items_by_display_name(
+            repo_dir=args.directory,
+            dry_run=not args.execute,
+        )
+    except FileNotFoundError as e:
+        print_error(f"\n{e}\n")
+        print("Usage: fabdep rename [DIRECTORY] [OPTIONS]")
+        print("Run 'fabdep rename -h' for more information.\n")
+        sys.exit(1)
+    except Exception as e:
+        print_error(f"\nRename failed: {e}\n")
+        sys.exit(1)
+
+
+def handle_deploy_command(args: argparse.Namespace) -> None:
+    """Handle deploy subcommand execution."""
+    try:
+        deployer = WorkspaceDeployer(
+            repo_dir=args.directory,
+            logger_name="fabric_deploy.cli",
+        )
+    except FileNotFoundError as e:
+        print_error(f"\n{e}\n")
+        print("Usage: fabdep [OPTIONS]")
+        print("Run 'fabdep -h' for more information.\n")
+        sys.exit(1)
+
+    try:
         deployer.deploy(
             no_cleanup=args.no_cleanup,
             item_types=args.item_types,
             exclude_types=args.exclude_types,
             include_items=args.include_items,
         )
+    except Exception as e:
+        print_error(f"\nDeployment failed: {e}\n")
+        sys.exit(1)
+
+
+def main() -> None:
+    """CLI entry point - routes to appropriate command handler."""
+    args = parse_args()
+
+    # Route to appropriate handler
+    if args.command == "auth":
+        handle_auth_command(args)
+    elif args.command == "rename":
+        handle_rename_command(args)
+    elif args.command == "deploy":
+        handle_deploy_command(args)
     else:
-        print(f"Unknown command: {args.command}", file=sys.stderr)
+        print_error(f"Unknown command: {args.command}")
         sys.exit(1)

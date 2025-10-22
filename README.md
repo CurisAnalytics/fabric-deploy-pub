@@ -23,7 +23,9 @@ fabdep
 
 **Requirements**: `parameter.yml` must exist in workspace directory.
 
-## CLI Options
+## CLI Commands
+
+### Deploy (default)
 
 ```bash
 fabdep [deploy] [DIRECTORY] [OPTIONS]
@@ -43,7 +45,32 @@ fabdep -t DataPipeline
 fabdep deploy -t DataPipeline
 ```
 
-## Authentication
+### Rename Items
+
+Rename workspace item directories to match their display names from `.platform` metadata:
+
+```bash
+fabdep rename [DIRECTORY] [OPTIONS]
+
+Options:
+  --execute, -e          Actually perform renames (default is dry-run)
+```
+
+**Example usage**:
+```bash
+# Preview what would be renamed (dry-run)
+fabdep rename
+
+# Actually perform the renames
+fabdep rename --execute
+
+# Rename items in specific directory
+fabdep rename /path/to/workspace -e
+```
+
+This utility searches for all `.platform` files in the workspace and renames their parent directories to use lowercase, underscore-separated versions of the display names. By default, it runs in dry-run mode to preview changes before applying them.
+
+### Authentication
 
 Manage Azure accounts for Fabric deployments:
 
@@ -99,11 +126,12 @@ This is useful when you want to deploy without parameter replacement (e.g., depl
 
 ## Programmatic Usage
 
-The `WorkspaceDeployer` class (defined in `workspace.py`) can be imported and used in your own Python code:
+Both `WorkspaceDeployer` and `rename_items_by_display_name` can be imported and used in your own Python code:
 
 ```python
-from fabric_deploy import WorkspaceDeployer
+from fabric_deploy import WorkspaceDeployer, rename_items_by_display_name
 
+# Deploy workspace items
 deployer = WorkspaceDeployer(repo_dir="/path/to/workspace")
 deployer.deploy()
 
@@ -111,6 +139,12 @@ deployer.deploy()
 deployer.deploy(
     item_types=["Notebook", "DataPipeline"],
     no_cleanup=False,
+)
+
+# Rename items to match display names
+rename_items_by_display_name(
+    repo_dir="/path/to/workspace",
+    dry_run=True,  # Set to False to actually rename
 )
 ```
 

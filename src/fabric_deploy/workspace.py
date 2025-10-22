@@ -15,7 +15,7 @@ from fabric_cicd import (
 )
 from fabric_cicd.constants import ACCEPTED_ITEM_TYPES
 
-from .auth import is_auth_error, list_accounts, get_current_account
+from .auth import list_accounts, get_current_account
 from .logging import get_logger, print_header, print_error, format_auth_error_message
 
 
@@ -305,18 +305,14 @@ class WorkspaceDeployer:
             print()
 
         except Exception as e:
-            error_msg = str(e)
-            if is_auth_error(error_msg):
-                self._handle_auth_error()
+            indicators = ("not found", "unauthorized", "forbidden", "401", "403", "404")
+            if any(i in str(e).lower() for i in indicators):
+                try:
+                    current = get_current_account()
+                    accounts = list_accounts()
+                    error_msg = format_auth_error_message(current, accounts)
+                except Exception:
+                    # Fallback if account fetching fails
+                    error_msg = format_auth_error_message()
+                print_error(error_msg)
             raise
-
-    def _handle_auth_error(self) -> None:
-        """Print helpful auth troubleshooting info."""
-        try:
-            current = get_current_account()
-            accounts = list_accounts()
-            error_msg = format_auth_error_message(current, accounts)
-        except Exception:
-            # Fallback if account fetching fails
-            error_msg = format_auth_error_message()
-        print_error(error_msg)
