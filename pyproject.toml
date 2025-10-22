@@ -1,5 +1,5 @@
 [project]
-name = "fabric-deploy-cli"
+name = "fabric-deploy"
 version = "0.1.0"
 description = "CLI tool for Microsoft Fabric workspace deployments"
 readme = "README.md"
@@ -10,7 +10,7 @@ dependencies = [
 ]
 
 [project.scripts]
-fabdep = "fabric_deploy_cli.cli:main"
+fabdep = "fabric_deploy.cli:main"
 
 [build-system]
 requires = ["uv_build"]

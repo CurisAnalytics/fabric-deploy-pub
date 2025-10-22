@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-`fabric-deploy-cli` is a **thin CLI wrapper** around Microsoft's official [`fabric-cicd`](https://github.com/microsoft/fabric-cicd) package. It auto-detects workspace configuration from `parameter.yml` files, eliminating per-workspace `cicd.py` scripts.
+`fabric-deploy` is a **thin CLI wrapper** around Microsoft's official [`fabric-cicd`](https://github.com/microsoft/fabric-cicd) package. It auto-detects workspace configuration from `parameter.yml` files, eliminating per-workspace `cicd.py` scripts.
 
 ## Purpose
 
@@ -14,8 +14,8 @@
 ## Architecture
 
 ```
-fabric-deploy-cli/
-├── src/fabric_deploy_cli/     # Package directory
+fabric-deploy/
+├── src/fabric_deploy/         # Package directory
 │   ├── __init__.py            # Package initialization, exports WorkspaceDeployer
 │   ├── cli.py                 # WorkspaceDeployer class + CLI entry point
 │   ├── auth.py                # Azure authentication utilities (az CLI wrapper)
@@ -49,7 +49,7 @@ unpublish_all_orphan_items(target_workspace, lakehouse_name)
 
 **New way** (CLI wrapper):
 ```bash
-pip install fabric-deploy-cli  # Installs Microsoft's fabric-cicd as dependency
+pip install fabric-deploy  # Installs Microsoft's fabric-cicd as dependency
 cd path/to/workspace
 fabdep  # Auto-detects workspace_id and environment from parameter.yml
 ```
@@ -222,7 +222,7 @@ def main():
     args = parse_args()
     deployer = WorkspaceDeployer(
         repo_dir=args.directory,
-        logger_name="fabric_deploy_cli.cli"
+        logger_name="fabric_deploy.cli"
     )
     deployer.deploy(
         no_cleanup=args.no_cleanup,
@@ -457,7 +457,7 @@ See `examples/programmatic_usage.py` for programmatic usage examples.
 The `WorkspaceDeployer` dataclass can be imported and used in your own Python code:
 
 ```python
-from fabric_deploy_cli import WorkspaceDeployer
+from fabric_deploy import WorkspaceDeployer
 
 # Basic deployment
 deployer = WorkspaceDeployer(

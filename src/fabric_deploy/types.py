@@ -1,4 +1,4 @@
-"""Type definitions for fabric-deploy-cli."""
+"""Type definitions for fabric-deploy."""
 
 from typing import TypedDict
 
