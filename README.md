@@ -100,7 +100,7 @@ This is useful when you want to deploy without parameter replacement (e.g., depl
 ## Programmatic Usage
 
 ```python
-from fabric_deploy import WorkspaceDeployer
+from fabric_deploy_cli import WorkspaceDeployer
 
 deployer = WorkspaceDeployer(repo_dir="/path/to/workspace")
 deployer.deploy()

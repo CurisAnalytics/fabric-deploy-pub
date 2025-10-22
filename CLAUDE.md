@@ -15,7 +15,7 @@
 
 ```
 fabric-deploy-cli/
-├── src/fabric_deploy/     # Package directory
+├── src/fabric_deploy_cli/     # Package directory
 │   ├── __init__.py            # Package initialization, exports WorkspaceDeployer
 │   ├── cli.py                 # WorkspaceDeployer class + CLI entry point
 │   ├── auth.py                # Azure authentication utilities (az CLI wrapper)
@@ -222,7 +222,7 @@ def main():
     args = parse_args()
     deployer = WorkspaceDeployer(
         repo_dir=args.directory,
-        logger_name="fabric_deploy.cli"
+        logger_name="fabric_deploy_cli.cli"
     )
     deployer.deploy(
         no_cleanup=args.no_cleanup,
@@ -457,7 +457,7 @@ See `examples/programmatic_usage.py` for programmatic usage examples.
 The `WorkspaceDeployer` dataclass can be imported and used in your own Python code:
 
 ```python
-from fabric_deploy import WorkspaceDeployer
+from fabric_deploy_cli import WorkspaceDeployer
 
 # Basic deployment
 deployer = WorkspaceDeployer(
