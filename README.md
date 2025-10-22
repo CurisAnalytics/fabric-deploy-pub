@@ -1,4 +1,4 @@
-# fabric-deploy-cli
+# fabric-deploy
 
 CLI wrapper around Microsoft's [fabric-cicd](https://github.com/microsoft/fabric-cicd) that auto-detects workspace configuration from `parameter.yml`.
 
@@ -8,7 +8,7 @@ Install in editable mode:
 
 ```bash
 git clone <repository-url>
-cd fabric-deploy-cli
+cd fabric-deploy
 pip install -e .
 ```
 
@@ -100,7 +100,7 @@ This is useful when you want to deploy without parameter replacement (e.g., depl
 ## Programmatic Usage
 
 ```python
-from fabric_deploy_cli import WorkspaceDeployer
+from fabric_deploy import WorkspaceDeployer
 
 deployer = WorkspaceDeployer(repo_dir="/path/to/workspace")
 deployer.deploy()
