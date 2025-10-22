@@ -1,4 +1,4 @@
-# fabric-deploy
+# fabric-deploy-cli
 
 CLI wrapper around Microsoft's [fabric-cicd](https://github.com/microsoft/fabric-cicd) that auto-detects workspace configuration from `parameter.yml`.
 
@@ -8,7 +8,7 @@ Install in editable mode:
 
 ```bash
 git clone <repository-url>
-cd fabric-deploy
+cd fabric-deploy-cli
 pip install -e .
 ```
 
@@ -18,7 +18,7 @@ Changes to the source code will be immediately reflected without reinstalling.
 
 ```bash
 cd path/to/workspace
-fabric-cicd
+fabdep
 ```
 
 **Requirements**: `parameter.yml` must exist in workspace directory.
@@ -26,7 +26,7 @@ fabric-cicd
 ## CLI Options
 
 ```bash
-fabric-cicd [deploy] [DIRECTORY] [OPTIONS]
+fabdep [deploy] [DIRECTORY] [OPTIONS]
 
 Options:
   --no-cleanup, -n       Skip unpublishing orphaned items
@@ -39,8 +39,8 @@ The `deploy` subcommand is optional and defaults when deploy-specific options ar
 
 ```bash
 # These are equivalent:
-fabric-cicd -t DataPipeline
-fabric-cicd deploy -t DataPipeline
+fabdep -t DataPipeline
+fabdep deploy -t DataPipeline
 ```
 
 ## Authentication
@@ -49,17 +49,17 @@ Manage Azure accounts for Fabric deployments:
 
 ```bash
 # List current and available accounts
-fabric-cicd auth list
+fabdep auth list
 
 # Switch to different account
-fabric-cicd auth switch <subscription-id>
+fabdep auth switch <subscription-id>
 
 # Rename a subscription (requires Owner permissions)
 # Automatically switches to the subscription if needed
-fabric-cicd auth rename <subscription-id> <new-name>
+fabdep auth rename <subscription-id> <new-name>
 ```
 
-**Common issue**: If deployment fails with "workspace not found", you may be authenticated to the wrong tenant. Use `fabric-cicd auth list` to see current and available accounts, then `fabric-cicd auth switch` to change. Add a new tenant with `az login`.
+**Common issue**: If deployment fails with "workspace not found", you may be authenticated to the wrong tenant. Use `fabdep auth list` to see current and available accounts, then `fabdep auth switch` to change. Add a new tenant with `az login --allow-no-subscriptions`.
 
 
 ## Configuration
@@ -100,9 +100,9 @@ This is useful when you want to deploy without parameter replacement (e.g., depl
 ## Programmatic Usage
 
 ```python
-from fabric_deploy import FabricDeployer
+from fabric_deploy import WorkspaceDeployer
 
-deployer = FabricDeployer(repo_dir="/path/to/workspace")
+deployer = WorkspaceDeployer(repo_dir="/path/to/workspace")
 deployer.deploy()
 ```
 

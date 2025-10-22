@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-`fabric-deploy` is a **thin CLI wrapper** around Microsoft's official [`fabric-cicd`](https://github.com/microsoft/fabric-cicd) package. It auto-detects workspace configuration from `parameter.yml` files, eliminating per-workspace `cicd.py` scripts.
+`fabric-deploy-cli` is a **thin CLI wrapper** around Microsoft's official [`fabric-cicd`](https://github.com/microsoft/fabric-cicd) package. It auto-detects workspace configuration from `parameter.yml` files, eliminating per-workspace `cicd.py` scripts.
 
 ## Purpose
 
@@ -14,10 +14,10 @@
 ## Architecture
 
 ```
-fabric-deploy/
+fabric-deploy-cli/
 ├── src/fabric_deploy/     # Package directory
-│   ├── __init__.py            # Package initialization, exports FabricDeployer
-│   ├── cli.py                 # FabricDeployer class + CLI entry point
+│   ├── __init__.py            # Package initialization, exports WorkspaceDeployer
+│   ├── cli.py                 # WorkspaceDeployer class + CLI entry point
 │   ├── auth.py                # Azure authentication utilities (az CLI wrapper)
 │   └── logging.py             # Custom logging & console formatting utilities
 ├── examples/
@@ -29,7 +29,7 @@ fabric-deploy/
 
 **Key Point**: This package wraps `fabric-cicd` from PyPI, it does not reimplement any functionality.
 
-**Core Class**: `FabricDeployer` is a dataclass that encapsulates all deployment logic and can be used both programmatically and via CLI.
+**Core Class**: `WorkspaceDeployer` is a dataclass that encapsulates all deployment logic and can be used both programmatically and via CLI.
 
 ## Usage Pattern
 
@@ -49,19 +49,19 @@ unpublish_all_orphan_items(target_workspace, lakehouse_name)
 
 **New way** (CLI wrapper):
 ```bash
-pip install fabric-deploy  # Installs Microsoft's fabric-cicd as dependency
+pip install fabric-deploy-cli  # Installs Microsoft's fabric-cicd as dependency
 cd path/to/workspace
-fabric-cicd  # Auto-detects workspace_id and environment from parameter.yml
+fabdep  # Auto-detects workspace_id and environment from parameter.yml
 ```
 
 ## Deployment Flow
 
 ### CLI Flow
 1. `parse_args()` parses command-line arguments
-2. `main()` creates `FabricDeployer` dataclass instance with custom logger name
-3. `FabricDeployer.deploy()` orchestrates deployment
+2. `main()` creates `WorkspaceDeployer` dataclass instance with custom logger name
+3. `WorkspaceDeployer.deploy()` orchestrates deployment
 
-### FabricDeployer.deploy() Flow
+### WorkspaceDeployer.deploy() Flow
 1. Checks if `workspace_id` is set; if not, calls `_load_config()` which:
    - Calls `_validate_and_handle_parameter_file()` to check for invalid parameter files
    - Automatically renames invalid parameter files to `.bak` extension
@@ -80,7 +80,7 @@ fabric-cicd  # Auto-detects workspace_id and environment from parameter.yml
 ## What This Package Does
 
 ### ✅ Provides
-- CLI interface (`fabric-cicd` command)
+- CLI interface (`fabdep` command)
 - Auto-detection from `parameter.yml`
 - Lakehouse name detection from `.platform` files
 - User-friendly output formatting
@@ -161,8 +161,8 @@ This file would be automatically renamed to `parameter.yml.bak`, and deployment 
 
 ## Implementation Details
 
-### FabricDeployer Dataclass
-The main deployment logic is encapsulated in the `FabricDeployer` dataclass:
+### WorkspaceDeployer Dataclass
+The main deployment logic is encapsulated in the `WorkspaceDeployer` dataclass:
 
 ```python
 # cli.py
@@ -170,7 +170,7 @@ from dataclasses import dataclass, field
 from fabric_cicd import FabricWorkspace, publish_all_items, unpublish_all_orphan_items
 
 @dataclass
-class FabricDeployer:
+class WorkspaceDeployer:
     """Main deployer class for Fabric workspace items."""
     
     repo_dir: Path | str
@@ -220,7 +220,7 @@ def parse_args():
 def main():
     """CLI entry point."""
     args = parse_args()
-    deployer = FabricDeployer(
+    deployer = WorkspaceDeployer(
         repo_dir=args.directory,
         logger_name="fabric_deploy.cli"
     )
@@ -234,39 +234,39 @@ def main():
 
 ### Key Components
 
-**`FabricDeployer` Dataclass**
+**`WorkspaceDeployer` Dataclass**
 - Main dataclass encapsulating all deployment logic
 - Dataclass fields: `repo_dir` (required), `logger_name` (optional)
 - Configuration attributes: `workspace_id`, `environment`, `lakehouse_name` (populated by `_load_config()`)
 - Private fields: `_repo_dir_resolved`, `logger` (initialized in `__post_init__()`)
 - Provides automatic `__repr__()`, `__eq__()`, and field introspection
 
-**`FabricDeployer._load_config() -> None`**
+**`WorkspaceDeployer._load_config() -> None`**
 - Private method to load and validate workspace configuration
 - Calls `_validate_and_handle_parameter_file()` to check for invalid parameter files
 - Calls `_extract_config_from_parameters()` to extract workspace ID and environment
 - Sets `self.workspace_id` and `self.environment`
 - Automatically called by `deploy()` if `workspace_id` is not set
 
-**`FabricDeployer._validate_and_handle_parameter_file(param_file: Path) -> None`**
+**`WorkspaceDeployer._validate_and_handle_parameter_file(param_file: Path) -> None`**
 - Validates parameter file for common invalid scenarios
 - Detects duplicate `find_value` entries
 - Detects blank/empty destination values in `replace_value`
 - Automatically renames invalid files to `.bak` extension
 - Logs warning messages explaining validation failures
 
-**`FabricDeployer._extract_config_from_parameters(param_file: Path) -> tuple[str, str]`**
+**`WorkspaceDeployer._extract_config_from_parameters(param_file: Path) -> tuple[str, str]`**
 - Reads `parameter.yml` and extracts workspace ID and environment
 - Validates that all `replace_value` entries use the same environment key
 - Returns tuple of `(workspace_id, environment)`
 
-**`FabricDeployer._detect_lakehouse() -> None`**
+**`WorkspaceDeployer._detect_lakehouse() -> None`**
 - Searches for `*.Lakehouse` directories
 - Reads `.platform` metadata file to extract `displayName`
 - Sets `self.lakehouse_name` for orphan cleanup exclusions
 - Automatically called by `deploy()` if `lakehouse_name` is not set
 
-**`FabricDeployer.deploy(...) -> None`**
+**`WorkspaceDeployer.deploy(...) -> None`**
 - Main public method for deployment
 - Accepts filtering arguments: `no_cleanup`, `item_types`, `exclude_types`, `include_items`
 - Orchestrates the entire deployment workflow
@@ -278,7 +278,7 @@ def main():
 
 **`main() -> None`**
 - CLI entry point
-- Creates `FabricDeployer` dataclass instance with custom logger name
+- Creates `WorkspaceDeployer` dataclass instance with custom logger name
 - Calls `deploy()` with parsed arguments
 
 ## Microsoft's fabric-cicd Package
@@ -302,7 +302,7 @@ def main():
 ### Deployment (default command)
 
 ```
-fabric-cicd [deploy] [DIRECTORY] [OPTIONS]
+fabdep [deploy] [DIRECTORY] [OPTIONS]
 
 Arguments:
   DIRECTORY              Path to workspace directory (default: current directory)
@@ -319,18 +319,18 @@ Options:
 
 ```bash
 # These are equivalent:
-fabric-cicd -t DataPipeline
-fabric-cicd deploy -t DataPipeline
+fabdep -t DataPipeline
+fabdep deploy -t DataPipeline
 
 # Both work:
-fabric-cicd /path/to/workspace --no-cleanup
-fabric-cicd deploy /path/to/workspace --no-cleanup
+fabdep /path/to/workspace --no-cleanup
+fabdep deploy /path/to/workspace --no-cleanup
 ```
 
 ### Authentication Management
 
 ```
-fabric-cicd auth <command>
+fabdep auth <command>
 
 Commands:
   list                   List current and all available Azure accounts
@@ -341,30 +341,30 @@ Commands:
 **Example usage**:
 ```bash
 # Deploy from current directory (deploy subcommand is implicit)
-fabric-cicd
+fabdep
 
 # Deploy from specific directory
-fabric-cicd /path/to/workspace
+fabdep /path/to/workspace
 
 # Deploy without cleaning up orphaned items
-fabric-cicd --no-cleanup
+fabdep --no-cleanup
 
 # Deploy only notebooks and pipelines (deploy is inferred from -t flag)
-fabric-cicd -t Notebook DataPipeline
+fabdep -t Notebook DataPipeline
 
 # Exclude reports and semantic models
-fabric-cicd --exclude-types Report SemanticModel
+fabdep --exclude-types Report SemanticModel
 
 # Deploy specific items by name (experimental)
-fabric-cicd --include-items "MyNotebook.Notebook" "MyPipeline.DataPipeline"
+fabdep --include-items "MyNotebook.Notebook" "MyPipeline.DataPipeline"
 
 # Explicit deploy subcommand also works
-fabric-cicd deploy -t Notebook DataPipeline
+fabdep deploy -t Notebook DataPipeline
 
 # Authentication commands
-fabric-cicd auth list    # Shows current + all available accounts
-fabric-cicd auth switch xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-fabric-cicd auth rename xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx "Production Subscription"  # Auto-switches if needed
+fabdep auth list    # Shows current + all available accounts
+fabdep auth switch xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+fabdep auth rename xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx "Production Subscription"  # Auto-switches if needed
 ```
 
 ## Authentication Module
@@ -447,20 +447,20 @@ pip install -e .
 
 # Test CLI
 cd /path/to/workspace
-fabric-cicd --no-cleanup
+fabdep --no-cleanup
 ```
 
 See `examples/programmatic_usage.py` for programmatic usage examples.
 
 ## Programmatic Usage
 
-The `FabricDeployer` dataclass can be imported and used in your own Python code:
+The `WorkspaceDeployer` dataclass can be imported and used in your own Python code:
 
 ```python
-from fabric_deploy import FabricDeployer
+from fabric_deploy import WorkspaceDeployer
 
 # Basic deployment
-deployer = FabricDeployer(
+deployer = WorkspaceDeployer(
     repo_dir="/path/to/workspace",
     logger_name="my_app.fabric_deployment",
 )
@@ -482,7 +482,7 @@ print(f"Lakehouse: {deployer.lakehouse_name}")
 
 # Dataclass benefits: clean repr and equality
 print(deployer)  # Shows all field values
-deployer2 = FabricDeployer(repo_dir="/path/to/workspace")
+deployer2 = WorkspaceDeployer(repo_dir="/path/to/workspace")
 print(deployer == deployer2)  # True (if same repo_dir and logger_name)
 ```
 
@@ -527,6 +527,6 @@ See `examples/programmatic_usage.py` for more examples.
 - Fix the parameter file and rename back to `.yml` to restore parameter replacement
 
 **Authentication/Authorization Errors**
-- Run `fabric-cicd auth list` to see current and all available accounts
-- Switch accounts with `fabric-cicd auth switch <subscription-id>`
+- Run `fabdep auth list` to see current and all available accounts
+- Switch accounts with `fabdep auth switch <subscription-id>`
 - Workspace may be in a different tenant than your current authentication
