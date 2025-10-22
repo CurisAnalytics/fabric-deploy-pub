@@ -16,11 +16,12 @@
 ```
 fabric-deploy/
 ├── src/fabric_deploy/         # Package directory
-│   ├── __init__.py            # Package initialization, exports WorkspaceDeployer
-│   ├── workspace.py           # WorkspaceDeployer class - workspace abstraction
-│   ├── cli.py                 # CLI entry point (parse_args, main)
-│   ├── auth.py                # Azure authentication utilities (az CLI wrapper)
+│   ├── __init__.py            # Package initialization, exports WorkspaceDeployer & rename_items_by_display_name
+│   ├── workspace.py           # WorkspaceDeployer class - deployment business logic
+│   ├── cli.py                 # ALL CLI logic - parsers, handlers, user-facing text
+│   ├── auth.py                # Azure auth utilities - business logic only
 │   ├── logging.py             # Custom logging & console formatting utilities
+│   ├── rename.py              # Rename utility - business logic only
 │   └── types.py               # Type definitions
 ├── pyproject.toml             # Package configuration, depends on fabric-cicd
 ├── example_parameter.yml      # Example configuration file
@@ -30,6 +31,11 @@ fabric-deploy/
 **Key Point**: This package wraps `fabric-cicd` from PyPI, it does not reimplement any functionality.
 
 **Core Class**: `WorkspaceDeployer` is a dataclass in `workspace.py` that encapsulates all deployment logic and can be used both programmatically and via CLI.
+
+**CLI Pattern**: Centralized presentation layer:
+- `cli.py` contains ALL CLI logic - argument parsing, command handling, error messages, user-facing text
+- Feature modules (`auth.py`, `workspace.py`, `rename.py`) contain ONLY business logic
+- Clear separation: CLI/presentation layer vs business logic layer
 
 ## Usage Pattern
 
@@ -274,15 +280,32 @@ Contains the `WorkspaceDeployer` dataclass:
 
 **`cli.py` - CLI interface module**
 
+Contains ALL CLI logic - argument parsing, command handling, error messages, and user-facing text.
+
 **`parse_args() -> argparse.Namespace`**
-- Configures argument parser with all CLI options
+- Configures all argument parsers inline (auth, rename, deploy)
+- Handles deploy command injection for backward compatibility
 - Returns parsed arguments
-- Separated from `main()` for testability
+
+**`handle_auth_command(args) -> None`**
+- Executes auth subcommands (list, switch, rename)
+- Calls business logic from `auth.py` (list_accounts, switch_account, etc.)
+- Formats and displays output to user
+- Handles errors with user-friendly messages
+
+**`handle_rename_command(args) -> None`**
+- Executes rename command
+- Calls `rename_items_by_display_name()` from `rename.py`
+- Handles errors with user-friendly messages
+
+**`handle_deploy_command(args) -> None`**
+- Executes deploy command
+- Creates `WorkspaceDeployer` instance and calls `deploy()`
+- Handles errors with user-friendly messages
 
 **`main() -> None`**
 - CLI entry point
-- Creates `WorkspaceDeployer` dataclass instance with custom logger name
-- Calls `deploy()` with parsed arguments
+- Routes to appropriate command handler based on args.command
 
 
 
@@ -319,6 +342,21 @@ Options:
   --include-items, -i    Include specific items by name (experimental)
   --help                 Show help message
 ```
+
+### Rename Items
+
+```
+fabdep rename [DIRECTORY] [OPTIONS]
+
+Arguments:
+  DIRECTORY              Path to workspace directory (default: current directory)
+
+Options:
+  --execute, -e          Actually perform renames (default is dry-run)
+  --help                 Show help message
+```
+
+Renames workspace item directories to match their display names from `.platform` metadata. Converts display names to lowercase with underscores (e.g., "My Notebook" → "my_notebook"). Runs in dry-run mode by default to preview changes before applying them.
 
 **Note**: The `deploy` subcommand is optional. When deploy-specific flags are used without specifying a subcommand, the CLI automatically defaults to `deploy`:
 
@@ -366,6 +404,15 @@ fabdep --include-items "MyNotebook.Notebook" "MyPipeline.DataPipeline"
 # Explicit deploy subcommand also works
 fabdep deploy -t Notebook DataPipeline
 
+# Rename items to match display names (dry-run)
+fabdep rename
+
+# Actually perform renames
+fabdep rename --execute
+
+# Rename items in specific directory
+fabdep rename /path/to/workspace -e
+
 # Authentication commands
 fabdep auth list    # Shows current + all available accounts
 fabdep auth switch xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
@@ -391,14 +438,13 @@ def rename_subscription(subscription_id: str, new_name: str) -> bool:
 
 def is_auth_error(error_msg: str) -> bool:
     """Check if error is authentication/authorization related."""
-
-def handle_auth_command(args: Namespace) -> None:
-    """Handle auth subcommands (list, switch, rename) with formatted output."""
 ```
 
 **Error Detection**: When deployment fails with auth-related errors (401, 403, 404, "not found", "unauthorized", "forbidden"), the CLI automatically displays current account information, lists available accounts, and suggests relevant auth commands.
 
 **Auto-switching**: The `rename` command automatically switches to the target subscription if it's not accessible in the current tenant context, eliminating the need for manual switching before renaming.
+
+**Design**: Auth module contains ONLY business logic. All CLI handling (parser setup, command execution, output formatting) is in `cli.py`.
 
 ## Logging Module
 
@@ -425,6 +471,30 @@ def format_auth_error_message(
 ```
 
 **Design**: Separates presentation/formatting logic from business logic. Auth module handles Azure CLI interactions, logging module handles display formatting.
+
+## Rename Module
+
+**rename.py** provides utility for renaming workspace item directories:
+
+```python
+def rename_items_by_display_name(
+    repo_dir: Path | str,
+    dry_run: bool = True,
+) -> None:
+    """Rename workspace item directories to match their display names."""
+```
+
+**Flow**:
+1. Search for all `.platform` files in workspace (`**/*.*/.platform` glob pattern)
+2. Read each `.platform` metadata file to extract `displayName`
+3. Convert display name to directory name format (lowercase, underscore-separated)
+4. Rename parent directory to match formatted display name
+5. Skip items that already match target name
+6. By default runs in dry-run mode (preview only)
+
+**Error Handling**: Gracefully handles invalid `.platform` files (JSON parsing errors, missing keys) and continues processing other items.
+
+**Design**: Rename module contains ONLY business logic. All CLI handling (parser setup, command execution, error handling) is in `cli.py`.
 
 ## Error Handling
 
@@ -459,10 +529,10 @@ The `WorkspaceDeployer` class is defined in `workspace.py` and can be imported d
 
 ## Programmatic Usage
 
-The `WorkspaceDeployer` dataclass can be imported and used in your own Python code:
+Both `WorkspaceDeployer` and `rename_items_by_display_name` can be imported and used in your own Python code:
 
 ```python
-from fabric_deploy import WorkspaceDeployer
+from fabric_deploy import WorkspaceDeployer, rename_items_by_display_name
 
 # Basic deployment
 deployer = WorkspaceDeployer(
@@ -489,6 +559,12 @@ print(f"Lakehouse: {deployer.lakehouse_name}")
 print(deployer)  # Shows all field values
 deployer2 = WorkspaceDeployer(repo_dir="/path/to/workspace")
 print(deployer == deployer2)  # True (if same repo_dir and logger_name)
+
+# Rename items to match display names
+rename_items_by_display_name(
+    repo_dir="/path/to/workspace",
+    dry_run=True,  # Set to False to actually rename
+)
 ```
 
 **Benefits:**
@@ -498,6 +574,7 @@ print(deployer == deployer2)  # True (if same repo_dir and logger_name)
 - Custom logging namespaces for better observability
 - Programmatic control over deployment logic
 - Access to configuration before deployment via `_load_config()` and `_detect_lakehouse()`
+- Rename utility for standardizing directory names based on display names
 - Integration into larger automation workflows
 
 ## Related
