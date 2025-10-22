@@ -10,7 +10,7 @@ dependencies = [
 ]
 
 [project.scripts]
-fabdep = "fabric_deploy.cli:main"
+fabdep = "fabric_deploy_cli.cli:main"
 
 [build-system]
 requires = ["uv_build"]

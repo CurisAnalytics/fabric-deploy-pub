@@ -446,7 +446,7 @@ def main() -> None:
         try:
             deployer = WorkspaceDeployer(
                 repo_dir=args.directory,
-                logger_name="fabric_deploy.cli",
+                logger_name="fabric_deploy_cli.cli",
             )
 
             deployer.deploy(
