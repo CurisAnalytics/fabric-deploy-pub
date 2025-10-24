@@ -31,19 +31,25 @@ class WorkspaceDeployer:
     repo_dir: Path | str
     logger_name: str | None = None
 
-    # Configuration fields populated by _load_config()
-    workspace_id: str | None = field(default=None, init=False)
-    environment: str | None = field(default=None, init=False)
-    lakehouse_name: str | None = field(default=None, init=False)
+    # Configuration fields - auto-loaded in __post_init__ if not provided
+    workspace_id: str | None = None
+    environment: str | None = None
+    lakehouse_name: str | None = None
 
     # Private fields
     _repo_dir_resolved: Path = field(init=False, repr=False)
     logger: logging.Logger = field(init=False, repr=False)
 
     def __post_init__(self):
-        """Initialize derived fields after dataclass initialization."""
+        """Initialize derived fields and auto-load config if not provided."""
         self._repo_dir_resolved = Path(self.repo_dir).resolve()
         self.logger = get_logger(self.logger_name or __name__)
+
+        # Auto-load configuration if not provided by user
+        if self.workspace_id is None or self.environment is None:
+            self._load_config()
+        if self.lakehouse_name is None:
+            self._detect_lakehouse()
 
     def _load_config(self) -> None:
         """Load and validate workspace configuration from parameter.yml or parameter.yml.bak."""
@@ -199,21 +205,18 @@ class WorkspaceDeployer:
         Sets self.lakehouse_name from metadata.
         """
         lakehouses = list(self._repo_dir_resolved.glob("*.Lakehouse"))
-
         if len(lakehouses) == 0:
             raise ValueError("No lakehouse found in repository directory")
-
-        if len(lakehouses) > 1:
+        elif len(lakehouses) > 1:
             self.logger.warning(
                 f"Multiple lakehouses found: {[d.name for d in lakehouses]}"
             )
-
+        platform_file = lakehouses[0] / ".platform"
         try:
-            platform_file = lakehouses[0] / ".platform"
             metadata = loads(platform_file.read_text())
-            self.lakehouse_name = metadata["metadata"]["displayName"]
         except Exception as e:
             raise RuntimeError(f"Failed to read lakehouse metadata: {e}") from e
+        self.lakehouse_name = metadata["metadata"]["displayName"]
 
     def deploy(
         self,
@@ -231,13 +234,11 @@ class WorkspaceDeployer:
             exclude_types: Item types to exclude from deployment
             include_items: Include only specific items (format: "ItemName.ItemType")
         """
-        print_header("Fabric CI/CD")
-        # Load config if not already loaded
-        if not self.workspace_id:
-            self._load_config()
+        # Ensure configuration is loaded (helps type checker)
+        assert isinstance(self.environment, str), "environment must be a str"
+        assert isinstance(self.lakehouse_name, str), "lakehouse_name must be a str"
 
-        if not self.lakehouse_name:
-            self._detect_lakehouse()
+        print_header("Fabric CI/CD")
 
         # Enable experimental feature flags if name-based filtering is requested
         if include_items:
@@ -257,16 +258,13 @@ class WorkspaceDeployer:
                 t for t in ACCEPTED_ITEM_TYPES if t not in exclude_types
             ]
 
-        self.logger.info(f"Lakehouse name: {self.lakehouse_name}")
+        # self.logger.info(f"Lakehouse name: {self.lakehouse_name}")
+        # self.logger.info(f"Input directory: {self._repo_dir_resolved}")
         self.logger.info(f"Workspace ID: {self.workspace_id}")
-
         if item_type_in_scope:
             self.logger.info(f"Item types in scope: {', '.join(item_type_in_scope)}")
-
         if include_items:
             self.logger.info(f"Including items: {', '.join(include_items)}")
-
-        self.logger.info(f"Input directory: {self._repo_dir_resolved}")
 
         # Display parameter.yml last modified time
         param_file = self._repo_dir_resolved / "parameter.yml"
@@ -276,7 +274,7 @@ class WorkspaceDeployer:
             # Using .bak file
             mtime = datetime.fromtimestamp(bak_file.stat().st_mtime)
             self.logger.info(
-                f"Parameter file (backup): {bak_file.name} - modified: {mtime.strftime('%d/%m/%Y %H:%M:%S')}"
+                f"Parameter file (.bak) modified: {mtime.strftime('%d/%m/%Y %H:%M:%S')}"
             )
         elif param_file.exists():
             mtime = datetime.fromtimestamp(param_file.stat().st_mtime)
@@ -287,6 +285,7 @@ class WorkspaceDeployer:
         target_workspace = FabricWorkspace(
             workspace_id=self.workspace_id,
             repository_directory=str(self._repo_dir_resolved),
+            environment=self.environment,
             item_type_in_scope=item_type_in_scope,
         )
 
@@ -294,8 +293,6 @@ class WorkspaceDeployer:
             _ = publish_all_items(target_workspace, items_to_include=include_items)
 
             if not no_cleanup:
-                if not self.lakehouse_name:
-                    raise RuntimeError("Lakehouse name not detected for cleanup")
                 unpublish_all_orphan_items(
                     target_workspace, item_name_exclude_regex=self.lakehouse_name
                 )
