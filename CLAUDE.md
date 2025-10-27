@@ -353,10 +353,11 @@ Arguments:
 
 Options:
   --execute, -e          Actually perform renames (default is dry-run)
+  --clean, -c            Apply .lower().replace(' ', '_') to directory names
   --help                 Show help message
 ```
 
-Renames workspace item directories to match their display names from `.platform` metadata. Converts display names to lowercase with underscores (e.g., "My Notebook" → "my_notebook"). Runs in dry-run mode by default to preview changes before applying them.
+Renames workspace item directories to match their display names from `.platform` metadata. By default, uses the exact display name. With `--clean`, converts display names to lowercase with underscores (e.g., "My Notebook" → "my_notebook"). Runs in dry-run mode by default to preview changes before applying them. Shows which directories are skipped when they already match the target name.
 
 **Note**: The `deploy` subcommand is optional. When deploy-specific flags are used without specifying a subcommand, the CLI automatically defaults to `deploy`:
 
@@ -410,8 +411,11 @@ fabdep rename
 # Actually perform renames
 fabdep rename --execute
 
+# Rename with cleaning (lowercase + underscores)
+fabdep rename --clean --execute
+
 # Rename items in specific directory
-fabdep rename /path/to/workspace -e
+fabdep rename /path/to/workspace -e -c
 
 # Authentication commands
 fabdep auth list    # Shows current + all available accounts
@@ -480,6 +484,7 @@ def format_auth_error_message(
 def rename_items_by_display_name(
     repo_dir: Path | str,
     dry_run: bool = True,
+    clean: bool = False,
 ) -> None:
     """Rename workspace item directories to match their display names."""
 ```
@@ -487,9 +492,9 @@ def rename_items_by_display_name(
 **Flow**:
 1. Search for all `.platform` files in workspace (`**/*.*/.platform` glob pattern)
 2. Read each `.platform` metadata file to extract `displayName`
-3. Convert display name to directory name format (lowercase, underscore-separated)
+3. Optionally convert display name to directory name format (lowercase, underscore-separated) when `clean=True`
 4. Rename parent directory to match formatted display name
-5. Skip items that already match target name
+5. Skip items that already match target name (logs as INFO level, visible by default)
 6. By default runs in dry-run mode (preview only)
 
 **Error Handling**: Gracefully handles invalid `.platform` files (JSON parsing errors, missing keys) and continues processing other items.
@@ -547,6 +552,13 @@ deployer.deploy(
     no_cleanup=False,
 )
 
+# Rename with cleaning enabled
+rename_items_by_display_name(
+    repo_dir="/path/to/workspace",
+    dry_run=False,
+    clean=True,  # Apply .lower().replace(" ", "_")
+)
+
 # Inspect configuration before deploying
 deployer._load_config()
 print(f"Workspace: {deployer.workspace_id}")
@@ -560,7 +572,7 @@ print(deployer)  # Shows all field values
 deployer2 = WorkspaceDeployer(repo_dir="/path/to/workspace")
 print(deployer == deployer2)  # True (if same repo_dir and logger_name)
 
-# Rename items to match display names
+# Rename items to match display names (exact display name)
 rename_items_by_display_name(
     repo_dir="/path/to/workspace",
     dry_run=True,  # Set to False to actually rename

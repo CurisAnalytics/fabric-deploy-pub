@@ -54,6 +54,7 @@ fabdep rename [DIRECTORY] [OPTIONS]
 
 Options:
   --execute, -e          Actually perform renames (default is dry-run)
+  --clean, -c            Apply .lower().replace(' ', '_') to directory names
 ```
 
 **Example usage**:
@@ -64,11 +65,14 @@ fabdep rename
 # Actually perform the renames
 fabdep rename --execute
 
+# Rename with cleaning (lowercase + underscores)
+fabdep rename --clean --execute
+
 # Rename items in specific directory
-fabdep rename /path/to/workspace -e
+fabdep rename /path/to/workspace -e -c
 ```
 
-This utility searches for all `.platform` files in the workspace and renames their parent directories to use lowercase, underscore-separated versions of the display names. By default, it runs in dry-run mode to preview changes before applying them.
+This utility searches for all `.platform` files in the workspace and renames their parent directories to match their display names. By default, uses the exact display name. With `--clean`, converts display names to lowercase with underscores (e.g., "My Notebook" → "my_notebook"). Runs in dry-run mode by default to preview changes before applying them. Shows which directories are skipped when they already match the target name.
 
 ### Authentication
 
@@ -141,10 +145,17 @@ deployer.deploy(
     no_cleanup=False,
 )
 
-# Rename items to match display names
+# Rename items to match display names (exact display name)
 rename_items_by_display_name(
     repo_dir="/path/to/workspace",
     dry_run=True,  # Set to False to actually rename
+)
+
+# Rename with cleaning enabled
+rename_items_by_display_name(
+    repo_dir="/path/to/workspace",
+    dry_run=False,
+    clean=True,  # Apply .lower().replace(" ", "_")
 )
 ```
 
