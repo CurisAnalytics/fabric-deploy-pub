@@ -68,6 +68,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Actually perform renames (default is dry-run)",
     )
+    _ = rename_items_parser.add_argument(
+        "--clean",
+        "-c",
+        action="store_true",
+        help="Apply .lower().replace(' ', '_') to directory names",
+    )
 
     # Deploy subcommand (default)
     deploy_parser = subparsers.add_parser(
@@ -192,6 +198,7 @@ def handle_rename_command(args: argparse.Namespace) -> None:
         rename_items_by_display_name(
             repo_dir=args.directory,
             dry_run=not args.execute,
+            clean=args.clean,
         )
     except FileNotFoundError as e:
         print_error(f"\n{e}\n")
@@ -224,7 +231,7 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
             include_items=args.include_items,
         )
     except Exception as e:
-        print_error(f"\nDeployment failed: {e}\n")
+        print_error(f"Deployment failed: {e}\n")
         sys.exit(1)
 
 

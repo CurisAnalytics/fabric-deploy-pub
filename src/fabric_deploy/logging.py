@@ -16,6 +16,8 @@ __all__ = [
     "format_account_list",
 ]
 
+SEP = "=" * 100
+
 
 class CustomFormatter(logging.Formatter):
     LEVEL_COLORS: ClassVar[dict[str, str]] = {
@@ -97,9 +99,9 @@ def format_auth_error_message(
     Returns:  Formatted error message string with troubleshooting tips
     """
     lines = [
-        "\n" + "=" * 80,
+        "\n" + SEP,
         "Authentication/Authorization Error Detected",
-        "=" * 80,
+        SEP,
     ]
 
     if current_account:
@@ -133,7 +135,7 @@ def format_auth_error_message(
             "\t• fabdep auth switch - Switch to different account",
             "\t• fabdep auth rename - Rename subscription for clarity",
             "",
-            "=" * 80 + "\n",
+            SEP + "\n",
         ]
     )
 

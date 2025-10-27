@@ -13,7 +13,9 @@ def _format_path(path: Path) -> str:
     return f"{path.parent.name}/{path.name}"
 
 
-def rename_items_by_display_name(repo_dir: Path | str, dry_run: bool = True) -> None:
+def rename_items_by_display_name(
+    repo_dir: Path | str, dry_run: bool = True, clean: bool = False
+) -> None:
     """
     Rename workspace item directories to match their display names.
     Searches for all .platform files in the workspace and renames parent directories
@@ -21,6 +23,7 @@ def rename_items_by_display_name(repo_dir: Path | str, dry_run: bool = True) -> 
     Args:
         repo_dir: Path to workspace directory
         dry_run: If True, only shows what would be renamed without making changes
+        clean: If True, applies .lower().replace(" ", "_") to directory names
     """
     src = Path(repo_dir).resolve()
     if not src.exists():
@@ -38,12 +41,12 @@ def rename_items_by_display_name(repo_dir: Path | str, dry_run: bool = True) -> 
             platform_data = json.loads(target.read_text())
             display_name = platform_data["metadata"]["displayName"]
             # Convert display name to directory name format
-            new_stem = display_name.lower().replace(" ", "_")
+            new_stem = display_name.lower().replace(" ", "_") if clean else display_name
             parent = target.parent
             new_path = parent.with_stem(new_stem)
             # Skip if already matches
             if parent == new_path:
-                logger.debug(f"Skipping {_format_path(parent)} (already matches)")
+                logger.info(f"Skipping {_format_path(parent)} (already matches)")
                 skipped_count += 1
                 continue
             # Show what will be/was renamed
