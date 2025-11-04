@@ -249,6 +249,27 @@ class WorkspaceDeployer:
                 "Selective deployment may cause dependency issues. Use at your own risk."
             )
 
+        # Validate item type filters
+        if item_types:
+            invalid_types = [t for t in item_types if t not in ACCEPTED_ITEM_TYPES]
+            if invalid_types:
+                self.logger.warning(
+                    f"Unrecognized item types in filter: {', '.join(invalid_types)}"
+                )
+                self.logger.warning(
+                    f"Supported types: {', '.join(ACCEPTED_ITEM_TYPES)}"
+                )
+
+        if exclude_types:
+            invalid_types = [t for t in exclude_types if t not in ACCEPTED_ITEM_TYPES]
+            if invalid_types:
+                self.logger.warning(
+                    f"Unrecognized item types in exclusion filter: {', '.join(invalid_types)}"
+                )
+                self.logger.warning(
+                    f"Supported types: {', '.join(ACCEPTED_ITEM_TYPES)}"
+                )
+
         # Build item_type_in_scope based on include/exclude flags
         item_type_in_scope = None
         if item_types:
