@@ -1,3 +1,10 @@
+"""
+Logging and formatting utilities for fabric_cicd.
+
+This module provides custom logging formatters, error message formatting,
+and Azure account information display utilities.
+"""
+
 import logging
 import re
 from collections.abc import Sequence
@@ -6,7 +13,7 @@ from typing import ClassVar, override
 from fabric_cicd._common._color import Fore, Style
 from fabric_cicd._common._logging import print_header
 
-from .types import AzureAccount
+from .auth import AzureAccount
 
 __all__ = [
     "get_logger",

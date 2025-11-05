@@ -2,11 +2,36 @@
 
 import json
 import subprocess
+from typing import TypedDict
 
-from .types import AzureAccount
+
+class AzureUser(TypedDict):
+    name: str
+    type: str
 
 
-def list_accounts(refresh: bool = True) -> list[AzureAccount]:
+class AzureAccount(TypedDict):
+    cloudName: str
+    homeTenantId: str
+    id: str
+    isDefault: bool
+    name: str
+    state: str
+    tenantId: str
+    user: AzureUser
+
+
+__all__ = [
+    "AzureAccount",
+    "list_accounts",
+    "get_current_account",
+    "switch_account",
+    "rename_subscription",
+    "is_auth_error",
+]
+
+
+def list_accounts(refresh: bool = False) -> list[AzureAccount]:
     """
     List all Azure accounts.
     Args: refresh: If True, force refresh from Azure (slower but current data)
@@ -119,3 +144,38 @@ def rename_subscription(subscription_id: str, new_name: str) -> bool:
         _ = list_accounts(refresh=True)
         return True  # Indicate that we switched accounts
     return False
+
+
+def is_auth_error(error_msg: str) -> bool:
+    """
+    Check if error message indicates an authentication/authorization issue.
+
+    Args:
+        error_msg: Error message string to check
+
+    Returns:
+        True if error is auth-related, False otherwise
+    """
+    error_lower = error_msg.lower()
+
+    # Common authentication/authorization error patterns
+    auth_patterns = [
+        "401",  # Unauthorized HTTP status
+        "403",  # Forbidden HTTP status
+        "404",  # Not Found (can indicate auth issues with workspace access)
+        "unauthorized",
+        "forbidden",
+        "not found",
+        "authentication",
+        "credential",
+        "token",
+        "login",
+        "aadsts",  # Azure AD error codes
+        "defaultazurecredential failed",
+        "no response from the imds endpoint",
+        "shared token cache credential",
+        "azure cli credential",
+        "managed identity credential",
+    ]
+
+    return any(pattern in error_lower for pattern in auth_patterns)

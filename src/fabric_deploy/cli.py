@@ -6,13 +6,38 @@ from pathlib import Path
 
 from .auth import (
     get_current_account,
+    is_auth_error,
     list_accounts,
     rename_subscription,
     switch_account,
 )
-from .logging import format_account_list, print_error
+from .logging import format_account_list, format_auth_error_message, print_error
 from .rename import rename_items_by_display_name
 from .workspace import WorkspaceDeployer
+
+
+def handle_command_error(error: Exception, context: str) -> None:
+    """Handle command errors with auth-specific troubleshooting.
+
+    Args:
+        error: The exception that was raised
+        context: Context string describing what failed (e.g., "Workspace operation", "Deployment")
+    """
+    error_msg = str(error)
+    print_error(f"\n{context} failed: {error_msg}\n")
+
+    # Show friendly auth error message if this is an auth issue
+    if is_auth_error(error_msg):
+        try:
+            current = get_current_account()
+            all_accounts = list_accounts()
+            auth_help = format_auth_error_message(current, all_accounts)
+            print(auth_help)
+        except Exception:
+            # If we can't get account info, just show the basic error
+            pass
+
+    sys.exit(1)
 
 
 def parse_args() -> argparse.Namespace:
@@ -116,7 +141,9 @@ def parse_args() -> argparse.Namespace:
     # Check if we should inject 'deploy' as default subcommand
     # This happens when no subcommand is specified but deploy-specific flags are used
     argv = sys.argv[1:]
-    if argv and not any(cmd in argv for cmd in ["auth", "deploy", "rename"]):
+    known_commands = ["auth", "deploy", "rename"]
+
+    if argv and not any(cmd in argv for cmd in known_commands):
         # Don't inject deploy if only help flag is present (show main help instead)
         if argv == ["-h"] or argv == ["--help"]:
             pass
@@ -231,8 +258,7 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
             include_items=args.include_items,
         )
     except Exception as e:
-        print_error(f"Deployment failed: {e}\n")
-        sys.exit(1)
+        handle_command_error(e, "Deployment")
 
 
 def main() -> None:
