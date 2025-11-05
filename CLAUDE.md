@@ -9,14 +9,14 @@
 - **Wrapper**: Thin CLI layer over Microsoft's `fabric-cicd` package
 - **Auto-detection**: Reads `parameter.yml` to extract workspace ID and environment
 - **CLI convenience**: Replace inline Python scripts with a simple command
-- **No API implementation**: All Fabric REST API interaction is handled by Microsoft's package
+- **Smart Replace Support**: Handles both legacy and modern parameterization formats
 
 ## Architecture
 
 ```
 fabric-deploy/
 ├── src/fabric_deploy/         # Package directory
-│   ├── __init__.py            # Package initialization, exports WorkspaceDeployer & rename_items_by_display_name
+│   ├── __init__.py            # Package initialization, exports all public classes
 │   ├── workspace.py           # WorkspaceDeployer class - deployment business logic
 │   ├── cli.py                 # ALL CLI logic - parsers, handlers, user-facing text
 │   ├── auth.py                # Azure auth utilities - business logic only
@@ -28,9 +28,9 @@ fabric-deploy/
 └── README.md                  # Brief usage documentation
 ```
 
-**Key Point**: This package wraps `fabric-cicd` from PyPI, it does not reimplement any functionality.
-
-**Core Class**: `WorkspaceDeployer` is a dataclass in `workspace.py` that encapsulates all deployment logic and can be used both programmatically and via CLI.
+**Key Components**:
+- **WorkspaceDeployer**: Dataclass for deployment logic (wraps Microsoft's fabric-cicd)
+- **CLI Layer**: Centralized presentation with business logic separation
 
 **CLI Pattern**: Centralized presentation layer:
 - `cli.py` contains ALL CLI logic - argument parsing, command handling, error messages, user-facing text
@@ -83,29 +83,23 @@ fabdep  # Auto-detects workspace_id and environment from parameter.yml
 5. Calls `publish_all_items()` with optional item filtering (from Microsoft's package)
 6. Optionally calls `unpublish_all_orphan_items()` (from Microsoft's package) unless `no_cleanup=True`
 
-## What This Package Does
+## What This Package Provides
 
-### ✅ Provides
-- CLI interface (`fabdep` command)
-- Auto-detection from `parameter.yml`
-- Lakehouse name detection from `.platform` files
-- User-friendly output formatting
-- Command-line argument parsing (`--no-cleanup`, `--item-types`, `--exclude-types`, `--include-items`)
-
-### ❌ Does NOT Provide
-- Fabric REST API implementation (handled by Microsoft's `fabric-cicd`)
-- `FabricWorkspace` class (imported from Microsoft's package)
-- `publish_all_items()` function (imported from Microsoft's package)
-- `unpublish_all_orphan_items()` function (imported from Microsoft's package)
-- Authentication logic (handled by Microsoft's package)
+### Core Features
+- **Deployment CLI**: `fabdep` command with auto-detection from `parameter.yml`
+- **Lakehouse Detection**: Auto-detects lakehouse names from `.platform` files
+- **Parameter Validation**: Validates and handles both legacy and smart replace formats
+- **Item Filtering**: Deploy specific item types or exclude types
+- **Rename Utility**: Rename workspace item directories to match display names
+- **User-friendly Output**: Formatted console output and error messages
 
 ## Dependencies
 
 ```toml
 [project]
 dependencies = [
-    "fabric-cicd>=0.1.29",  # Microsoft's official package
-    "pyyaml",               # For parameter.yml parsing
+    "fabric-cicd>=0.1.29",    # Microsoft's official package for deployment
+    "pyyaml",                 # For parameter.yml parsing
 ]
 ```
 
@@ -343,6 +337,8 @@ Options:
   --help                 Show help message
 ```
 
+**Note**: The `deploy` subcommand is optional. When deploy-specific flags are used without specifying a subcommand, the CLI automatically defaults to `deploy`.
+
 ### Rename Items
 
 ```
@@ -358,18 +354,6 @@ Options:
 ```
 
 Renames workspace item directories to match their display names from `.platform` metadata. By default, uses the exact display name. With `--clean`, converts display names to lowercase with underscores (e.g., "My Notebook" → "my_notebook"). Runs in dry-run mode by default to preview changes before applying them. Shows which directories are skipped when they already match the target name.
-
-**Note**: The `deploy` subcommand is optional. When deploy-specific flags are used without specifying a subcommand, the CLI automatically defaults to `deploy`:
-
-```bash
-# These are equivalent:
-fabdep -t DataPipeline
-fabdep deploy -t DataPipeline
-
-# Both work:
-fabdep /path/to/workspace --no-cleanup
-fabdep deploy /path/to/workspace --no-cleanup
-```
 
 ### Authentication Management
 
@@ -422,6 +406,8 @@ fabdep auth list    # Shows current + all available accounts
 fabdep auth switch xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 fabdep auth rename xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx "Production Subscription"  # Auto-switches if needed
 ```
+
+
 
 ## Authentication Module
 
@@ -534,10 +520,16 @@ The `WorkspaceDeployer` class is defined in `workspace.py` and can be imported d
 
 ## Programmatic Usage
 
-Both `WorkspaceDeployer` and `rename_items_by_display_name` can be imported and used in your own Python code:
+All public classes can be imported and used programmatically:
 
 ```python
-from fabric_deploy import WorkspaceDeployer, rename_items_by_display_name
+from fabric_deploy import (
+    WorkspaceDeployer,
+    rename_items_by_display_name,
+)
+from pathlib import Path
+
+# --- Deployment ---
 
 # Basic deployment
 deployer = WorkspaceDeployer(
@@ -552,13 +544,6 @@ deployer.deploy(
     no_cleanup=False,
 )
 
-# Rename with cleaning enabled
-rename_items_by_display_name(
-    repo_dir="/path/to/workspace",
-    dry_run=False,
-    clean=True,  # Apply .lower().replace(" ", "_")
-)
-
 # Inspect configuration before deploying
 deployer._load_config()
 print(f"Workspace: {deployer.workspace_id}")
@@ -567,27 +552,22 @@ print(f"Environment: {deployer.environment}")
 deployer._detect_lakehouse()
 print(f"Lakehouse: {deployer.lakehouse_name}")
 
-# Dataclass benefits: clean repr and equality
-print(deployer)  # Shows all field values
-deployer2 = WorkspaceDeployer(repo_dir="/path/to/workspace")
-print(deployer == deployer2)  # True (if same repo_dir and logger_name)
+# --- Rename Utility ---
 
-# Rename items to match display names (exact display name)
+# Rename with cleaning enabled
 rename_items_by_display_name(
     repo_dir="/path/to/workspace",
-    dry_run=True,  # Set to False to actually rename
+    dry_run=False,
+    clean=True,  # Apply .lower().replace(" ", "_")
 )
 ```
 
 **Benefits:**
-- Clear separation: workspace abstraction (`workspace.py`) vs CLI interface (`cli.py`)
-- Dataclass provides automatic `__repr__()`, `__eq__()`, and field introspection
-- Lazy loading: no I/O during initialization
-- Custom logging namespaces for better observability
-- Programmatic control over deployment logic
-- Access to configuration before deployment via `_load_config()` and `_detect_lakehouse()`
-- Rename utility for standardizing directory names based on display names
-- Integration into larger automation workflows
+- **Deployment Control**: Programmatic control over deployment logic
+- **Dataclass Design**: Automatic `__repr__()`, `__eq__()`, and field introspection
+- **Lazy Loading**: No I/O during initialization
+- **Custom Logging**: Namespace logging for better observability
+- **Integration**: Compose these classes in larger automation workflows
 
 ## Related
 

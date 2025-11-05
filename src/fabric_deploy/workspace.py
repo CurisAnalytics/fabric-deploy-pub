@@ -156,8 +156,12 @@ class WorkspaceDeployer:
         """
         Extract workspace ID and environment from parameter.yml.
 
-        Reads the first entry's replace_value to get destination workspace ID.
-        Validates that all entries use consistent environment keys.
+        Supports both legacy and smart replace formats:
+        - Legacy: Uses replace_value with environment keys (e.g., prod: "workspace-id")
+        - Smart replace: Uses direct workspace ID in replace_value (e.g., replace_value: "workspace-id")
+
+        For smart replace format, fabric-cicd handles parameterization using dynamic variables
+        like $workspace.$id, $items.<type>.<name>.$id, etc.
 
         Args:
             param_file: Path to parameter.yml
@@ -173,29 +177,46 @@ class WorkspaceDeployer:
             raise ValueError("No find_replace entries found in parameter.yml")
 
         first_entry = find_replace[0]
-        replace_values = first_entry.get("replace_value", {})
+        replace_value = first_entry.get("replace_value")
 
-        available_envs = list(replace_values.keys())
+        # Check if using smart replace format (direct string value)
+        if isinstance(replace_value, str):
+            # Smart replace format - workspace ID is the replace_value
+            workspace_id = replace_value
+            environment = "default"
+            self.logger.info("Using smart replace parameterization format")
+            return workspace_id, environment
+
+        # Legacy format - environment-based replacement
+        if not isinstance(replace_value, dict):
+            raise ValueError(
+                "Invalid parameter.yml format: replace_value must be string or dict"
+            )
+
+        available_envs = list(replace_value.keys())
         if not available_envs:
             raise ValueError("No environments found in parameter.yml")
 
-        # Validate all entries use the same environment
+        # Validate all entries use the same environment (legacy format only)
         for entry in find_replace:
-            entry_envs = list(entry.get("replace_value", {}).keys())
-            if set(entry_envs) != set(available_envs):
-                raise ValueError(
-                    f"Inconsistent environments across parameter.yml entries. "
-                    f"Expected {available_envs}, found {entry_envs}"
-                )
+            entry_replace = entry.get("replace_value", {})
+            if isinstance(entry_replace, dict):
+                entry_envs = list(entry_replace.keys())
+                if set(entry_envs) != set(available_envs):
+                    raise ValueError(
+                        f"Inconsistent environments across parameter.yml entries. "
+                        f"Expected {available_envs}, found {entry_envs}"
+                    )
 
         environment = available_envs[0]
-        workspace_id = replace_values[environment]
+        workspace_id = replace_value[environment]
 
         if not workspace_id:
             raise ValueError(
                 f"No workspace ID specified for environment '{environment}'"
             )
 
+        self.logger.info("Using legacy parameterization format")
         return workspace_id, environment
 
     def _detect_lakehouse(self) -> None:

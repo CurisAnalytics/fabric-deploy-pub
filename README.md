@@ -2,17 +2,21 @@
 
 CLI wrapper around Microsoft's [fabric-cicd](https://github.com/microsoft/fabric-cicd) that auto-detects workspace configuration from `parameter.yml`.
 
+
+## Features
+
+- **Auto-detection**: Reads workspace ID and environment from `parameter.yml`
+- **Item Filtering**: Deploy specific item types or exclude types
+- **Auth Management**: Switch between Azure subscriptions
+- **Rename Utility**: Rename directories to match display names
+
 ## Installation
 
-Install in editable mode:
-
 ```bash
-git clone <repository-url>
-cd fabric-deploy
 pip install -e .
 ```
 
-Changes to the source code will be immediately reflected without reinstalling.
+For development, changes to source code are immediately reflected without reinstalling.
 
 ## Quick Start
 
@@ -23,12 +27,18 @@ fabdep
 
 **Requirements**: `parameter.yml` must exist in workspace directory.
 
-## CLI Commands
 
-### Deploy (default)
+## Commands
+
+### Deploy (default command)
+
+Deploy workspace items to Microsoft Fabric:
 
 ```bash
 fabdep [deploy] [DIRECTORY] [OPTIONS]
+
+Arguments:
+  DIRECTORY              Path to workspace directory (default: current directory)
 
 Options:
   --no-cleanup, -n       Skip unpublishing orphaned items
@@ -45,6 +55,53 @@ fabdep -t DataPipeline
 fabdep deploy -t DataPipeline
 ```
 
+**Examples**:
+```bash
+# Deploy all items from current directory
+fabdep
+
+# Deploy only notebooks and pipelines
+fabdep -t Notebook DataPipeline
+
+# Deploy excluding reports
+fabdep -x Report SemanticModel
+
+# Deploy without cleaning up orphaned items
+fabdep -n
+
+# Deploy from specific directory
+fabdep /path/to/workspace
+```
+
+
+### Authentication
+
+Manage Azure accounts for Fabric deployments:
+
+```bash
+fabdep auth <command>
+
+Commands:
+  list                   List current and all available Azure accounts
+  switch <sub-id>        Switch to different subscription
+  rename <sub-id> <name> Rename a subscription (auto-switches if needed)
+```
+
+**Examples**:
+```bash
+# List current and available accounts
+fabdep auth list
+
+# Switch to different account
+fabdep auth switch xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+
+# Rename a subscription (automatically switches if needed)
+fabdep auth rename xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx "Production Subscription"
+```
+
+**Common issue**: If deployment fails with "workspace not found", you may be authenticated to the wrong tenant. Use `fabdep auth list` to see current and available accounts, then `fabdep auth switch` to change.
+
+
 ### Rename Items
 
 Rename workspace item directories to match their display names from `.platform` metadata:
@@ -52,63 +109,58 @@ Rename workspace item directories to match their display names from `.platform` 
 ```bash
 fabdep rename [DIRECTORY] [OPTIONS]
 
+Arguments:
+  DIRECTORY              Path to workspace directory (default: current directory)
+
 Options:
   --execute, -e          Actually perform renames (default is dry-run)
   --clean, -c            Apply .lower().replace(' ', '_') to directory names
 ```
 
-**Example usage**:
+**Examples**:
 ```bash
 # Preview what would be renamed (dry-run)
 fabdep rename
 
 # Actually perform the renames
-fabdep rename --execute
-
-# Rename with cleaning (lowercase + underscores)
-fabdep rename --clean --execute
+fabdep rename -e
 
 # Rename items in specific directory
 fabdep rename /path/to/workspace -e -c
 ```
 
-This utility searches for all `.platform` files in the workspace and renames their parent directories to match their display names. By default, uses the exact display name. With `--clean`, converts display names to lowercase with underscores (e.g., "My Notebook" → "my_notebook"). Runs in dry-run mode by default to preview changes before applying them. Shows which directories are skipped when they already match the target name.
-
-### Authentication
-
-Manage Azure accounts for Fabric deployments:
-
-```bash
-# List current and available accounts
-fabdep auth list
-
-# Switch to different account
-fabdep auth switch <subscription-id>
-
-# Rename a subscription (requires Owner permissions)
-# Automatically switches to the subscription if needed
-fabdep auth rename <subscription-id> <new-name>
-```
-
-**Common issue**: If deployment fails with "workspace not found", you may be authenticated to the wrong tenant. Use `fabdep auth list` to see current and available accounts, then `fabdep auth switch` to change. Add a new tenant with `az login --allow-no-subscriptions`.
+This utility:
+- Searches for all `.platform` files in the workspace
+- Renames parent directories to match their display names
+- By default uses exact display name
+- With `--clean`, converts to lowercase with underscores (e.g., "My Notebook" → "my_notebook")
+- Runs in dry-run mode by default
+- Shows which directories are skipped when they already match
 
 
 ## Configuration
 
-The destination Workspace ID is taken from the first `find_replace entry` in the target repo's parameters (see `example_parameter.yml`).
+### parameter.yml
 
-**parameter.yml**:
+The destination Workspace ID is extracted from the first `find_replace` entry in `parameter.yml`:
 
 ```yaml
 find_replace:
-  - find_value: "dev-workspace-id"
+  # First entry's replace_value is used as destination workspace ID
+  - find_value: "source-workspace-id"
     replace_value:
-      prod: "prod-workspace-id"  # Destination workspace
-    item_type: ["Notebook"]
-find_replace: # - find_value, etc.
+      prod: "dest-workspace-id"  # CLI uses this as workspace_id
+    item_type: ["Notebook", "CopyJob"]
+  # Additional find/replace entries for parameter replacement
+  - find_value: "source-lakehouse-id"
+    replace_value:
+      prod: "dest-lakehouse-id"
+    item_type: ["Notebook", "SemanticModel"]
 ```
 
-All `replace_value` entries must use the same environment key (`prod`, `dev`, etc.).
+**Important**: All `replace_value` entries must use the same environment key (e.g., all use `prod` or all use `dev`).
+
+See `example_parameter.yml` for a complete example.
 
 ### Parameter File Validation
 
@@ -126,38 +178,16 @@ The CLI automatically validates `parameter.yml` and detects invalid configuratio
 
 This is useful when you want to deploy without parameter replacement (e.g., deploying unchanged items to test workspace configuration).
 
-**Example**: See `example_parameter_invalid.yml` for a file with intentional validation failures.
 
-## Programmatic Usage
+## Architecture
 
-Both `WorkspaceDeployer` and `rename_items_by_display_name` can be imported and used in your own Python code:
+The package is organized into focused modules:
 
-```python
-from fabric_deploy import WorkspaceDeployer, rename_items_by_display_name
-
-# Deploy workspace items
-deployer = WorkspaceDeployer(repo_dir="/path/to/workspace")
-deployer.deploy()
-
-# With custom options
-deployer.deploy(
-    item_types=["Notebook", "DataPipeline"],
-    no_cleanup=False,
-)
-
-# Rename items to match display names (exact display name)
-rename_items_by_display_name(
-    repo_dir="/path/to/workspace",
-    dry_run=True,  # Set to False to actually rename
-)
-
-# Rename with cleaning enabled
-rename_items_by_display_name(
-    repo_dir="/path/to/workspace",
-    dry_run=False,
-    clean=True,  # Apply .lower().replace(" ", "_")
-)
-```
+- **workspace.py**: `WorkspaceDeployer` dataclass - deployment logic wrapping `fabric-cicd`
+- **cli.py**: All CLI logic - argument parsing, command handlers, user-facing text
+- **auth.py**: Azure authentication utilities - account management via az CLI
+- **logging.py**: Custom logging and console formatting utilities
+- **rename.py**: Rename utility for workspace item directories
 
 
 ## Links
