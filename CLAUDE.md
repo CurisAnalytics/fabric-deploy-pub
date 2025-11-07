@@ -525,11 +525,17 @@ def switch_account(subscription_id: str) -> None:
 def rename_subscription(subscription_id: str, new_name: str) -> bool:
     """Rename an Azure subscription. Auto-switches if needed. Returns True if switched."""
 
+def is_connection_error(error_msg: str) -> bool:
+    """Check if error is connection reference related (DataPipeline, Dataflow)."""
+
 def is_auth_error(error_msg: str) -> bool:
     """Check if error is authentication/authorization related."""
 ```
 
-**Error Detection**: When deployment fails with auth-related errors (401, 403, 404, "not found", "unauthorized", "forbidden"), the CLI automatically displays current account information, lists available accounts, and suggests relevant auth commands.
+**Error Detection**: The CLI automatically detects different error types and provides specific troubleshooting guidance:
+- **Connection errors**: Detects when DataPipelines/Dataflows reference missing connections, explains that connection GUIDs are tenant-wide and must be edited in source repository files (not parameter.yml)
+- **Auth errors**: Detects authentication/authorization failures (401, 403, 404, "unauthorized", "forbidden"), displays current account information and suggests auth commands
+- **Priority**: Connection errors are checked first to avoid false positives (connection errors can contain auth-related keywords)
 
 **Auto-switching**: The `rename` command automatically switches to the target subscription if it's not accessible in the current tenant context, eliminating the need for manual switching before renaming.
 
@@ -557,9 +563,12 @@ def format_auth_error_message(
     all_accounts: list[dict] | None = None
 ) -> str:
     """Format helpful authentication error message with troubleshooting tips."""
+
+def format_connection_error_message() -> str:
+    """Format helpful message for connection reference errors in DataPipelines/Dataflows."""
 ```
 
-**Design**: Separates presentation/formatting logic from business logic. Auth module handles Azure CLI interactions, logging module handles display formatting.
+**Design**: Separates presentation/formatting logic from business logic. Auth module handles Azure CLI interactions and error detection, logging module handles display formatting.
 
 ## Rename Module
 
@@ -596,7 +605,10 @@ The CLI validates:
 - At least one `*.Lakehouse` directory exists
 - Lakehouse `.platform` metadata file is readable
 
-**Auth error handling**: Automatically detects and provides guidance for authentication/authorization failures with helpful command suggestions.
+**Intelligent error handling**: The CLI automatically detects different error types and provides specific troubleshooting guidance:
+- **Connection errors**: Detects when DataPipelines/Dataflows reference missing tenant-wide connections, explains that connection GUIDs must be edited directly in repository source files (not via parameter.yml)
+- **Auth/authorization errors**: Detects authentication failures, displays account information and suggests relevant auth commands
+- **Validation errors**: Parameter file validation issues trigger automatic .bak renaming with clear explanation
 
 ## Development
 
@@ -721,6 +733,19 @@ rename_items_by_display_name(
 - Parameter file will be automatically renamed to `.bak`
 - Deployment continues using workspace ID from first entry only
 - Fix the parameter file and rename back to `.yml` to restore parameter replacement
+
+**"User does not have access to the connection used in the Pipeline"**
+- This error occurs when a DataPipeline references a connection that doesn't exist in the target tenant
+- **Root cause**: Connection GUIDs are TENANT-WIDE (not workspace-specific), and your workspace repo contains GUIDs from a different tenant
+- **Important**: This indicates the workspace repository is misconfigured for the target tenant
+- **Solution**:
+  1. Identify the correct connection GUIDs in the target tenant
+  2. Edit the pipeline files (e.g., `pipeline-content.json`) directly in your workspace repository
+  3. Update connection GUIDs to match the target tenant's connections
+  4. Commit the updated files to your repository
+  5. Re-run deployment
+- **DO NOT use parameter.yml for connection GUIDs** - they should be edited in source files
+- **Detection help**: Run `fabdep detect` to discover connection GUIDs currently in your workspace repo
 
 **Authentication/Authorization Errors**
 - Run `fabdep auth list` to see current and all available accounts
