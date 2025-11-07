@@ -171,7 +171,7 @@ def parse_args() -> argparse.Namespace:
     _ = deploy_parser.add_argument(
         "--workspace-id",
         "-w",
-        help="Destination workspace ID (overrides parameter.yml detection)",
+        help="Destination workspace ID (replaces parameter.yml detection)",
     )
     _ = deploy_parser.add_argument(
         "--auto-detect",
@@ -339,6 +339,7 @@ def handle_detect_command(args: argparse.Namespace) -> None:
 
 def handle_deploy_command(args: argparse.Namespace) -> None:
     """Handle deploy subcommand execution."""
+
     # Handle auto-detection mode
     if args.auto_detect:
         if not args.workspace_id:
@@ -353,8 +354,22 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
             detector = ParameterDetector(repo_dir=args.directory)
             _ = detector.detect_all()
 
+            # Check if target workspace matches source workspace
+            detected_workspace_ids = [
+                param.find_value
+                for param in detector.parameters.values()
+                if param.description == "Workspace ID"
+            ]
+            if detected_workspace_ids and args.workspace_id in detected_workspace_ids:
+                print(
+                    f"\n✓ Source and target workspace are the same ({args.workspace_id}).\n"
+                    "  No parameter file will be used -- deploying directly without replacements."
+                )
+                _ = sys.stdout.flush()  # Ensure message appears before deployment logs
+                args.auto_detect = False
+
             # Save if requested
-            if args.save_params:
+            if args.save_params and args.auto_detect:
                 output_file = Path(args.directory) / "parameter.yml.detected"
                 detector.save_parameter_yml(
                     output_path=output_file,
@@ -364,8 +379,6 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
                 )
                 print(f"\n✓ Saved auto-detected parameters to: {output_file}\n")
 
-            # Use the dynamically generated parameter file for deployment
-            # This will be handled by WorkspaceDeployer
         except Exception as e:
             print_error(f"\nParameter detection failed: {e}\n")
             sys.exit(1)

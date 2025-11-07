@@ -50,10 +50,13 @@ class WorkspaceDeployer:
         if self.auto_detect:
             # Generate parameter file dynamically
             self._generate_dynamic_params()
-            if self.environment is None:
-                self.environment = "prod"
-        elif self.workspace_id is None or self.environment is None:
+
+        if self.workspace_id is None:
+            # No workspace ID provided - must load from parameter.yml
             self._load_config()
+        elif self.environment is None:
+            # Workspace ID provided but no environment - default to prod
+            self.environment = "prod"
 
         if self.lakehouse_name is None:
             self._detect_lakehouse()
@@ -150,7 +153,7 @@ class WorkspaceDeployer:
 
         # Restore backup
         if backup_file.exists():
-            backup_file.rename(param_file)
+            _ = backup_file.rename(param_file)
             self.logger.info("Restored original parameter.yml")
 
     def _validate_and_handle_parameter_file(self, param_file: Path) -> None:

@@ -39,9 +39,13 @@ fabdep -d -w <target-workspace-id>
 
 This will:
 1. Scan your workspace files to detect source IDs (workspace, lakehouse, SQL endpoints)
-2. Generate parameter.yml with dynamic variables (`$workspace.$id`, `$items.Lakehouse.<name>.$id`)
+2. Check if target workspace matches source workspace:
+   - If same: Skip parameter generation and deploy directly without replacements
+   - If different: Generate parameter.yml with dynamic variables
 3. Deploy to target workspace (fabric-cicd resolves IDs automatically)
 4. Clean up generated files after deployment
+
+**Same-Workspace Deployment**: When deploying to the same workspace as the source (e.g., updating items in place), the CLI automatically detects this and skips parameter generation, avoiding unnecessary replacements.
 
 **Benefits**: No manual ID entry, same parameter file works across environments.
 
@@ -63,7 +67,7 @@ Options:
   --item-types, -t       Deploy specific types (e.g., Notebook DataPipeline)
   --exclude-types, -x    Exclude types (e.g., Report SemanticModel)
   --include-items, -i    Include specific items by name
-  --workspace-id, -w     Destination workspace ID (overrides parameter.yml)
+  --workspace-id, -w     Destination workspace ID (replaces parameter.yml)
   --auto-detect, -d      Auto-detect source IDs and generate parameters on-the-fly
   --save-params          Save auto-detected parameters to parameter.yml.detected
 ```
@@ -98,6 +102,9 @@ fabdep -d -w 19191919-1919-1919-1919-191919191919
 
 # Auto-detect and save generated parameters for review
 fabdep -d -w <workspace-id> --save-params
+
+# Deploy to same workspace (updates items in place, no parameter replacement)
+fabdep -d -w <same-workspace-id>  # Auto-detects match and skips parameter generation
 ```
 
 
