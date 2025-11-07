@@ -8,6 +8,7 @@
 
 - **Wrapper**: Thin CLI layer over Microsoft's `fabric-cicd` package
 - **Auto-detection**: Reads `parameter.yml` to extract workspace ID and environment
+- **Dynamic Parameter Generation**: Auto-detect source IDs from workspace files and generate parameter.yml with dynamic variables
 - **CLI convenience**: Replace inline Python scripts with a simple command
 - **Smart Replace Support**: Handles both legacy and modern parameterization formats
 
@@ -18,6 +19,7 @@ fabric-deploy/
 ├── src/fabric_deploy/         # Package directory
 │   ├── __init__.py            # Package initialization, exports all public classes
 │   ├── workspace.py           # WorkspaceDeployer class - deployment business logic
+│   ├── param_detector.py      # ParameterDetector class - auto-detect source IDs
 │   ├── cli.py                 # ALL CLI logic - parsers, handlers, user-facing text
 │   ├── auth.py                # Azure auth utilities - business logic only
 │   ├── logging.py             # Custom logging & console formatting utilities
@@ -25,11 +27,13 @@ fabric-deploy/
 │   └── types.py               # Type definitions
 ├── pyproject.toml             # Package configuration, depends on fabric-cicd
 ├── example_parameter.yml      # Example configuration file
+├── SMART_REPLACE.md           # Dynamic parameter generation documentation
 └── README.md                  # Brief usage documentation
 ```
 
 **Key Components**:
 - **WorkspaceDeployer**: Dataclass for deployment logic (wraps Microsoft's fabric-cicd)
+- **ParameterDetector**: Auto-detect source IDs and generate dynamic variables
 - **CLI Layer**: Centralized presentation with business logic separation
 
 **CLI Pattern**: Centralized presentation layer:
@@ -86,12 +90,64 @@ fabdep  # Auto-detects workspace_id and environment from parameter.yml
 ## What This Package Provides
 
 ### Core Features
+- **Dynamic Parameter Generation**: Auto-detect source IDs and generate parameter.yml with dynamic variables
 - **Deployment CLI**: `fabdep` command with auto-detection from `parameter.yml`
 - **Lakehouse Detection**: Auto-detects lakehouse names from `.platform` files
 - **Parameter Validation**: Validates and handles both legacy and smart replace formats
 - **Item Filtering**: Deploy specific item types or exclude types
 - **Rename Utility**: Rename workspace item directories to match display names
 - **User-friendly Output**: Formatted console output and error messages
+
+### ParameterDetector Class
+
+The `ParameterDetector` class (in `param_detector.py`) auto-detects source IDs from workspace repository files and generates parameter.yml with dynamic variables.
+
+**Detection Sources**:
+- **Notebook Metadata**: Extracts `default_lakehouse_workspace_id` and `default_lakehouse` from notebook-content.py files
+- **SemanticModel Files**: Parses `expressions.tmdl` to extract SQL connection strings and endpoint IDs
+- **Pipeline JSON**: Scans pipeline-content.json for external connection references
+- **Lakehouse Metadata**: Reads `.platform` files to get lakehouse display names for variable generation
+
+**Dynamic Variable Generation**:
+```python
+# Workspace ID → $workspace.$id
+"fb61a71c-b2af-49dc-9150-9040010c79bb" → "$workspace.$id"
+
+# Lakehouse ID → $items.Lakehouse.<name>.$id
+"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" → "$items.Lakehouse.my_lakehouse.$id"
+
+# SQL Connection → $items.Lakehouse.<name>.$sqlendpoint
+"EXAMPLEABC123XYZ" → "$items.Lakehouse.my_lakehouse.$sqlendpoint"
+```
+
+**Key Methods**:
+- `detect_all()`: Scans all workspace files and returns detected parameters
+- `generate_parameter_yml()`: Creates parameter.yml structure with dynamic variables
+- `save_parameter_yml()`: Writes parameter.yml to file with YAML formatting
+- `print_detection_summary()`: Displays detected parameters with dynamic variables
+
+**Auto-Skip Logic**: Parameters without dynamic variables (e.g., external connection IDs) are automatically skipped because:
+1. External connections are not deployed by fabric-cicd (manual setup required)
+2. Connection IDs don't change between source and destination
+3. No replacement needed - same connection works in both environments
+
+**Usage Pattern**:
+```python
+from fabric_deploy import ParameterDetector
+
+detector = ParameterDetector(repo_dir="/path/to/workspace")
+detector.detect_all()
+
+# Generate parameter.yml with dynamic variables
+detector.save_parameter_yml(
+    output_path="parameter.yml",
+    use_dynamic=True,
+    environment="prod",
+    skip_empty=True  # Skip parameters without dynamic variables
+)
+```
+
+See [SMART_REPLACE.md](./SMART_REPLACE.md) for complete documentation on dynamic variables and detection logic.
 
 ## Dependencies
 
@@ -292,14 +348,25 @@ Contains ALL CLI logic - argument parsing, command handling, error messages, and
 - Calls `rename_items_by_display_name()` from `rename.py`
 - Handles errors with user-friendly messages
 
+**`handle_detect_command(args) -> None`**
+- Executes detect command
+- Creates `ParameterDetector` instance and calls `detect_all()`
+- Prints detection summary with dynamic variables
+- Optionally saves parameter.yml with `--save` flag
+- Handles errors with user-friendly messages
+
 **`handle_deploy_command(args) -> None`**
 - Executes deploy command
+- If `--auto-detect` flag is set:
+  - Validates `--workspace-id` is provided
+  - Creates `ParameterDetector` and generates parameter.yml on-the-fly
+  - Optionally saves with `--save-params` flag
 - Creates `WorkspaceDeployer` instance and calls `deploy()`
 - Handles errors with user-friendly messages
 
 **`main() -> None`**
 - CLI entry point
-- Routes to appropriate command handler based on args.command
+- Routes to appropriate command handler based on args.command (auth, rename, detect, deploy)
 
 
 
@@ -334,10 +401,42 @@ Options:
   --item-types, -t       Deploy specific types (e.g., Notebook DataPipeline)
   --exclude-types, -x    Exclude types (e.g., Report SemanticModel)
   --include-items, -i    Include specific items by name (experimental)
+  --workspace-id, -w     Destination workspace ID (overrides parameter.yml)
+  --auto-detect, -d      Auto-detect source IDs and generate parameters on-the-fly
+  --save-params          Save auto-detected parameters to parameter.yml.detected
   --help                 Show help message
 ```
 
 **Note**: The `deploy` subcommand is optional. When deploy-specific flags are used without specifying a subcommand, the CLI automatically defaults to `deploy`.
+
+**Auto-Detect Mode**: Use `-d -w <workspace-id>` to deploy without a parameter.yml file. This will:
+1. Scan workspace files to detect source IDs (workspace, lakehouse, SQL endpoints)
+2. Generate parameter.yml with dynamic variables (`$workspace.$id`, `$items.Lakehouse.<name>.$id`)
+3. Deploy to target workspace (fabric-cicd resolves IDs automatically)
+4. Clean up generated files after deployment
+
+### Detect Parameters
+
+```
+fabdep detect [DIRECTORY] [OPTIONS]
+
+Arguments:
+  DIRECTORY              Path to workspace directory (default: current directory)
+
+Options:
+  --save, -s             Save detected parameters to parameter.yml.detected
+  --help                 Show help message
+```
+
+**Purpose**: Auto-detect source IDs from workspace files and optionally generate parameter.yml with dynamic variables.
+
+**Detection Sources**:
+- Notebook metadata (`default_lakehouse_workspace_id`, `default_lakehouse`)
+- SemanticModel `expressions.tmdl` files (SQL connection strings and endpoint IDs)
+- Pipeline JSON files (external connection IDs)
+- Lakehouse `.platform` files (display names for variable generation)
+
+**Output**: Displays detected parameters with their dynamic variable mappings. Parameters without dynamic variables (e.g., external connections) are shown but marked as skipped.
 
 ### Rename Items
 
@@ -525,9 +624,25 @@ All public classes can be imported and used programmatically:
 ```python
 from fabric_deploy import (
     WorkspaceDeployer,
+    ParameterDetector,
     rename_items_by_display_name,
 )
 from pathlib import Path
+
+# --- Parameter Detection ---
+
+# Detect and display parameters
+detector = ParameterDetector(repo_dir="/path/to/workspace")
+detector.detect_all()
+detector.print_detection_summary()
+
+# Generate parameter.yml with dynamic variables
+detector.save_parameter_yml(
+    output_path="parameter.yml",
+    use_dynamic=True,
+    environment="prod",
+    skip_empty=True  # Skip parameters without dynamic variables
+)
 
 # --- Deployment ---
 
@@ -535,6 +650,14 @@ from pathlib import Path
 deployer = WorkspaceDeployer(
     repo_dir="/path/to/workspace",
     logger_name="my_app.fabric_deployment",
+)
+deployer.deploy()
+
+# With auto-detect mode
+deployer = WorkspaceDeployer(
+    repo_dir="/path/to/workspace",
+    workspace_id="target-workspace-id",
+    auto_detect=True,  # Enable dynamic parameter generation
 )
 deployer.deploy()
 

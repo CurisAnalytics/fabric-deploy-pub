@@ -7,8 +7,20 @@ and Azure account information display utilities.
 
 import logging
 import re
+import sys
 from collections.abc import Sequence
-from typing import ClassVar, override
+from typing import ClassVar
+
+# Import override from typing_extensions for Python < 3.12
+if sys.version_info >= (3, 12):
+    from typing import override
+else:
+    try:
+        from typing_extensions import override
+    except ImportError:
+        # Fallback: create a no-op decorator
+        def override(func):
+            return func
 
 from fabric_cicd._common._color import Fore, Style
 from fabric_cicd._common._logging import print_header
