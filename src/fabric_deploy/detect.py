@@ -4,9 +4,6 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Set
-
-import yaml
 
 
 @dataclass
@@ -14,21 +11,21 @@ class DetectedParameter:
     """Represents a detected parameter with its context."""
 
     find_value: str
-    item_types: Set[str] = field(default_factory=set)
-    source_files: Set[str] = field(default_factory=set)
+    item_types: set[str] = field(default_factory=set)
+    source_files: set[str] = field(default_factory=set)
     description: str = ""
     dynamic_variable: str = ""  # Smart replace dynamic variable
 
     def to_dict(self, use_dynamic: bool = True, environment: str = "prod") -> dict:
         """
-        Convert to parameter.yml entry format.
+        Convert to parameter entry format for auto-detect mode.
 
         Args:
             use_dynamic: Use dynamic variables in replace_value (default: True)
             environment: Environment name (default: "prod")
 
         Returns:
-            Dictionary in parameter.yml format
+            Dictionary in parameter entry format with dynamic variables
         """
         entry = {
             "find_value": self.find_value,
@@ -50,24 +47,21 @@ class ParameterDetector:
 
     # Regex patterns for ID detection
     UUID_PATTERN = re.compile(
-        r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
-        re.IGNORECASE
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE
     )
 
     # SQL Connection pattern: Sql.Database("HOST-SQLSTRING.datawarehouse...", "ENDPOINT-ID")
     SQL_DATABASE_PATTERN = re.compile(
         r'Sql\.Database\(\s*"([^"]+)-([A-Z0-9]+)\.datawarehouse\.fabric\.microsoft\.com"\s*,\s*"([0-9a-f-]+)"\s*\)',
-        re.IGNORECASE
+        re.IGNORECASE,
     )
 
     # Notebook metadata patterns
     WORKSPACE_ID_PATTERN = re.compile(
-        r'"default_lakehouse_workspace_id":\s*"([0-9a-f-]+)"',
-        re.IGNORECASE
+        r'"default_lakehouse_workspace_id":\s*"([0-9a-f-]+)"', re.IGNORECASE
     )
     LAKEHOUSE_ID_PATTERN = re.compile(
-        r'"default_lakehouse":\s*"([0-9a-f-]+)"',
-        re.IGNORECASE
+        r'"default_lakehouse":\s*"([0-9a-f-]+)"', re.IGNORECASE
     )
 
     def __init__(self, repo_dir: Path | str):
@@ -80,6 +74,20 @@ class ParameterDetector:
         self.repo_dir = Path(repo_dir).resolve()
         self.parameters: dict[str, DetectedParameter] = {}
         self._lakehouse_names: list[str] = []
+
+    def _print_file_warning(
+        self, file_path: Path, error: Exception, context: str = ""
+    ) -> None:
+        """
+        Print warning message for file processing errors.
+
+        Args:
+            file_path: Path to the file that failed
+            error: Exception that was raised
+            context: Optional context description (e.g., "lakehouse metadata")
+        """
+        context_str = f" {context} from" if context else ""
+        print(f"Warning: Failed to read{context_str} {file_path}: {error}")
 
     def detect_all(self) -> dict[str, DetectedParameter]:
         """
@@ -109,21 +117,18 @@ class ParameterDetector:
         lakehouse_dirs = self.repo_dir.glob("*.Lakehouse")
         for lakehouse_dir in lakehouse_dirs:
             platform_file = lakehouse_dir / ".platform"
-            if platform_file.exists():
-                try:
-                    metadata = json.loads(platform_file.read_text(encoding='utf-8'))
-                    display_name = metadata.get("metadata", {}).get("displayName", "")
-                    if display_name:
-                        self._lakehouse_names.append(display_name)
-                except Exception as e:
-                    print(f"Warning: Failed to read lakehouse metadata from {platform_file}: {e}")
+            if not platform_file.exists():
+                continue
+            try:
+                metadata = json.loads(platform_file.read_text(encoding="utf-8"))
+                display_name = metadata.get("metadata", {}).get("displayName", "")
+                if display_name:
+                    self._lakehouse_names.append(display_name)
+            except Exception as e:
+                self._print_file_warning(platform_file, e, "lakehouse metadata")
 
     def _add_parameter(
-        self,
-        find_value: str,
-        item_type: str,
-        source_file: str,
-        description: str = ""
+        self, find_value: str, item_type: str, source_file: str, description: str = ""
     ) -> None:
         """Add or update a detected parameter with dynamic variable generation."""
         if find_value not in self.parameters:
@@ -133,7 +138,7 @@ class ParameterDetector:
             self.parameters[find_value] = DetectedParameter(
                 find_value=find_value,
                 description=description,
-                dynamic_variable=dynamic_var
+                dynamic_variable=dynamic_var,
             )
 
         param = self.parameters[find_value]
@@ -190,7 +195,7 @@ class ParameterDetector:
 
         for notebook_file in notebook_files:
             try:
-                content = notebook_file.read_text(encoding='utf-8')
+                content = notebook_file.read_text(encoding="utf-8")
 
                 # Extract workspace ID
                 workspace_matches = self.WORKSPACE_ID_PATTERN.findall(content)
@@ -199,7 +204,7 @@ class ParameterDetector:
                         find_value=workspace_id,
                         item_type="Notebook",
                         source_file=str(notebook_file.relative_to(self.repo_dir)),
-                        description="Workspace ID"
+                        description="Workspace ID",
                     )
 
                 # Extract lakehouse ID
@@ -209,11 +214,11 @@ class ParameterDetector:
                         find_value=lakehouse_id,
                         item_type="Notebook",
                         source_file=str(notebook_file.relative_to(self.repo_dir)),
-                        description="Lakehouse ID"
+                        description="Lakehouse ID",
                     )
 
             except Exception as e:
-                print(f"Warning: Failed to read {notebook_file}: {e}")
+                self._print_file_warning(notebook_file, e)
 
     def _detect_from_semantic_models(self) -> None:
         """Detect SQL connection strings and endpoint IDs from semantic models."""
@@ -223,7 +228,7 @@ class ParameterDetector:
 
         for expr_file in expression_files:
             try:
-                content = expr_file.read_text(encoding='utf-8')
+                content = expr_file.read_text(encoding="utf-8")
 
                 # Extract SQL connection string and endpoint ID
                 matches = self.SQL_DATABASE_PATTERN.findall(content)
@@ -233,7 +238,7 @@ class ParameterDetector:
                         find_value=sql_string,
                         item_type="SemanticModel",
                         source_file=str(expr_file.relative_to(self.repo_dir)),
-                        description="Lakehouse SQL Analytics Endpoint Connection Substring"
+                        description="Lakehouse SQL Analytics Endpoint Connection Substring",
                     )
 
                     # Add SQL endpoint item ID
@@ -241,29 +246,30 @@ class ParameterDetector:
                         find_value=endpoint_id,
                         item_type="SemanticModel",
                         source_file=str(expr_file.relative_to(self.repo_dir)),
-                        description="Lakehouse SQL Analytics Endpoint Item ID"
+                        description="Lakehouse SQL Analytics Endpoint Item ID",
                     )
 
             except Exception as e:
-                print(f"Warning: Failed to read {expr_file}: {e}")
+                self._print_file_warning(expr_file, e)
 
     def _detect_from_pipelines(self) -> None:
         """Detect connection IDs and other references from pipeline JSON files."""
-        pipeline_files = self.repo_dir.glob("Pipelines/*.DataPipeline/pipeline-content.json")
+        pipeline_files = self.repo_dir.glob(
+            "Pipelines/*.DataPipeline/pipeline-content.json"
+        )
 
         for pipeline_file in pipeline_files:
             try:
-                content = pipeline_file.read_text(encoding='utf-8')
+                content = pipeline_file.read_text(encoding="utf-8")
                 data = json.loads(content)
 
                 # Look for external connection references
                 self._extract_connections_recursive(
-                    data,
-                    str(pipeline_file.relative_to(self.repo_dir))
+                    data, str(pipeline_file.relative_to(self.repo_dir))
                 )
 
             except Exception as e:
-                print(f"Warning: Failed to read {pipeline_file}: {e}")
+                self._print_file_warning(pipeline_file, e)
 
     def _extract_connections_recursive(self, obj, source_file: str) -> None:
         """Recursively extract connection IDs from nested JSON structures."""
@@ -278,7 +284,7 @@ class ParameterDetector:
                             find_value=connection_id,
                             item_type="DataPipeline",
                             source_file=source_file,
-                            description="External connection ID"
+                            description="External connection ID",
                         )
 
             # Recurse into nested dictionaries
@@ -294,11 +300,13 @@ class ParameterDetector:
         self,
         use_dynamic: bool = True,
         environment: str = "prod",
-        include_descriptions: bool = True,
-        skip_empty: bool = True
+        include_descriptions: bool = False,
+        skip_empty: bool = True,
     ) -> dict:
         """
-        Generate parameter.yml structure with detected parameters.
+        Generate parameter structure with detected parameters for auto-detect mode.
+
+        Uses dynamic variables that are resolved at deploy time by fabric-cicd.
 
         Args:
             use_dynamic: Use dynamic variables in replace_value (default: True)
@@ -307,7 +315,7 @@ class ParameterDetector:
             skip_empty: Skip parameters without dynamic variables (default: True)
 
         Returns:
-            Dictionary in parameter.yml format
+            Dictionary with find_replace entries using dynamic variables
         """
         if not self.parameters:
             self.detect_all()
@@ -318,12 +326,15 @@ class ParameterDetector:
         sorted_params = sorted(
             self.parameters.values(),
             key=lambda p: (
-                0 if "Workspace ID" in p.description else
-                1 if "Lakehouse ID" in p.description else
-                2 if "SQL" in p.description else
-                3,
-                p.description
-            )
+                0
+                if "Workspace ID" in p.description
+                else 1
+                if "Lakehouse ID" in p.description
+                else 2
+                if "SQL" in p.description
+                else 3,
+                p.description,
+            ),
         )
 
         # Add parameters with dynamic variables
@@ -344,25 +355,23 @@ class ParameterDetector:
         output_path: Path | str,
         use_dynamic: bool = True,
         environment: str = "prod",
-        skip_empty: bool = True
+        skip_empty: bool = True,
     ) -> None:
         """
-        Generate and save parameter.yml file.
+        Generate and save parameter file with dynamic variables for auto-detect mode.
 
         Args:
-            output_path: Path to save parameter.yml
+            output_path: Path to save parameter file
             use_dynamic: Use dynamic variables in replace_value (default: True)
             environment: Environment name (default: "prod")
             skip_empty: Skip parameters without dynamic variables (default: True)
         """
         param_dict = self.generate_parameter_yml(
-            use_dynamic=use_dynamic,
-            environment=environment,
-            skip_empty=skip_empty
+            use_dynamic=use_dynamic, environment=environment, skip_empty=skip_empty
         )
 
         output_path = Path(output_path)
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with open(output_path, "w", encoding="utf-8") as f:
             # Custom YAML dump with comments
             f.write("find_replace:\n")
 
@@ -372,13 +381,13 @@ class ParameterDetector:
                     f.write(f"  # {comment}\n")
 
                 # Write the entry
-                f.write(f"  - find_value: \"{entry['find_value']}\"\n")
+                f.write(f'  - find_value: "{entry["find_value"]}"\n')
 
                 # Replace value is always a dict with environment keys
-                replace_value = entry['replace_value']
+                replace_value = entry["replace_value"]
                 f.write(f"    replace_value:\n")
                 for env, val in replace_value.items():
-                    f.write(f"      {env}: \"{val}\"\n")
+                    f.write(f'      {env}: "{val}"\n')
 
                 f.write(f"    item_type: {entry['item_type']}\n")
 
@@ -391,7 +400,9 @@ class ParameterDetector:
         with_dynamic = sum(1 for p in self.parameters.values() if p.dynamic_variable)
         without_dynamic = len(self.parameters) - with_dynamic
 
-        print(f"\nDetected {len(self.parameters)} parameters ({with_dynamic} with dynamic variables, {without_dynamic} require manual setup):\n")
+        print(
+            f"\nDetected {len(self.parameters)} parameters ({with_dynamic} with dynamic variables, {without_dynamic} require manual setup):\n"
+        )
 
         for param in self.parameters.values():
             print(f"  {param.description or 'Unknown'}")
@@ -405,5 +416,9 @@ class ParameterDetector:
             print()
 
         if without_dynamic > 0:
-            print(f"Note: {without_dynamic} parameter(s) will be skipped in auto-generated parameter.yml")
-            print("These typically require external setup (e.g., connection IDs) and don't change between deployments.\n")
+            print(
+                f"Note: {without_dynamic} parameter(s) will be skipped in auto-generated parameter.yml"
+            )
+            print(
+                "These typically require external setup (e.g., connection IDs) and don't change between deployments.\n"
+            )

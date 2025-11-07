@@ -12,13 +12,13 @@ from .auth import (
     rename_subscription,
     switch_account,
 )
-from .logging import (
+from .detect import ParameterDetector
+from .log import (
     format_account_list,
     format_auth_error_message,
     format_connection_error_message,
     print_error,
 )
-from .param_detector import ParameterDetector
 from .rename import rename_items_by_display_name
 from .workspace import WorkspaceDeployer
 

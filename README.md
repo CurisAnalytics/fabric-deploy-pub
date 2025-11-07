@@ -5,8 +5,8 @@ CLI wrapper around Microsoft's [fabric-cicd](https://github.com/microsoft/fabric
 
 ## Features
 
+- **Workspace Base Name + Git Branch**: Automatically resolve workspace ID from base name + current branch
 - **Dynamic Parameter Generation**: Auto-detect source IDs and generate parameter.yml with dynamic variables
-- **Auto-detection**: Reads workspace ID and environment from `parameter.yml`
 - **Item Filtering**: Deploy specific item types or exclude types
 - **Auth Management**: Switch between Azure subscriptions
 - **Rename Utility**: Rename directories to match display names
@@ -21,14 +21,28 @@ For development, changes to source code are immediately reflected without reinst
 
 ## Quick Start
 
-### Traditional Deployment (with parameter.yml)
+### Deployment
 
 ```bash
 cd path/to/workspace
 fabdep
 ```
 
-**Requirements**: `parameter.yml` must exist in workspace directory.
+**Requirements**: 
+- `parameter.yml` with `workspace_base_name` field
+- Git repository with current branch
+
+**How it works**:
+1. Reads `workspace_base_name` from `parameter.yml` (e.g., `"my_workspace"`)
+2. Gets current git branch name (e.g., `"prod"`)
+3. Combines them: `my_workspace [prod]`
+4. Looks up workspace ID via Fabric REST API
+5. Deploys to resolved workspace
+
+**Benefits**:
+- No manual workspace ID management
+- Same parameter file works across all branches
+- Automatic branch-based workspace routing
 
 ### Auto-Detect Mode (no parameter.yml needed)
 
@@ -230,31 +244,38 @@ This utility:
 
 ### parameter.yml
 
-#### Traditional Format (Static IDs)
-
-The destination Workspace ID is extracted from the first `find_replace` entry in `parameter.yml`:
+The configuration uses a workspace base name combined with the current git branch:
 
 ```yaml
-find_replace:
-  # First entry's replace_value is used as destination workspace ID
-  - find_value: "source-workspace-id"
-    replace_value:
-      prod: "dest-workspace-id"  # CLI uses this as workspace_id
-    item_type: ["Notebook", "CopyJob"]
-  # Additional find/replace entries for parameter replacement
-  - find_value: "source-lakehouse-id"
-    replace_value:
-      prod: "dest-lakehouse-id"  # Manual ID entry
-    item_type: ["Notebook", "SemanticModel"]
+# parameter.yml
+workspace_base_name: "my_workspace"
 ```
 
-**Important**: All `replace_value` entries must use the same environment key (e.g., all use `prod` or all use `dev`).
+**How it resolves**:
+- Base name: `my_workspace`
+- Current branch: `prod` (from `git branch --show-current`)
+- Resolved workspace name: `my_workspace [prod]`
+- Workspace ID: Looked up via Fabric REST API
 
-See `example_parameter.yml` for a complete example.
+**Branch examples**:
+- On `prod` branch → deploys to `my_workspace [prod]`
+- On `dev` branch → deploys to `my_workspace [dev]`
+- On `staging` branch → deploys to `my_workspace [staging]`
 
-#### Dynamic Format (Auto-Generated)
+**Requirements**:
+- Must be in a git repository
+- Workspace must exist in Fabric with exact name: `{base_name} [{branch}]`
+- Branch names are matched case-insensitively
+- Must have access to workspace in current Azure account
 
-Use `fabdep detect --save` to generate parameter.yml with dynamic variables that are resolved automatically at deploy time:
+**Error handling**:
+- If workspace not found, deployment fails with list of available workspaces
+- If not in git repository, deployment fails with helpful error message
+- Run `fabdep auth list` to verify correct Azure account
+
+### Dynamic Variables (Auto-Generated)
+
+In addition to the workspace base name, you can use `fabdep detect --save` to generate additional parameter replacements with dynamic variables that are resolved automatically at deploy time:
 
 ```yaml
 find_replace:
@@ -278,21 +299,6 @@ find_replace:
 
 See [SMART_REPLACE.md](./SMART_REPLACE.md) for complete documentation.
 
-### Parameter File Validation
-
-The CLI automatically validates `parameter.yml` and detects invalid configurations:
-
-**Invalid scenarios** (triggers automatic `.bak` renaming):
-- Duplicate `find_value` entries (same value appears multiple times)
-- Blank or empty destination values (e.g., `prod: ""` or `prod: null`)
-
-**What happens when invalid**:
-1. CLI logs warning messages explaining the validation failures
-2. Renames `parameter.yml` → `parameter.yml.bak`
-3. Deployment continues using workspace ID from first entry only
-4. Microsoft's `fabric-cicd` ignores `.bak` files (no parameter replacement occurs)
-
-This is useful when you want to deploy without parameter replacement (e.g., deploying unchanged items to test workspace configuration).
 
 
 ## Architecture

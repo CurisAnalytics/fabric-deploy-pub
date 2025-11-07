@@ -15,8 +15,9 @@ from fabric_cicd import (
 )
 from fabric_cicd.constants import ACCEPTED_ITEM_TYPES
 
-from .logging import get_logger, print_header
-from .param_detector import ParameterDetector
+from .api import get_workspace_id_by_name
+from .detect import ParameterDetector
+from .log import get_logger, print_header
 
 
 @dataclass
@@ -61,6 +62,72 @@ class WorkspaceDeployer:
         if self.lakehouse_name is None:
             self._detect_lakehouse()
 
+    def _get_git_branch(self) -> str:
+        """
+        Get current git branch name.
+
+        Returns:
+            Branch name
+
+        Raises:
+            RuntimeError: If not in a git repository or git command fails
+        """
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=self._repo_dir_resolved,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            branch = result.stdout.strip()
+            if not branch:
+                raise RuntimeError("Not on a git branch (detached HEAD state)")
+            return branch
+        except subprocess.CalledProcessError as e:
+            error_msg = e.stderr.strip() if e.stderr else "Unknown error"
+            raise RuntimeError(
+                f"Failed to get git branch.\n{error_msg}\n\n"
+                "Make sure you're in a git repository and git is installed."
+            ) from e
+
+    def _resolve_workspace_id_from_name(self, base_name: str, branch: str) -> str:
+        """
+        Resolve workspace ID from base name and branch.
+
+        Combines base_name with branch suffix (case-insensitive) and looks up
+        workspace ID via Fabric API.
+
+        Args:
+            base_name: Workspace base name from parameter.yml
+            branch: Current git branch name
+
+        Returns:
+            Workspace ID (GUID)
+
+        Raises:
+            ValueError: If workspace not found
+            RuntimeError: If API call fails
+        """
+        workspace_name = f"{base_name} [{branch}]"
+        self.logger.info(f"Resolving workspace: '{workspace_name}'")
+        self.logger.info(f"  Base name: {base_name}")
+        self.logger.info(f"  Branch: {branch}")
+
+        try:
+            workspace_id = get_workspace_id_by_name(workspace_name)
+            self.logger.info(f"  Workspace ID: {workspace_id}")
+            return workspace_id
+        except ValueError as e:
+            # Re-raise with additional context
+            raise ValueError(
+                f"Failed to resolve workspace ID.\n{e}\n\n"
+                f"Expected workspace name: '{workspace_name}' "
+                f"(base: '{base_name}', branch: '{branch}')"
+            ) from e
+
     def _load_config(self) -> None:
         """Load and validate workspace configuration from parameter.yml or parameter.yml.bak."""
         if not self._repo_dir_resolved.exists():
@@ -82,16 +149,26 @@ class WorkspaceDeployer:
                     "Make sure you're running this from a Fabric workspace directory"
                 )
 
-        # Validate parameter file and handle invalid cases (only if it's not already .bak)
-        if param_file.suffix != ".bak":
-            self._validate_and_handle_parameter_file(param_file)
-            # If file was renamed to .bak, update param_file reference
-            if bak_file.exists() and not param_file.exists():
-                param_file = bak_file
+        # Load workspace_base_name from parameter.yml
+        with open(param_file) as f:
+            params = yaml.safe_load(f)
 
-        workspace_id, environment = self._extract_config_from_parameters(param_file)
+        workspace_base_name = params.get("workspace_base_name")
+
+        if not workspace_base_name:
+            raise ValueError(
+                f"No workspace_base_name found in {param_file.name}.\n\n"
+                "parameter.yml must contain:\n"
+                '  workspace_base_name: "your_workspace"\n\n'
+                "The workspace will be resolved from: {base_name} [{branch}]"
+            )
+
+        # Resolve workspace ID from base name + branch
+        self.logger.info("Using workspace base name from parameter.yml")
+        branch = self._get_git_branch()
+        workspace_id = self._resolve_workspace_id_from_name(workspace_base_name, branch)
         self.workspace_id = workspace_id
-        self.environment = environment
+        self.environment = "default"
 
     def _generate_dynamic_params(self) -> None:
         """
@@ -155,142 +232,6 @@ class WorkspaceDeployer:
         if backup_file.exists():
             _ = backup_file.rename(param_file)
             self.logger.info("Restored original parameter.yml")
-
-    def _validate_and_handle_parameter_file(self, param_file: Path) -> None:
-        """
-        Validate parameter file and rename to .bak if invalid.
-
-        Detects invalid scenarios:
-        - File already has .bak extension
-        - Duplicate find_value entries
-        - Blank/empty destination values in replace_value
-
-        Args:
-            param_file: Path to parameter.yml
-        """
-        # Check if already a .bak file
-        if param_file.suffix == ".bak":
-            self.logger.warning(
-                f"Parameter file already has .bak extension: {param_file.name}"
-            )
-            return
-
-        try:
-            with open(param_file) as f:
-                params = yaml.safe_load(f)
-        except Exception as e:
-            self.logger.error(f"Failed to parse parameter file: {e}")
-            return
-
-        find_replace = params.get("find_replace", [])
-        if not find_replace:
-            return
-
-        is_invalid = False
-        reasons: list[str] = []
-
-        # Check for duplicate find_value entries
-        find_values: list[str] = []
-        for entry in find_replace:
-            find_val = entry.get("find_value", "")
-            if find_val in find_values:
-                is_invalid = True
-                reasons.append(f"Duplicate find_value: '{find_val}'")
-            find_values.append(find_val)
-
-        # Check for blank destination values
-        for i, entry in enumerate(find_replace):
-            replace_values = entry.get("replace_value", {})
-            for env, value in replace_values.items():
-                if value == "" or value is None:
-                    is_invalid = True
-                    reasons.append(
-                        f"Entry {i + 1}: Blank destination value for environment '{env}'"
-                    )
-
-        # If invalid, rename to .bak
-        if is_invalid:
-            bak_file = param_file.with_suffix(".yml.bak")
-            print()
-            self.logger.warning("Invalid parameter file detected:")
-            for reason in reasons:
-                self.logger.warning(f"  - {reason}")
-
-            _ = param_file.rename(bak_file)
-            self.logger.warning(
-                f"Renamed parameter file: {param_file.name} -> {bak_file.name}"
-            )
-            print()
-            self.logger.info(
-                "Deployment will proceed using workspace ID from first entry only"
-            )
-
-    def _extract_config_from_parameters(self, param_file: Path) -> tuple[str, str]:
-        """
-        Extract workspace ID and environment from parameter.yml.
-
-        Supports both legacy and smart replace formats:
-        - Legacy: Uses replace_value with environment keys (e.g., prod: "workspace-id")
-        - Smart replace: Uses direct workspace ID in replace_value (e.g., replace_value: "workspace-id")
-
-        For smart replace format, fabric-cicd handles parameterization using dynamic variables
-        like $workspace.$id, $items.<type>.<name>.$id, etc.
-
-        Args:
-            param_file: Path to parameter.yml
-
-        Returns:
-            Tuple of (workspace_id, environment)
-        """
-        with open(param_file) as f:
-            params = yaml.safe_load(f)
-
-        find_replace = params.get("find_replace", [])
-        if not find_replace:
-            raise ValueError("No find_replace entries found in parameter.yml")
-
-        first_entry = find_replace[0]
-        replace_value = first_entry.get("replace_value")
-
-        # Check if using smart replace format (direct string value)
-        if isinstance(replace_value, str):
-            # Smart replace format - workspace ID is the replace_value
-            workspace_id = replace_value
-            environment = "default"
-            self.logger.info("Using smart replace parameterization format")
-            return workspace_id, environment
-
-        # Legacy format - environment-based replacement
-        if not isinstance(replace_value, dict):
-            raise ValueError(
-                "Invalid parameter.yml format: replace_value must be string or dict"
-            )
-
-        available_envs: list[str] = list(replace_value.keys())
-        if not available_envs:
-            raise ValueError("No environments found in parameter.yml")
-
-        # Validate all entries use the same environment (legacy format only)
-        for entry in find_replace:
-            entry_replace = entry.get("replace_value", {})
-            if isinstance(entry_replace, dict):
-                entry_envs = list(entry_replace.keys())
-                if set(entry_envs) != set(available_envs):
-                    raise ValueError(
-                        f"Inconsistent environments across parameter.yml entries. "
-                        f"Expected {available_envs}, found {entry_envs}"
-                    )
-
-        environment = available_envs[0]
-        workspace_id = replace_value[environment]
-
-        if not workspace_id:
-            raise ValueError(
-                f"No workspace ID specified for environment '{environment}'"
-            )
-
-        self.logger.info("Using legacy parameterization format")
-        return workspace_id, environment
 
     def _detect_lakehouse(self) -> None:
         """

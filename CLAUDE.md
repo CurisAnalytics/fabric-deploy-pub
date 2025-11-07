@@ -7,14 +7,37 @@
 ## Purpose
 
 - **Wrapper**: Thin CLI layer over Microsoft's `fabric-cicd` package
-- **Auto-detection**: Reads `parameter.yml` to extract workspace ID and environment
+- **Workspace Resolution**: Combines workspace base name + git branch to resolve workspace ID via Fabric API
+- **Auto-detection**: Reads `parameter.yml` to extract workspace base name
 - **Dynamic Parameter Generation**: Auto-detect source IDs from workspace files and generate parameter.yml with dynamic variables
 - **CLI convenience**: Replace inline Python scripts with a simple command
-- **Smart Replace Support**: Handles both legacy and modern parameterization formats
+- **Smart Replace Support**: Handles dynamic parameterization with auto-generated variables
+
+```sh
+fabric-deploy/
+├── src/fabric_deploy/         # Package directory
+│   ├── __init__.py            # Package initialization, exports all public classes
+│   ├── workspace.py           # WorkspaceDeployer class - deployment business logic
+│   ├── param_detector.py      # ParameterDetector class - auto-detect source IDs
+│   ├── fabric_api.py          # Fabric REST API integration - workspace lookup
+│   ├── cli.py                 # ALL CLI logic - parsers, handlers, user-facing text
+│   ├── auth.py                # Azure auth utilities - business logic only
+│   ├── logging.py             # Custom logging & console formatting utilities
+│   ├── rename.py              # Rename utility - business logic only
+│   └── types.py               # Type definitions
+├── pyproject.toml             # Package configuration, depends on fabric-cicd
+├── SMART_REPLACE.md           # Dynamic parameter generation documentation
+└── README.md                  # Brief usage documentation
+```
+
+**Key Components**:
+- **WorkspaceDeployer**: Dataclass for deployment logic (wraps Microsoft's fabric-cicd)
+- **ParameterDetector**: Auto-detect source IDs and generate dynamic variables
+- **CLI Layer**: Centralized presentation with business logic separation
 
 ## Architecture
 
-```
+```sh
 fabric-deploy/
 ├── src/fabric_deploy/         # Package directory
 │   ├── __init__.py            # Package initialization, exports all public classes
@@ -26,7 +49,6 @@ fabric-deploy/
 │   ├── rename.py              # Rename utility - business logic only
 │   └── types.py               # Type definitions
 ├── pyproject.toml             # Package configuration, depends on fabric-cicd
-├── example_parameter.yml      # Example configuration file
 ├── SMART_REPLACE.md           # Dynamic parameter generation documentation
 └── README.md                  # Brief usage documentation
 ```
@@ -61,7 +83,7 @@ unpublish_all_orphan_items(target_workspace, lakehouse_name)
 ```bash
 pip install fabric-deploy  # Installs Microsoft's fabric-cicd as dependency
 cd path/to/workspace
-fabdep  # Auto-detects workspace_id and environment from parameter.yml
+fabdep  # Auto-resolves workspace from base name + git branch
 ```
 
 ## Deployment Flow
@@ -75,11 +97,13 @@ fabdep  # Auto-detects workspace_id and environment from parameter.yml
 ### WorkspaceDeployer Initialization Flow (`__post_init__`)
 1. If `auto_detect=True`: calls `_generate_dynamic_params()` to create parameter file on-the-fly
 2. If `workspace_id` is None: calls `_load_config()` which:
-   - Calls `_validate_and_handle_parameter_file()` to check for invalid parameter files
-   - Automatically renames invalid parameter files to `.bak` extension
-   - Extracts **workspace ID** from first entry's `replace_value[environment]`
-   - Extracts **environment** from keys in `replace_value` (must be consistent across all entries)
-   - Sets `self.workspace_id` and `self.environment`
+   - Checks for `workspace_base_name` in parameter.yml
+   - Calls `_get_git_branch()` to get current git branch name
+   - Calls `_resolve_workspace_id_from_name(base_name, branch)` which:
+     - Combines base_name + " [" + branch + "]" (case-insensitive)
+     - Calls Fabric REST API via `get_workspace_id_by_name()` to lookup workspace ID
+     - Returns workspace ID or raises error if not found
+   - Sets `self.workspace_id` and `self.environment = "default"`
 3. If `workspace_id` is provided (via CLI) but `environment` is None: defaults `environment` to "prod"
 4. If `lakehouse_name` is not set: calls `_detect_lakehouse()` which:
    - Searches for `*.Lakehouse` directories
@@ -98,7 +122,7 @@ fabdep  # Auto-detects workspace_id and environment from parameter.yml
 - **Dynamic Parameter Generation**: Auto-detect source IDs and generate parameter.yml with dynamic variables
 - **Deployment CLI**: `fabdep` command with auto-detection from `parameter.yml`
 - **Lakehouse Detection**: Auto-detects lakehouse names from `.platform` files
-- **Parameter Validation**: Validates and handles both legacy and smart replace formats
+- **Smart Replace Support**: Handles dynamic parameterization with auto-generated variables
 - **Item Filtering**: Deploy specific item types or exclude types
 - **Rename Utility**: Rename workspace item directories to match display names
 - **User-friendly Output**: Formatted console output and error messages
@@ -131,7 +155,7 @@ The `ParameterDetector` class (in `param_detector.py`) auto-detects source IDs f
 - `save_parameter_yml()`: Writes parameter.yml to file with YAML formatting
 - `print_detection_summary()`: Displays detected parameters with dynamic variables
 
-**Auto-Skip Logic**: 
+**Auto-Skip Logic**:
 1. **Same Workspace Detection**: When auto-detect mode is used and the provided `--workspace-id` matches the source workspace ID detected in notebooks, no parameter file is generated. The deployment proceeds directly without any replacements since source and destination are identical.
 2. **External Connections**: Parameters without dynamic variables (e.g., external connection IDs) are automatically skipped because external connections are not deployed by fabric-cicd (manual setup required), and connection IDs don't change between source and destination.
 
@@ -157,57 +181,22 @@ dependencies = [
 
 **parameter.yml** (in workspace repo):
 ```yaml
-find_replace:
-  # First entry's replace_value is used to detect workspace ID and environment
-  - find_value: "364abdbe-c061-4f74-b34a-9631bc7e3e4d"
-    replace_value:
-      prod: "6c5304f1-2e84-4add-bd46-25a1e943cdec"  # CLI uses this as workspace_id
-    item_type: ["Notebook", "CopyJob"]
-
-  # Additional find/replace entries for parameter replacement
-  - find_value: "dev-lakehouse-id"
-    replace_value:
-      prod: "prod-lakehouse-id"  # All entries must use the same environment key
-    item_type: ["Notebook", "SemanticModel"]
+# Workspace base name - combined with git branch to resolve workspace ID
+workspace_base_name: "my_workspace"
 ```
 
-**Important**: All `replace_value` entries must use the same environment key (e.g., all use `prod` or all use `dev`). The CLI validates this consistency and extracts the destination `workspace_id` from the first entry.
+**How it works**:
+1. Base name from parameter.yml: `my_workspace`
+2. Current git branch: `prod` (case-insensitive)
+3. Combined workspace name: `my_workspace_prod`
+4. Workspace ID lookup via Fabric REST API
+5. Deployment proceeds with resolved workspace ID
 
-### Parameter File Validation
-
-The CLI automatically validates parameter files and detects invalid configurations:
-
-**Invalid scenarios** (triggers automatic `.bak` renaming):
-- File already has `.bak` extension
-- Duplicate `find_value` entries (same value appears multiple times)
-- Blank or empty destination values in `replace_value` (e.g., `prod: ""` or `prod: null`)
-
-**Behavior when invalid**:
-1. CLI logs warning messages explaining why the file is invalid
-2. Renames `parameter.yml` to `parameter.yml.bak`
-3. Deployment continues using workspace ID from first entry only
-4. Microsoft's `fabric-cicd` package ignores the `.bak` file (preventing parameter replacement)
-
-**Example invalid parameter.yml**:
-```yaml
-find_replace:
-  - find_value: "source-workspace-id"
-    replace_value:
-      prod: "dest-workspace-id"  # Valid workspace ID
-    item_type: ["Notebook"]
-  
-  - find_value: "source-lakehouse-id"
-    replace_value:
-      prod: ""  # INVALID: blank destination value
-    item_type: ["Notebook"]
-  
-  - find_value: "source-workspace-id"  # INVALID: duplicate find_value
-    replace_value:
-      prod: "another-id"
-    item_type: ["DataPipeline"]
-```
-
-This file would be automatically renamed to `parameter.yml.bak`, and deployment would proceed with just the workspace ID from the first entry.
+**Benefits**:
+- No need for `find_replace` entries
+- Automatic workspace resolution based on branch
+- Supports any branch name (prod, dev, staging, feature branches, etc.)
+- Case-insensitive branch matching
 
 ## Implementation Details
 
@@ -222,29 +211,29 @@ from fabric_cicd import FabricWorkspace, publish_all_items, unpublish_all_orphan
 @dataclass
 class WorkspaceDeployer:
     """Main deployer class for Fabric workspace items."""
-    
+
     repo_dir: Path | str
     logger_name: str | None = None
-    
+
     # Configuration populated by _load_config()
     workspace_id: str | None = field(default=None, init=False)
     environment: str | None = field(default=None, init=False)
     lakehouse_name: str | None = field(default=None, init=False)
-    
+
     # Private fields (initialized in __post_init__)
     _repo_dir_resolved: Path = field(init=False, repr=False)
     logger: logging.Logger = field(init=False, repr=False)
-    
+
     def __post_init__(self):
         """Initialize derived fields after dataclass initialization."""
         self._repo_dir_resolved = Path(self.repo_dir).resolve()
         self.logger = get_logger(self.logger_name or __name__)
-    
+
     def _load_config(self) -> None:
         """Load and validate workspace configuration from parameter.yml."""
         # Validate parameter file and rename to .bak if invalid
         # Extract workspace_id and environment
-    
+
     def deploy(
         self,
         no_cleanup: bool = False,
@@ -256,7 +245,7 @@ class WorkspaceDeployer:
         # Load config if not already loaded
         if not self.workspace_id:
             self._load_config()
-        
+
         # Apply item type filtering
         # Create FabricWorkspace
         # Call publish_all_items and unpublish_all_orphan_items
@@ -284,6 +273,14 @@ def main():
 
 ### Key Components
 
+**`fabric_api.py` - Fabric REST API integration module**
+Contains Fabric API utilities:
+- `get_access_token()`: Acquires Azure access token for Fabric API via `az account get-access-token`
+- `list_workspaces()`: Returns list of all workspaces accessible to current user
+- `get_workspace_id_by_name(workspace_name)`: Case-insensitive workspace name lookup, returns workspace ID
+- Uses Python's built-in `urllib` for HTTP requests (no external dependencies)
+- Raises descriptive errors for auth failures, network issues, or workspace not found
+
 **`workspace.py` - Workspace abstraction module**
 Contains the `WorkspaceDeployer` dataclass:
 - Main dataclass encapsulating all deployment logic
@@ -292,24 +289,46 @@ Contains the `WorkspaceDeployer` dataclass:
 - Private fields: `_repo_dir_resolved`, `logger` (initialized in `__post_init__()`)
 - Provides automatic `__repr__()`, `__eq__()`, and field introspection
 
+**`WorkspaceDeployer._get_git_branch() -> str`**
+- Gets current git branch name via `git branch --show-current`
+- Raises error if not in git repository or in detached HEAD state
+
+**`WorkspaceDeployer._resolve_workspace_id_from_name(base_name, branch) -> str`**
+- Combines base name and branch: `{base_name} [{branch}]`
+- Calls `get_workspace_id_by_name()` for case-insensitive lookup
+- Returns workspace ID or raises descriptive error if not found
+
 **`WorkspaceDeployer._load_config() -> None`**
 - Private method to load and validate workspace configuration
-- Calls `_validate_and_handle_parameter_file()` to check for invalid parameter files
-- Calls `_extract_config_from_parameters()` to extract workspace ID and environment
-- Sets `self.workspace_id` and `self.environment`
+- Checks for `workspace_base_name` in parameter.yml
+- Calls `_get_git_branch()` to get current branch
+- Calls `_resolve_workspace_id_from_name()` to lookup workspace ID via Fabric API
+- Sets `self.workspace_id` and `self.environment = "default"`
 - Automatically called by `deploy()` if `workspace_id` is not set
 
-**`WorkspaceDeployer._validate_and_handle_parameter_file(param_file: Path) -> None`**
-- Validates parameter file for common invalid scenarios
-- Detects duplicate `find_value` entries
-- Detects blank/empty destination values in `replace_value`
-- Automatically renames invalid files to `.bak` extension
-- Logs warning messages explaining validation failures
+## Troubleshooting
 
-**`WorkspaceDeployer._extract_config_from_parameters(param_file: Path) -> tuple[str, str]`**
-- Reads `parameter.yml` and extracts workspace ID and environment
-- Validates that all `replace_value` entries use the same environment key
-- Returns tuple of `(workspace_id, environment)`
+**"Workspace not found: 'workspace_name'"**
+- Verify the workspace exists in Fabric with the exact name: `{base_name} [{branch}]`
+- Check workspace name is case-insensitive match
+- Run `fabdep auth list` to verify you're using the correct Azure account
+- Ensure you have access to the workspace in Fabric
+
+**"Failed to get git branch"**
+- Ensure you're running the command from a git repository
+- Check that you're not in detached HEAD state
+- Verify git is installed and accessible
+
+**"parameter.yml not found"**
+- Ensure you're running the command from a Fabric workspace directory
+- Check that `parameter.yml` exists in the workspace root
+
+
+
+**"No lakehouse found in repository directory"**
+- Ensure at least one `*.Lakehouse` directory exists
+- Check that the directory contains a `.platform` metadata file
+- Workspace may be in a different tenant than your current authentication
 
 **`WorkspaceDeployer._detect_lakehouse() -> None`**
 - Searches for `*.Lakehouse` directories
@@ -602,9 +621,8 @@ def rename_items_by_display_name(
 
 The CLI validates:
 - Workspace directory exists
-- `parameter.yml` exists in the workspace directory
-- At least one `find_replace` entry exists
-- All `replace_value` entries use the same environment key
+- `parameter.yml` exists with `workspace_base_name` field
+- Git repository is available with valid branch
 - At least one `*.Lakehouse` directory exists
 - Lakehouse `.platform` metadata file is readable
 
@@ -719,23 +737,13 @@ rename_items_by_display_name(
 - Ensure you're running the command from a Fabric workspace directory
 - Check that `parameter.yml` exists in the workspace root
 
-**"No environments found in parameter.yml"**
-- Verify `find_replace` entries have `replace_value` dictionaries
-- Check that at least one environment key exists (e.g., `prod`, `dev`, `env`)
-
-**"Multiple different environments found"**
-- All `replace_value` entries must use the same environment key
-- Fix: Update all entries to use consistent environment naming
+**"No workspace_base_name found in parameter.yml"**
+- Ensure `parameter.yml` contains the `workspace_base_name` field
+- Format: `workspace_base_name: "your_workspace"`
 
 **"No lakehouse found in repository directory"**
 - Ensure at least one `*.Lakehouse` directory exists
 - Check that the directory contains a `.platform` metadata file
-
-**"Invalid parameter file detected"**
-- Check logs for specific validation failures (duplicate find_values, blank destinations)
-- Parameter file will be automatically renamed to `.bak`
-- Deployment continues using workspace ID from first entry only
-- Fix the parameter file and rename back to `.yml` to restore parameter replacement
 
 **"User does not have access to the connection used in the Pipeline"**
 - This error occurs when a DataPipeline references a connection that doesn't exist in the target tenant
