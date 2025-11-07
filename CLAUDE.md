@@ -69,23 +69,28 @@ fabdep  # Auto-detects workspace_id and environment from parameter.yml
 ### CLI Flow
 1. `cli.py`: `parse_args()` parses command-line arguments
 2. `cli.py`: `main()` creates `WorkspaceDeployer` dataclass instance with custom logger name
-3. `workspace.py`: `WorkspaceDeployer.deploy()` orchestrates deployment
+3. `workspace.py`: `WorkspaceDeployer.__post_init__()` loads configuration
+4. `workspace.py`: `WorkspaceDeployer.deploy()` orchestrates deployment
 
-### WorkspaceDeployer.deploy() Flow
-1. Checks if `workspace_id` is set; if not, calls `_load_config()` which:
+### WorkspaceDeployer Initialization Flow (`__post_init__`)
+1. If `auto_detect=True`: calls `_generate_dynamic_params()` to create parameter file on-the-fly
+2. If `workspace_id` is None: calls `_load_config()` which:
    - Calls `_validate_and_handle_parameter_file()` to check for invalid parameter files
    - Automatically renames invalid parameter files to `.bak` extension
    - Extracts **workspace ID** from first entry's `replace_value[environment]`
    - Extracts **environment** from keys in `replace_value` (must be consistent across all entries)
    - Sets `self.workspace_id` and `self.environment`
-2. Checks if `lakehouse_name` is set; if not, calls `_detect_lakehouse()` which:
+3. If `workspace_id` is provided (via CLI) but `environment` is None: defaults `environment` to "prod"
+4. If `lakehouse_name` is not set: calls `_detect_lakehouse()` which:
    - Searches for `*.Lakehouse` directories
    - Reads `.platform` metadata file to extract `displayName`
    - Sets `self.lakehouse_name`
-3. Applies item type filtering based on arguments (`item_types`, `exclude_types`, `include_items`)
-4. Creates `FabricWorkspace` instance (from Microsoft's package)
-5. Calls `publish_all_items()` with optional item filtering (from Microsoft's package)
-6. Optionally calls `unpublish_all_orphan_items()` (from Microsoft's package) unless `no_cleanup=True`
+
+### WorkspaceDeployer.deploy() Flow
+1. Applies item type filtering based on arguments (`item_types`, `exclude_types`, `include_items`)
+2. Creates `FabricWorkspace` instance (from Microsoft's package)
+3. Calls `publish_all_items()` with optional item filtering (from Microsoft's package)
+4. Optionally calls `unpublish_all_orphan_items()` (from Microsoft's package) unless `no_cleanup=True`
 
 ## What This Package Provides
 
@@ -126,28 +131,17 @@ The `ParameterDetector` class (in `param_detector.py`) auto-detects source IDs f
 - `save_parameter_yml()`: Writes parameter.yml to file with YAML formatting
 - `print_detection_summary()`: Displays detected parameters with dynamic variables
 
-**Auto-Skip Logic**: Parameters without dynamic variables (e.g., external connection IDs) are automatically skipped because:
-1. External connections are not deployed by fabric-cicd (manual setup required)
-2. Connection IDs don't change between source and destination
-3. No replacement needed - same connection works in both environments
+**Auto-Skip Logic**: 
+1. **Same Workspace Detection**: When auto-detect mode is used and the provided `--workspace-id` matches the source workspace ID detected in notebooks, no parameter file is generated. The deployment proceeds directly without any replacements since source and destination are identical.
+2. **External Connections**: Parameters without dynamic variables (e.g., external connection IDs) are automatically skipped because external connections are not deployed by fabric-cicd (manual setup required), and connection IDs don't change between source and destination.
 
-**Usage Pattern**:
-```python
-from fabric_deploy import ParameterDetector
+**Auto-Detect Mode**: Use `-d -w <workspace-id>` to deploy without a parameter.yml file. This will:
+1. Scan workspace files to detect source IDs (workspace, lakehouse, SQL endpoints)
+2. Generate parameter.yml with dynamic variables (`$workspace.$id`, `$items.Lakehouse.<name>.$id`)
+3. Deploy to target workspace (fabric-cicd resolves IDs automatically)
+4. Clean up generated files after deployment
 
-detector = ParameterDetector(repo_dir="/path/to/workspace")
-detector.detect_all()
 
-# Generate parameter.yml with dynamic variables
-detector.save_parameter_yml(
-    output_path="parameter.yml",
-    use_dynamic=True,
-    environment="prod",
-    skip_empty=True  # Skip parameters without dynamic variables
-)
-```
-
-See [SMART_REPLACE.md](./SMART_REPLACE.md) for complete documentation on dynamic variables and detection logic.
 
 ## Dependencies
 
@@ -359,8 +353,12 @@ Contains ALL CLI logic - argument parsing, command handling, error messages, and
 - Executes deploy command
 - If `--auto-detect` flag is set:
   - Validates `--workspace-id` is provided
-  - Creates `ParameterDetector` and generates parameter.yml on-the-fly
-  - Optionally saves with `--save-params` flag
+  - Creates `ParameterDetector` and detects all source IDs
+  - **Same-Workspace Check**: Compares provided workspace ID with detected source workspace ID
+    - If match found: Disables auto-detect and deploys directly without parameter replacements
+    - Notifies user that source and target are identical
+  - If different workspaces: Generates parameter.yml on-the-fly with dynamic variables
+  - Optionally saves with `--save-params` flag (only when different workspaces)
 - Creates `WorkspaceDeployer` instance and calls `deploy()`
 - Handles errors with user-friendly messages
 
@@ -401,7 +399,7 @@ Options:
   --item-types, -t       Deploy specific types (e.g., Notebook DataPipeline)
   --exclude-types, -x    Exclude types (e.g., Report SemanticModel)
   --include-items, -i    Include specific items by name (experimental)
-  --workspace-id, -w     Destination workspace ID (overrides parameter.yml)
+  --workspace-id, -w     Destination workspace ID (replaces parameter.yml)
   --auto-detect, -d      Auto-detect source IDs and generate parameters on-the-fly
   --save-params          Save auto-detected parameters to parameter.yml.detected
   --help                 Show help message
@@ -411,9 +409,14 @@ Options:
 
 **Auto-Detect Mode**: Use `-d -w <workspace-id>` to deploy without a parameter.yml file. This will:
 1. Scan workspace files to detect source IDs (workspace, lakehouse, SQL endpoints)
-2. Generate parameter.yml with dynamic variables (`$workspace.$id`, `$items.Lakehouse.<name>.$id`)
-3. Deploy to target workspace (fabric-cicd resolves IDs automatically)
-4. Clean up generated files after deployment
+2. **Check if target workspace matches source workspace**:
+   - If same: Skip parameter generation and deploy directly without replacements
+   - If different: Generate parameter.yml with dynamic variables
+3. Generate parameter.yml with dynamic variables (`$workspace.$id`, `$items.Lakehouse.<name>.$id`)
+4. Deploy to target workspace (fabric-cicd resolves IDs automatically)
+5. Clean up generated files after deployment
+
+**Same-Workspace Deployment**: When deploying to the same workspace as the source (e.g., updating items in place), the CLI automatically detects this and skips parameter generation, avoiding unnecessary replacements.
 
 ### Detect Parameters
 

@@ -11,18 +11,6 @@ import sys
 from collections.abc import Sequence
 from typing import ClassVar
 
-# Import override from typing_extensions for Python < 3.12
-if sys.version_info >= (3, 12):
-    from typing import override
-else:
-    try:
-        from typing_extensions import override  # pyright: ignore[reportAssignmentType]
-    except ImportError:
-        # Fallback: create a no-op decorator
-        def override(func):
-            return func
-
-
 from fabric_cicd._common._color import Fore, Style
 from fabric_cicd._common._logging import print_header
 
@@ -49,7 +37,6 @@ class CustomFormatter(logging.Formatter):
         "CRITICAL": Style.BRIGHT + Fore.RED,
     }
 
-    @override
     def format(self, record: logging.LogRecord) -> str:
         level_color = self.LEVEL_COLORS.get(record.levelname, "")
         level_name = {
