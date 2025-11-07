@@ -5,6 +5,7 @@ CLI wrapper around Microsoft's [fabric-cicd](https://github.com/microsoft/fabric
 
 ## Features
 
+- **Dynamic Parameter Generation**: Auto-detect source IDs and generate parameter.yml with dynamic variables
 - **Auto-detection**: Reads workspace ID and environment from `parameter.yml`
 - **Item Filtering**: Deploy specific item types or exclude types
 - **Auth Management**: Switch between Azure subscriptions
@@ -20,12 +21,29 @@ For development, changes to source code are immediately reflected without reinst
 
 ## Quick Start
 
+### Traditional Deployment (with parameter.yml)
+
 ```bash
 cd path/to/workspace
 fabdep
 ```
 
 **Requirements**: `parameter.yml` must exist in workspace directory.
+
+### Auto-Detect Mode (no parameter.yml needed)
+
+```bash
+cd path/to/workspace
+fabdep -d -w <target-workspace-id>
+```
+
+This will:
+1. Scan your workspace files to detect source IDs (workspace, lakehouse, SQL endpoints)
+2. Generate parameter.yml with dynamic variables (`$workspace.$id`, `$items.Lakehouse.<name>.$id`)
+3. Deploy to target workspace (fabric-cicd resolves IDs automatically)
+4. Clean up generated files after deployment
+
+**Benefits**: No manual ID entry, same parameter file works across environments.
 
 
 ## Commands
@@ -45,6 +63,9 @@ Options:
   --item-types, -t       Deploy specific types (e.g., Notebook DataPipeline)
   --exclude-types, -x    Exclude types (e.g., Report SemanticModel)
   --include-items, -i    Include specific items by name
+  --workspace-id, -w     Destination workspace ID (overrides parameter.yml)
+  --auto-detect, -d      Auto-detect source IDs and generate parameters on-the-fly
+  --save-params          Save auto-detected parameters to parameter.yml.detected
 ```
 
 The `deploy` subcommand is optional and defaults when deploy-specific options are used:
@@ -71,7 +92,67 @@ fabdep -n
 
 # Deploy from specific directory
 fabdep /path/to/workspace
+
+# Auto-detect mode: generate parameters on-the-fly
+fabdep -d -w 19191919-1919-1919-1919-191919191919
+
+# Auto-detect and save generated parameters for review
+fabdep -d -w <workspace-id> --save-params
 ```
+
+
+### Detect Parameters
+
+Auto-detect source IDs from workspace files and optionally generate parameter.yml:
+
+```bash
+fabdep detect [DIRECTORY] [OPTIONS]
+
+Arguments:
+  DIRECTORY              Path to workspace directory (default: current directory)
+
+Options:
+  --save, -s             Save detected parameters to parameter.yml.detected
+```
+
+**What it detects**:
+- Workspace IDs (from notebook metadata)
+- Lakehouse IDs (from notebook metadata)
+- SQL endpoint connection strings (from SemanticModel files)
+- SQL endpoint IDs (from SemanticModel files)
+- External connection IDs (detected but skipped - require manual setup)
+
+**Examples**:
+```bash
+# View detected parameters
+fabdep detect
+
+# Generate parameter.yml.detected with dynamic variables
+fabdep detect --save
+
+# Detect from specific workspace
+fabdep detect /path/to/workspace --save
+```
+
+**Generated format** uses dynamic variables:
+```yaml
+find_replace:
+  # Workspace ID
+  - find_value: "13131313-1313-1313-1313-131313131313"  # From source code
+    replace_value:
+      prod: "$workspace.$id"  # Resolved automatically at deploy time
+    item_type: ['Notebook']
+
+  # Lakehouse ID
+  - find_value: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    replace_value:
+      prod: "$items.Lakehouse.my_lakehouse.$id"
+    item_type: ['Notebook']
+```
+
+**Note**: External connection IDs are automatically skipped because they require manual setup in the target workspace and typically don't change between environments.
+
+See [SMART_REPLACE.md](./SMART_REPLACE.md) for complete documentation on dynamic variables.
 
 
 ### Authentication
@@ -142,6 +223,8 @@ This utility:
 
 ### parameter.yml
 
+#### Traditional Format (Static IDs)
+
 The destination Workspace ID is extracted from the first `find_replace` entry in `parameter.yml`:
 
 ```yaml
@@ -154,13 +237,39 @@ find_replace:
   # Additional find/replace entries for parameter replacement
   - find_value: "source-lakehouse-id"
     replace_value:
-      prod: "dest-lakehouse-id"
+      prod: "dest-lakehouse-id"  # Manual ID entry
     item_type: ["Notebook", "SemanticModel"]
 ```
 
 **Important**: All `replace_value` entries must use the same environment key (e.g., all use `prod` or all use `dev`).
 
 See `example_parameter.yml` for a complete example.
+
+#### Dynamic Format (Auto-Generated)
+
+Use `fabdep detect --save` to generate parameter.yml with dynamic variables that are resolved automatically at deploy time:
+
+```yaml
+find_replace:
+  # Workspace ID - resolved from target workspace
+  - find_value: "source-workspace-id"
+    replace_value:
+      prod: "$workspace.$id"  # No manual ID entry needed
+    item_type: ["Notebook"]
+
+  # Lakehouse ID - resolved after lakehouse is deployed
+  - find_value: "source-lakehouse-id"
+    replace_value:
+      prod: "$items.Lakehouse.my_lakehouse.$id"  # Auto-resolved
+    item_type: ["Notebook"]
+```
+
+**Benefits**:
+- No manual ID maintenance - IDs are resolved automatically
+- Same parameter file works across dev/test/prod environments
+- Automatic dependency resolution (lakehouse deployed before notebooks)
+
+See [SMART_REPLACE.md](./SMART_REPLACE.md) for complete documentation.
 
 ### Parameter File Validation
 
@@ -184,13 +293,18 @@ This is useful when you want to deploy without parameter replacement (e.g., depl
 The package is organized into focused modules:
 
 - **workspace.py**: `WorkspaceDeployer` dataclass - deployment logic wrapping `fabric-cicd`
+- **param_detector.py**: `ParameterDetector` class - auto-detect source IDs and generate dynamic variables
 - **cli.py**: All CLI logic - argument parsing, command handlers, user-facing text
 - **auth.py**: Azure authentication utilities - account management via az CLI
 - **logging.py**: Custom logging and console formatting utilities
 - **rename.py**: Rename utility for workspace item directories
+- **types.py**: Type definitions for Azure accounts and other shared types
 
 
 ## Links
 
+- [SMART_REPLACE.md](./SMART_REPLACE.md) - Complete guide to dynamic parameter generation
+- [CLAUDE.md](./CLAUDE.md) - Detailed architecture and development guide
 - [Microsoft Fabric CI/CD Documentation](https://microsoft.github.io/fabric-cicd/)
 - [fabric-cicd on GitHub](https://github.com/microsoft/fabric-cicd)
+- [Parameterization Guide](https://microsoft.github.io/fabric-cicd/latest/how_to/parameterization/) - Microsoft's dynamic variables documentation

@@ -12,6 +12,7 @@ from .auth import (
     switch_account,
 )
 from .logging import format_account_list, format_auth_error_message, print_error
+from .param_detector import ParameterDetector
 from .rename import rename_items_by_display_name
 from .workspace import WorkspaceDeployer
 
@@ -100,6 +101,26 @@ def parse_args() -> argparse.Namespace:
         help="Apply .lower().replace(' ', '_') to directory names",
     )
 
+    # Detect subcommand
+    detect_parser = subparsers.add_parser(
+        "detect",
+        help="Detect source IDs from workspace files",
+        description="Auto-detect workspace, lakehouse, and connection IDs from repository files",
+    )
+    _ = detect_parser.add_argument(
+        "directory",
+        nargs="?",
+        default=".",
+        type=Path,
+        help="Workspace directory (defaults to current directory)",
+    )
+    _ = detect_parser.add_argument(
+        "--save",
+        "-s",
+        action="store_true",
+        help="Save detected parameters to parameter.yml.detected (uses smart replace format)",
+    )
+
     # Deploy subcommand (default)
     deploy_parser = subparsers.add_parser(
         "deploy",
@@ -137,11 +158,27 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         help='Include only specific items (format: "ItemName.ItemType")',
     )
+    _ = deploy_parser.add_argument(
+        "--workspace-id",
+        "-w",
+        help="Destination workspace ID (overrides parameter.yml detection)",
+    )
+    _ = deploy_parser.add_argument(
+        "--auto-detect",
+        "-d",
+        action="store_true",
+        help="Auto-detect source IDs and generate parameters on-the-fly",
+    )
+    _ = deploy_parser.add_argument(
+        "--save-params",
+        action="store_true",
+        help="Save auto-detected parameters to parameter.yml.detected",
+    )
 
     # Check if we should inject 'deploy' as default subcommand
     # This happens when no subcommand is specified but deploy-specific flags are used
     argv = sys.argv[1:]
-    known_commands = ["auth", "deploy", "rename"]
+    known_commands = ["auth", "deploy", "rename", "detect"]
 
     if argv and not any(cmd in argv for cmd in known_commands):
         # Don't inject deploy if only help flag is present (show main help instead)
@@ -158,6 +195,11 @@ def parse_args() -> argparse.Namespace:
                 "--exclude-types",
                 "-i",
                 "--include-items",
+                "-w",
+                "--workspace-id",
+                "-d",
+                "--auto-detect",
+                "--save-params",
             }
             if any(arg in deploy_flags or not arg.startswith("-") for arg in argv):
                 # Inject 'deploy' as the first argument
@@ -173,6 +215,9 @@ def parse_args() -> argparse.Namespace:
         args.item_types = None
         args.exclude_types = None
         args.include_items = None
+        args.workspace_id = None
+        args.auto_detect = False
+        args.save_params = False
 
     return args
 
@@ -237,12 +282,81 @@ def handle_rename_command(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def handle_detect_command(args: argparse.Namespace) -> None:
+    """Handle detect subcommand execution."""
+    try:
+        detector = ParameterDetector(repo_dir=args.directory)
+        detector.detect_all()
+
+        # Print summary
+        detector.print_detection_summary()
+
+        # Save if requested
+        if args.save:
+            output_file = Path(args.directory) / "parameter.yml.detected"
+            detector.save_parameter_yml(
+                output_path=output_file,
+                use_dynamic=True,
+                environment="prod",
+                skip_empty=True
+            )
+
+            # Count what was saved
+            with_dynamic = sum(1 for p in detector.parameters.values() if p.dynamic_variable)
+            total = len(detector.parameters)
+
+            print(f"✓ Saved {with_dynamic} parameter(s) to: {output_file}\n")
+            if with_dynamic < total:
+                print(f"Note: {total - with_dynamic} parameter(s) without dynamic variables were skipped")
+                print("(External connections require manual setup and typically don't change between deployments)\n")
+            print("Using dynamic variables: $workspace.$id, $items.Lakehouse.<name>.$id, etc.\n")
+
+    except FileNotFoundError as e:
+        print_error(f"\n{e}\n")
+        print("Usage: fabdep detect [DIRECTORY] [OPTIONS]")
+        print("Run 'fabdep detect -h' for more information.\n")
+        sys.exit(1)
+    except Exception as e:
+        print_error(f"\nDetection failed: {e}\n")
+        sys.exit(1)
+
+
 def handle_deploy_command(args: argparse.Namespace) -> None:
     """Handle deploy subcommand execution."""
+    # Handle auto-detection mode
+    if args.auto_detect:
+        if not args.workspace_id:
+            print_error("\nError: --workspace-id is required when using --auto-detect\n")
+            print("Usage: fabdep --auto-detect --workspace-id <workspace-id>\n")
+            sys.exit(1)
+
+        try:
+            # Generate parameter file on-the-fly
+            detector = ParameterDetector(repo_dir=args.directory)
+            detector.detect_all()
+
+            # Save if requested
+            if args.save_params:
+                output_file = Path(args.directory) / "parameter.yml.detected"
+                detector.save_parameter_yml(
+                    output_path=output_file,
+                    workspace_id=args.workspace_id,
+                    environment="prod"
+                )
+                print(f"\n✓ Saved auto-detected parameters to: {output_file}\n")
+
+            # Use the dynamically generated parameter file for deployment
+            # This will be handled by WorkspaceDeployer
+        except Exception as e:
+            print_error(f"\nParameter detection failed: {e}\n")
+            sys.exit(1)
+
     try:
         deployer = WorkspaceDeployer(
             repo_dir=args.directory,
             logger_name="fabric_deploy.cli",
+            workspace_id=args.workspace_id,  # Override if provided
+            auto_detect=args.auto_detect,  # Enable auto-detection mode
         )
     except FileNotFoundError as e:
         print_error(f"\n{e}\n")
@@ -270,6 +384,8 @@ def main() -> None:
         handle_auth_command(args)
     elif args.command == "rename":
         handle_rename_command(args)
+    elif args.command == "detect":
+        handle_detect_command(args)
     elif args.command == "deploy":
         handle_deploy_command(args)
     else:

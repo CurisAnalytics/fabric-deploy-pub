@@ -17,6 +17,7 @@ from fabric_cicd.constants import ACCEPTED_ITEM_TYPES
 
 from .auth import list_accounts, get_current_account
 from .logging import get_logger, print_header, print_error, format_auth_error_message
+from .param_detector import ParameterDetector
 
 
 @dataclass
@@ -35,6 +36,7 @@ class WorkspaceDeployer:
     workspace_id: str | None = None
     environment: str | None = None
     lakehouse_name: str | None = None
+    auto_detect: bool = False  # Enable auto-detection mode
 
     # Private fields
     _repo_dir_resolved: Path = field(init=False, repr=False)
@@ -46,8 +48,14 @@ class WorkspaceDeployer:
         self.logger = get_logger(self.logger_name or __name__)
 
         # Auto-load configuration if not provided by user
-        if self.workspace_id is None or self.environment is None:
+        if self.auto_detect:
+            # Generate parameter file dynamically
+            self._generate_dynamic_params()
+            if self.environment is None:
+                self.environment = "prod"
+        elif self.workspace_id is None or self.environment is None:
             self._load_config()
+
         if self.lakehouse_name is None:
             self._detect_lakehouse()
 
@@ -82,6 +90,64 @@ class WorkspaceDeployer:
         workspace_id, environment = self._extract_config_from_parameters(param_file)
         self.workspace_id = workspace_id
         self.environment = environment
+
+    def _generate_dynamic_params(self) -> None:
+        """
+        Generate parameter file dynamically using auto-detection.
+
+        Requires workspace_id to be set beforehand.
+        Creates parameter.yml.auto and backs up existing parameter.yml if present.
+        """
+        if not self.workspace_id:
+            raise ValueError(
+                "workspace_id must be provided when using auto-detect mode"
+            )
+
+        self.logger.info("Auto-detecting source IDs from workspace files...")
+
+        # Detect parameters
+        detector = ParameterDetector(repo_dir=self._repo_dir_resolved)
+        detector.detect_all()
+
+        # Backup existing parameter.yml if it exists
+        param_file = self._repo_dir_resolved / "parameter.yml"
+        backup_file = self._repo_dir_resolved / "parameter.yml.backup"
+        if param_file.exists():
+            param_file.rename(backup_file)
+            self.logger.info(f"Backed up existing parameter.yml to {backup_file.name}")
+
+        # Generate parameter file for deployment (using dynamic variables)
+        detector.save_parameter_yml(
+            output_path=param_file,
+            use_dynamic=True,
+            environment="prod",
+            skip_empty=True
+        )
+
+        # Count what was generated
+        with_dynamic = sum(1 for p in detector.parameters.values() if p.dynamic_variable)
+        total = len(detector.parameters)
+
+        self.logger.info(f"Generated parameter file with {with_dynamic} parameter(s)")
+        if with_dynamic < total:
+            self.logger.info(f"Skipped {total - with_dynamic} parameter(s) without dynamic variables")
+        self.logger.info("Using dynamic variables in replace_value")
+
+    def _cleanup_dynamic_params(self) -> None:
+        """
+        Cleanup auto-generated parameter file and restore backup if present.
+        """
+        param_file = self._repo_dir_resolved / "parameter.yml"
+        backup_file = self._repo_dir_resolved / "parameter.yml.backup"
+
+        # Remove auto-generated file
+        if param_file.exists():
+            param_file.unlink()
+
+        # Restore backup
+        if backup_file.exists():
+            backup_file.rename(param_file)
+            self.logger.info("Restored original parameter.yml")
 
     def _validate_and_handle_parameter_file(self, param_file: Path) -> None:
         """
@@ -355,3 +421,7 @@ class WorkspaceDeployer:
                     error_msg = format_auth_error_message()
                 print_error(error_msg)
             raise
+        finally:
+            # Cleanup auto-generated parameter file if in auto-detect mode
+            if self.auto_detect:
+                self._cleanup_dynamic_params()
