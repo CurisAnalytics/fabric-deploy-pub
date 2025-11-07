@@ -28,6 +28,7 @@ __all__ = [
     "switch_account",
     "rename_subscription",
     "is_auth_error",
+    "is_connection_error",
 ]
 
 
@@ -144,6 +145,32 @@ def rename_subscription(subscription_id: str, new_name: str) -> bool:
         _ = list_accounts(refresh=True)
         return True  # Indicate that we switched accounts
     return False
+
+
+def is_connection_error(error_msg: str) -> bool:
+    """
+    Check if error message indicates a connection reference issue.
+
+    This is specific to Fabric items (DataPipelines, etc.) that reference
+    connections which don't exist in the target workspace.
+
+    Args:
+        error_msg: Error message string to check
+
+    Returns:
+        True if error is connection-related, False otherwise
+    """
+    error_lower = error_msg.lower()
+
+    # Connection-specific error patterns
+    connection_patterns = [
+        "does not have access to the connection used in",
+        "connection used in the pipeline",
+        "connection used in the dataflow",
+        "verify the user's permissions on the connection",
+    ]
+
+    return any(pattern in error_lower for pattern in connection_patterns)
 
 
 def is_auth_error(error_msg: str) -> bool:

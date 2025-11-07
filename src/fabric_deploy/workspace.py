@@ -1,22 +1,21 @@
 """Workspace deployment abstraction for Microsoft Fabric workspaces."""
 
 import logging
-import yaml
 from dataclasses import dataclass, field
 from datetime import datetime
 from json import loads
 from pathlib import Path
 
+import yaml
 from fabric_cicd import (
     FabricWorkspace,
+    append_feature_flag,
     publish_all_items,
     unpublish_all_orphan_items,
-    append_feature_flag,
 )
 from fabric_cicd.constants import ACCEPTED_ITEM_TYPES
 
-from .auth import list_accounts, get_current_account
-from .logging import get_logger, print_header, print_error, format_auth_error_message
+from .logging import get_logger, print_header
 from .param_detector import ParameterDetector
 
 
@@ -103,17 +102,18 @@ class WorkspaceDeployer:
                 "workspace_id must be provided when using auto-detect mode"
             )
 
+        print()
         self.logger.info("Auto-detecting source IDs from workspace files...")
 
         # Detect parameters
         detector = ParameterDetector(repo_dir=self._repo_dir_resolved)
-        detector.detect_all()
+        _ = detector.detect_all()
 
         # Backup existing parameter.yml if it exists
         param_file = self._repo_dir_resolved / "parameter.yml"
         backup_file = self._repo_dir_resolved / "parameter.yml.backup"
         if param_file.exists():
-            param_file.rename(backup_file)
+            _ = param_file.rename(backup_file)
             self.logger.info(f"Backed up existing parameter.yml to {backup_file.name}")
 
         # Generate parameter file for deployment (using dynamic variables)
@@ -121,16 +121,20 @@ class WorkspaceDeployer:
             output_path=param_file,
             use_dynamic=True,
             environment="prod",
-            skip_empty=True
+            skip_empty=True,
         )
 
         # Count what was generated
-        with_dynamic = sum(1 for p in detector.parameters.values() if p.dynamic_variable)
+        with_dynamic = sum(
+            1 for p in detector.parameters.values() if p.dynamic_variable
+        )
         total = len(detector.parameters)
 
         self.logger.info(f"Generated parameter file with {with_dynamic} parameter(s)")
         if with_dynamic < total:
-            self.logger.info(f"Skipped {total - with_dynamic} parameter(s) without dynamic variables")
+            self.logger.info(
+                f"Skipped {total - with_dynamic} parameter(s) without dynamic variables"
+            )
         self.logger.info("Using dynamic variables in replace_value")
 
     def _cleanup_dynamic_params(self) -> None:
@@ -259,7 +263,7 @@ class WorkspaceDeployer:
                 "Invalid parameter.yml format: replace_value must be string or dict"
             )
 
-        available_envs = list(replace_value.keys())
+        available_envs: list[str] = list(replace_value.keys())
         if not available_envs:
             raise ValueError("No environments found in parameter.yml")
 
@@ -409,17 +413,10 @@ class WorkspaceDeployer:
             self.logger.info("Deployment complete!")
             print()
 
-        except Exception as e:
-            indicators = ("not found", "unauthorized", "forbidden", "401", "403", "404")
-            if any(i in str(e).lower() for i in indicators):
-                try:
-                    current = get_current_account()
-                    accounts = list_accounts()
-                    error_msg = format_auth_error_message(current, accounts)
-                except Exception:
-                    # Fallback if account fetching fails
-                    error_msg = format_auth_error_message()
-                print_error(error_msg)
+        except Exception:
+            # Re-raise exception to be handled by caller
+            # CLI will handle error message formatting via handle_command_error()
+            # Programmatic users can catch and handle exceptions themselves
             raise
         finally:
             # Cleanup auto-generated parameter file if in auto-detect mode

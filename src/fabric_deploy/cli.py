@@ -7,18 +7,24 @@ from pathlib import Path
 from .auth import (
     get_current_account,
     is_auth_error,
+    is_connection_error,
     list_accounts,
     rename_subscription,
     switch_account,
 )
-from .logging import format_account_list, format_auth_error_message, print_error
+from .logging import (
+    format_account_list,
+    format_auth_error_message,
+    format_connection_error_message,
+    print_error,
+)
 from .param_detector import ParameterDetector
 from .rename import rename_items_by_display_name
 from .workspace import WorkspaceDeployer
 
 
 def handle_command_error(error: Exception, context: str) -> None:
-    """Handle command errors with auth-specific troubleshooting.
+    """Handle command errors with specific troubleshooting for different error types.
 
     Args:
         error: The exception that was raised
@@ -27,13 +33,17 @@ def handle_command_error(error: Exception, context: str) -> None:
     error_msg = str(error)
     print_error(f"\n{context} failed: {error_msg}\n")
 
+    # Check for connection errors first (before auth errors, as they can contain auth keywords)
+    if is_connection_error(error_msg):
+        connection_help = format_connection_error_message()
+        print_error(connection_help)
     # Show friendly auth error message if this is an auth issue
-    if is_auth_error(error_msg):
+    elif is_auth_error(error_msg):
         try:
             current = get_current_account()
             all_accounts = list_accounts()
             auth_help = format_auth_error_message(current, all_accounts)
-            print(auth_help)
+            print_error(auth_help)
         except Exception:
             # If we can't get account info, just show the basic error
             pass
@@ -286,7 +296,7 @@ def handle_detect_command(args: argparse.Namespace) -> None:
     """Handle detect subcommand execution."""
     try:
         detector = ParameterDetector(repo_dir=args.directory)
-        detector.detect_all()
+        _ = detector.detect_all()
 
         # Print summary
         detector.print_detection_summary()
@@ -298,18 +308,24 @@ def handle_detect_command(args: argparse.Namespace) -> None:
                 output_path=output_file,
                 use_dynamic=True,
                 environment="prod",
-                skip_empty=True
+                skip_empty=True,
             )
 
             # Count what was saved
-            with_dynamic = sum(1 for p in detector.parameters.values() if p.dynamic_variable)
+            with_dynamic = sum(
+                1 for p in detector.parameters.values() if p.dynamic_variable
+            )
             total = len(detector.parameters)
 
             print(f"✓ Saved {with_dynamic} parameter(s) to: {output_file}\n")
             if with_dynamic < total:
-                print(f"Note: {total - with_dynamic} parameter(s) without dynamic variables were skipped")
-                print("(External connections require manual setup and typically don't change between deployments)\n")
-            print("Using dynamic variables: $workspace.$id, $items.Lakehouse.<name>.$id, etc.\n")
+                print(
+                    f"Note: {total - with_dynamic} parameter(s) without dynamic variables were skipped\n"
+                    "(External connections require manual setup and typically don't change between deployments)\n"
+                )
+            print(
+                "Using dynamic variables: $workspace.$id, $items.Lakehouse.<name>.$id, etc.\n"
+            )
 
     except FileNotFoundError as e:
         print_error(f"\n{e}\n")
@@ -326,22 +342,25 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
     # Handle auto-detection mode
     if args.auto_detect:
         if not args.workspace_id:
-            print_error("\nError: --workspace-id is required when using --auto-detect\n")
+            print_error(
+                "\nError: --workspace-id is required when using --auto-detect\n"
+            )
             print("Usage: fabdep --auto-detect --workspace-id <workspace-id>\n")
             sys.exit(1)
 
         try:
             # Generate parameter file on-the-fly
             detector = ParameterDetector(repo_dir=args.directory)
-            detector.detect_all()
+            _ = detector.detect_all()
 
             # Save if requested
             if args.save_params:
                 output_file = Path(args.directory) / "parameter.yml.detected"
                 detector.save_parameter_yml(
                     output_path=output_file,
-                    workspace_id=args.workspace_id,
-                    environment="prod"
+                    use_dynamic=True,
+                    environment="prod",
+                    skip_empty=True,
                 )
                 print(f"\n✓ Saved auto-detected parameters to: {output_file}\n")
 
@@ -355,8 +374,8 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
         deployer = WorkspaceDeployer(
             repo_dir=args.directory,
             logger_name="fabric_deploy.cli",
-            workspace_id=args.workspace_id,  # Override if provided
-            auto_detect=args.auto_detect,  # Enable auto-detection mode
+            workspace_id=args.workspace_id if args.workspace_id else None,
+            auto_detect=bool(args.auto_detect),
         )
     except FileNotFoundError as e:
         print_error(f"\n{e}\n")
