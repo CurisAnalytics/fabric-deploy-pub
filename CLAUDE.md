@@ -18,11 +18,11 @@ fabric-deploy/
 ├── src/fabric_deploy/         # Package directory
 │   ├── __init__.py            # Package initialization, exports all public classes
 │   ├── workspace.py           # WorkspaceDeployer class - deployment business logic
-│   ├── param_detector.py      # ParameterDetector class - auto-detect source IDs
-│   ├── fabric_api.py          # Fabric REST API integration - workspace lookup
+│   ├── detect.py              # ParameterDetector class - auto-detect source IDs
+│   ├── api.py                 # Fabric REST API integration - workspace lookup
 │   ├── cli.py                 # ALL CLI logic - parsers, handlers, user-facing text
 │   ├── auth.py                # Azure auth utilities - business logic only
-│   ├── logging.py             # Custom logging & console formatting utilities
+│   ├── log.py                 # Custom logging & console formatting utilities
 │   ├── rename.py              # Rename utility - business logic only
 │   └── types.py               # Type definitions
 ├── pyproject.toml             # Package configuration, depends on fabric-cicd
@@ -42,10 +42,10 @@ fabric-deploy/
 ├── src/fabric_deploy/         # Package directory
 │   ├── __init__.py            # Package initialization, exports all public classes
 │   ├── workspace.py           # WorkspaceDeployer class - deployment business logic
-│   ├── param_detector.py      # ParameterDetector class - auto-detect source IDs
+│   ├── detect.py              # ParameterDetector class - auto-detect source IDs
 │   ├── cli.py                 # ALL CLI logic - parsers, handlers, user-facing text
 │   ├── auth.py                # Azure auth utilities - business logic only
-│   ├── logging.py             # Custom logging & console formatting utilities
+│   ├── log.py                 # Custom logging & console formatting utilities
 │   ├── rename.py              # Rename utility - business logic only
 │   └── types.py               # Type definitions
 ├── pyproject.toml             # Package configuration, depends on fabric-cicd
@@ -129,7 +129,7 @@ fabdep  # Auto-resolves workspace from base name + git branch
 
 ### ParameterDetector Class
 
-The `ParameterDetector` class (in `param_detector.py`) auto-detects source IDs from workspace repository files and generates parameter.yml with dynamic variables.
+The `ParameterDetector` class (in `detect.py`) auto-detects source IDs from workspace repository files and generates parameter.yml with dynamic variables.
 
 **Detection Sources**:
 - **Notebook Metadata**: Extracts `default_lakehouse_workspace_id` and `default_lakehouse` from notebook-content.py files
@@ -273,7 +273,7 @@ def main():
 
 ### Key Components
 
-**`fabric_api.py` - Fabric REST API integration module**
+**`api.py` - Fabric REST API integration module**
 Contains Fabric API utilities:
 - `get_access_token()`: Acquires Azure access token for Fabric API via `az account get-access-token`
 - `list_workspaces()`: Returns list of all workspaces accessible to current user
@@ -565,7 +565,7 @@ def is_auth_error(error_msg: str) -> bool:
 
 ## Logging Module
 
-**logging.py** provides custom logging and console formatting utilities:
+**log.py** provides custom logging and console formatting utilities:
 
 ```python
 def get_logger(name: str) -> logging.Logger:

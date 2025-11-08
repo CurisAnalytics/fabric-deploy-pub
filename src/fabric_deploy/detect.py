@@ -1,9 +1,12 @@
 """Auto-detection of source IDs from workspace repository for parameter generation."""
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from .log import get_logger
 
 
 @dataclass
@@ -64,22 +67,24 @@ class ParameterDetector:
         r'"default_lakehouse":\s*"([0-9a-f-]+)"', re.IGNORECASE
     )
 
-    def __init__(self, repo_dir: Path | str):
+    def __init__(self, repo_dir: Path | str, logger_name: str | None = None):
         """
         Initialize parameter detector.
 
         Args:
             repo_dir: Path to workspace repository directory
+            logger_name: Optional logger name (defaults to module name)
         """
         self.repo_dir = Path(repo_dir).resolve()
         self.parameters: dict[str, DetectedParameter] = {}
         self._lakehouse_names: list[str] = []
+        self.logger: logging.Logger = get_logger(logger_name or __name__)
 
-    def _print_file_warning(
+    def _log_file_warning(
         self, file_path: Path, error: Exception, context: str = ""
     ) -> None:
         """
-        Print warning message for file processing errors.
+        Log warning message for file processing errors.
 
         Args:
             file_path: Path to the file that failed
@@ -87,7 +92,7 @@ class ParameterDetector:
             context: Optional context description (e.g., "lakehouse metadata")
         """
         context_str = f" {context} from" if context else ""
-        print(f"Warning: Failed to read{context_str} {file_path}: {error}")
+        self.logger.warning(f"Failed to read{context_str} {file_path}: {error}")
 
     def detect_all(self) -> dict[str, DetectedParameter]:
         """
@@ -125,7 +130,7 @@ class ParameterDetector:
                 if display_name:
                     self._lakehouse_names.append(display_name)
             except Exception as e:
-                self._print_file_warning(platform_file, e, "lakehouse metadata")
+                self._log_file_warning(platform_file, e, "lakehouse metadata")
 
     def _add_parameter(
         self, find_value: str, item_type: str, source_file: str, description: str = ""
@@ -218,7 +223,7 @@ class ParameterDetector:
                     )
 
             except Exception as e:
-                self._print_file_warning(notebook_file, e)
+                self._log_file_warning(notebook_file, e)
 
     def _detect_from_semantic_models(self) -> None:
         """Detect SQL connection strings and endpoint IDs from semantic models."""
@@ -250,7 +255,7 @@ class ParameterDetector:
                     )
 
             except Exception as e:
-                self._print_file_warning(expr_file, e)
+                self._log_file_warning(expr_file, e)
 
     def _detect_from_pipelines(self) -> None:
         """Detect connection IDs and other references from pipeline JSON files."""
@@ -269,7 +274,7 @@ class ParameterDetector:
                 )
 
             except Exception as e:
-                self._print_file_warning(pipeline_file, e)
+                self._log_file_warning(pipeline_file, e)
 
     def _extract_connections_recursive(self, obj, source_file: str) -> None:
         """Recursively extract connection IDs from nested JSON structures."""
@@ -390,6 +395,31 @@ class ParameterDetector:
                     f.write(f'      {env}: "{val}"\n')
 
                 f.write(f"    item_type: {entry['item_type']}\n")
+
+    def should_skip_replacement(self, target_workspace_id: str) -> bool:
+        """
+        Check if target workspace matches detected source workspace.
+
+        When source and target workspaces are the same, parameter replacement
+        should be skipped since all IDs are already correct.
+
+        Args:
+            target_workspace_id: Destination workspace ID to check
+
+        Returns:
+            True if target matches source (skip replacement), False otherwise
+        """
+        if not self.parameters:
+            self.detect_all()
+
+        # Find all detected workspace IDs
+        detected_workspace_ids = [
+            param.find_value
+            for param in self.parameters.values()
+            if param.description == "Workspace ID"
+        ]
+
+        return target_workspace_id in detected_workspace_ids
 
     def print_detection_summary(self) -> None:
         """Print a summary of detected parameters."""

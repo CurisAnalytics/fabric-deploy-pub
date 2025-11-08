@@ -6,8 +6,6 @@ from pathlib import Path
 
 from .auth import (
     get_current_account,
-    is_auth_error,
-    is_connection_error,
     list_accounts,
     rename_subscription,
     switch_account,
@@ -17,6 +15,8 @@ from .log import (
     format_account_list,
     format_auth_error_message,
     format_connection_error_message,
+    is_auth_error,
+    is_connection_error,
     print_error,
 )
 from .rename import rename_items_by_display_name
@@ -340,48 +340,11 @@ def handle_detect_command(args: argparse.Namespace) -> None:
 def handle_deploy_command(args: argparse.Namespace) -> None:
     """Handle deploy subcommand execution."""
 
-    # Handle auto-detection mode
-    if args.auto_detect:
-        if not args.workspace_id:
-            print_error(
-                "\nError: --workspace-id is required when using --auto-detect\n"
-            )
-            print("Usage: fabdep --auto-detect --workspace-id <workspace-id>\n")
-            sys.exit(1)
-
-        try:
-            # Generate parameter file on-the-fly
-            detector = ParameterDetector(repo_dir=args.directory)
-            _ = detector.detect_all()
-
-            # Check if target workspace matches source workspace
-            detected_workspace_ids = [
-                param.find_value
-                for param in detector.parameters.values()
-                if param.description == "Workspace ID"
-            ]
-            if detected_workspace_ids and args.workspace_id in detected_workspace_ids:
-                print(
-                    f"\n✓ Source and target workspace are the same ({args.workspace_id}).\n"
-                    "  No parameter file will be used -- deploying directly without replacements."
-                )
-                _ = sys.stdout.flush()  # Ensure message appears before deployment logs
-                args.auto_detect = False
-
-            # Save if requested
-            if args.save_params and args.auto_detect:
-                output_file = Path(args.directory) / "parameter.yml.detected"
-                detector.save_parameter_yml(
-                    output_path=output_file,
-                    use_dynamic=True,
-                    environment="prod",
-                    skip_empty=True,
-                )
-                print(f"\n✓ Saved auto-detected parameters to: {output_file}\n")
-
-        except Exception as e:
-            print_error(f"\nParameter detection failed: {e}\n")
-            sys.exit(1)
+    # Validate auto-detect mode
+    if args.auto_detect and not args.workspace_id:
+        print_error("\nError: --workspace-id is required when using --auto-detect\n")
+        print("Usage: fabdep --auto-detect --workspace-id <workspace-id>\n")
+        sys.exit(1)
 
     try:
         deployer = WorkspaceDeployer(
@@ -389,6 +352,7 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
             logger_name="fabric_deploy.cli",
             workspace_id=args.workspace_id if args.workspace_id else None,
             auto_detect=bool(args.auto_detect),
+            save_detected_params=bool(args.save_params),
         )
     except FileNotFoundError as e:
         print_error(f"\n{e}\n")
