@@ -26,7 +26,15 @@ class WorkspaceDeployer:
     Main deployer class for Fabric workspace items.
 
     Encapsulates configuration extraction, validation, and deployment logic.
-    Configuration is loaded lazily on first deploy() call.
+
+    IMPORTANT: Initialization has side effects!
+    - Reads parameter.yml from disk
+    - Makes network calls to Fabric API (for workspace ID resolution)
+    - Generates parameter files (if auto_detect=True)
+    - Auto-detects lakehouse metadata
+
+    These operations occur in __post_init__ if workspace_id or lakehouse_name
+    are not explicitly provided.
     """
 
     repo_dir: Path | str
@@ -37,13 +45,33 @@ class WorkspaceDeployer:
     environment: str | None = None
     lakehouse_name: str | None = None
     auto_detect: bool = False  # Enable auto-detection mode
+    save_detected_params: bool = False  # Save detected parameters to .detected file
 
     # Private fields
     _repo_dir_resolved: Path = field(init=False, repr=False)
     logger: logging.Logger = field(init=False, repr=False)
 
     def __post_init__(self):
-        """Initialize derived fields and auto-load config if not provided."""
+        """
+        Initialize derived fields and auto-load configuration.
+
+        WARNING: This method has side effects and performs I/O operations:
+        1. Resolves repository directory path
+        2. Initializes logger
+        3. If auto_detect=True:
+           - Scans workspace files to detect source IDs
+           - Checks if source/target workspaces match
+           - Generates parameter.yml (if workspaces differ)
+           - Optionally saves parameter.yml.detected
+        4. If workspace_id is None:
+           - Reads parameter.yml from disk
+           - Makes network call to Fabric REST API to resolve workspace ID
+        5. If lakehouse_name is None:
+           - Scans for .Lakehouse directories and reads .platform metadata
+
+        These operations happen automatically during object construction,
+        not during the deploy() call.
+        """
         self._repo_dir_resolved = Path(self.repo_dir).resolve()
         self.logger = get_logger(self.logger_name or __name__)
 
@@ -175,19 +203,51 @@ class WorkspaceDeployer:
         Generate parameter file dynamically using auto-detection.
 
         Requires workspace_id to be set beforehand.
-        Creates parameter.yml.auto and backs up existing parameter.yml if present.
+        Checks if source and target workspaces are the same - if so, skips generation.
+        Creates parameter.yml and backs up existing parameter.yml if present.
+        Optionally saves a copy to parameter.yml.detected if save_detected_params is True.
         """
         if not self.workspace_id:
             raise ValueError(
                 "workspace_id must be provided when using auto-detect mode"
             )
 
-        print()
         self.logger.info("Auto-detecting source IDs from workspace files...")
 
         # Detect parameters
-        detector = ParameterDetector(repo_dir=self._repo_dir_resolved)
+        detector = ParameterDetector(
+            repo_dir=self._repo_dir_resolved, logger_name=self.logger.name
+        )
         _ = detector.detect_all()
+
+        # Check if source and target workspaces are the same
+        if detector.should_skip_replacement(self.workspace_id):
+            self.logger.info(
+                f"Source and target workspace are the same ({self.workspace_id})"
+            )
+            self.logger.info(
+                "No parameter file will be used -- deploying directly without replacements"
+            )
+            # Disable auto_detect so we don't try to clean up files later
+            self.auto_detect = False
+            return
+
+        # Save detected parameters if requested
+        if self.save_detected_params:
+            detected_file = self._repo_dir_resolved / "parameter.yml.detected"
+            detector.save_parameter_yml(
+                output_path=detected_file,
+                use_dynamic=True,
+                environment="prod",
+                skip_empty=True,
+            )
+            # Count what was saved
+            with_dynamic = sum(
+                1 for p in detector.parameters.values() if p.dynamic_variable
+            )
+            self.logger.info(
+                f"Saved {with_dynamic} detected parameter(s) to {detected_file.name}"
+            )
 
         # Backup existing parameter.yml if it exists
         param_file = self._repo_dir_resolved / "parameter.yml"
@@ -353,9 +413,7 @@ class WorkspaceDeployer:
                     target_workspace, item_name_exclude_regex=self.lakehouse_name
                 )
 
-            print()
             self.logger.info("Deployment complete!")
-            print()
 
         except Exception:
             # Re-raise exception to be handled by caller
