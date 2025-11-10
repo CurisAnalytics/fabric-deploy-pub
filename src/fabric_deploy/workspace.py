@@ -25,8 +25,14 @@ from .log import get_logger, print_header
 class WorkspaceDeployer:
     """
     Main deployer class for Fabric workspace items.
-
     Encapsulates configuration extraction, validation, and deployment logic.
+
+    Attributes:
+            repo_dir: Path to the repository directory containing Fabric workspace items
+            logger_name: Optional custom logger name (defaults to module name)
+            auto_detect: Enable auto-detection mode to generate parameter.yml dynamically
+            save_detected_params: Save detected parameters to parameter.yml.detected file
+            branch_override: Override git branch for workspace name resolution (defaults to current branch)
 
     IMPORTANT: Initialization has side effects!
     - Reads fabdep.yml from disk

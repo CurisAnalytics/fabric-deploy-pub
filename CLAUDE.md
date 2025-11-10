@@ -17,15 +17,14 @@
 ```sh
 fabric-deploy/
 ├── src/fabric_deploy/         # Package directory
-│   ├── __init__.py            # Package initialization, exports all public classes
+│   ├── __init__.py            # Package initialization (minimal public API)
 │   ├── workspace.py           # WorkspaceDeployer class - deployment business logic
 │   ├── detect.py              # ParameterDetector class - auto-detect source IDs
 │   ├── api.py                 # Fabric REST API integration - workspace lookup
 │   ├── cli.py                 # ALL CLI logic - parsers, handlers, user-facing text
 │   ├── auth.py                # Azure auth utilities - business logic only
 │   ├── log.py                 # Custom logging & console formatting utilities
-│   ├── rename.py              # Rename utility - business logic only
-│   └── types.py               # Type definitions
+│   └── rename.py              # Rename utility - business logic only
 ├── pyproject.toml             # Package configuration, depends on fabric-cicd
 ├── SMART_REPLACE.md           # Dynamic parameter generation documentation
 └── README.md                  # Brief usage documentation
@@ -367,39 +366,26 @@ fabdep --no-cleanup
 
 ## Programmatic Usage
 
-All public classes can be imported and used programmatically:
+**Note**: Primary interface is the CLI (`fabdep` command). Programmatic API is minimal and designed for Azure DevOps integration and testing.
 
 ```python
-from fabric_deploy import (
-    WorkspaceDeployer,
-    ParameterDetector,
-    rename_items_by_display_name,
-)
+from fabric_deploy import WorkspaceDeployer
 
-# Parameter detection
-detector = ParameterDetector(repo_dir="/path/to/workspace")
-detector.detect_all()
-detector.print_detection_summary()
-detector.save_parameter_yml("parameter.yml", use_dynamic=True, environment="prod")
+# Basic deployment (reads fabdep.yml from repo_dir)
+deployer = WorkspaceDeployer(repo_dir="/path/to/workspace")
+deployer.deploy()
 
-# Deployment
+# With item filtering
 deployer = WorkspaceDeployer(repo_dir="/path/to/workspace")
 deployer.deploy(item_types=["Notebook", "DataPipeline"], no_cleanup=False)
 
-# With auto-detect
+# With auto-detect mode and branch override
 deployer = WorkspaceDeployer(
     repo_dir="/path/to/workspace",
     auto_detect=True,
     branch_override="prod",
 )
 deployer.deploy()
-
-# Rename utility
-rename_items_by_display_name(
-    repo_dir="/path/to/workspace",
-    dry_run=False,
-    clean=True,
-)
 ```
 
 ## Microsoft's fabric-cicd Package
