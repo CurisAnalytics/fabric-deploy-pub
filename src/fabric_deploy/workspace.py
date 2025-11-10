@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from json import loads
 from pathlib import Path
+from time import sleep
 
 import yaml
 from fabric_cicd import (
@@ -295,10 +296,10 @@ class WorkspaceDeployer:
                     "Make sure the find_value matches exactly what's in the source files."
                 )
 
-        if count > 0:
-            self.logger.info(
-                f"Applied {count} manual parameter override(s) from fabdep.yml"
-            )
+        # if count > 0:
+        #     self.logger.info(
+        #         f"Applied {count} manual parameter override(s) from fabdep.yml"
+        #     )
 
         return count
 
@@ -331,7 +332,7 @@ class WorkspaceDeployer:
             self.logger.error(f"Failed to create workspace: {e}")
             raise
 
-    def _generate_dynamic_params(self) -> None:
+    def _generate_dynamic_params(self, item_types: list[str] | None = None) -> None:
         """
         Generate parameter file dynamically using auto-detection.
 
@@ -340,6 +341,9 @@ class WorkspaceDeployer:
         Optionally saves a copy to parameter.yml.detected if save_detected_params is True.
 
         Also merges manual_parameters from fabdep.yml if specified.
+
+        Args:
+            item_types: Filter parameters to only those used by specified item types
         """
         # Detect parameters (suppress logs, we'll show summary later)
         detector = ParameterDetector(
@@ -349,6 +353,16 @@ class WorkspaceDeployer:
 
         # Load manual parameters from fabdep.yml if specified
         manual_count = self._load_manual_parameters(detector)
+
+        # Filter parameters based on item_types if specified
+        # This prevents warnings about unused parameters when deploying only specific item types
+        if item_types:
+            filtered_params = {}
+            for find_value, param in detector.parameters.items():
+                # Include parameter if its item_types overlap with filtered types
+                if param.item_types.intersection(set(item_types)):
+                    filtered_params[find_value] = param
+            detector.parameters = filtered_params
 
         # Check if source and target workspaces are the same
         if detector.should_skip_replacement(self.workspace_id):
@@ -429,6 +443,32 @@ class WorkspaceDeployer:
             _ = backup_file.rename(param_file)
             self.logger.info("Restored original parameter.yml")
 
+    def _get_repo_item_types(self) -> set[str]:
+        """
+        Scan repository to detect which item types are present.
+
+        Returns:
+            Set of item type names found in the repository
+        """
+        item_types = set()
+
+        # Scan all directories in repo for .platform files
+        for item_dir in self._repo_dir_resolved.iterdir():
+            if not item_dir.is_dir():
+                continue
+
+            # Check if directory follows ItemName.ItemType pattern
+            if "." in item_dir.name:
+                parts = item_dir.name.rsplit(".", 1)
+                if len(parts) == 2:
+                    item_type = parts[1]
+                    # Verify it has a .platform file
+                    platform_file = item_dir / ".platform"
+                    if platform_file.exists() and item_type in ACCEPTED_ITEM_TYPES:
+                        item_types.add(item_type)
+
+        return item_types
+
     def _detect_lakehouse(self) -> None:
         """
         Detect lakehouse name from .Lakehouse directory.
@@ -498,6 +538,9 @@ class WorkspaceDeployer:
                     f"Supported types: {', '.join(ACCEPTED_ITEM_TYPES)}"
                 )
 
+        # Detect which item types are present in repository
+        repo_item_types = self._get_repo_item_types()
+
         # Build item_type_in_scope based on include/exclude flags
         item_type_in_scope = None
         if item_types:
@@ -507,6 +550,13 @@ class WorkspaceDeployer:
                 t for t in ACCEPTED_ITEM_TYPES if t not in exclude_types
             ]
 
+        # Regenerate parameters with filtering if auto-detect is enabled and item filtering is active
+        # This ensures only parameters relevant to the filtered item types are included,
+        # preventing warnings from fabric-cicd about unused find_replace entries
+        if self.auto_detect and item_type_in_scope:
+            self._generate_dynamic_params(item_types=item_type_in_scope)
+
+        # Print header with repo info
         self.logger.info(f"Workspace Name: '{self.workspace_name}'")
         self.logger.info(f"Workspace ID: {self.workspace_id}")
         # Print auto-detect summary if available (on same line as workspace info)
@@ -517,7 +567,14 @@ class WorkspaceDeployer:
         # self.logger.info(f"Lakehouse name: {self.lakehouse_name}")
         # self.logger.info(f"Input directory: {self._repo_dir_resolved}")
         if item_type_in_scope:
-            self.logger.info(f"Item types in scope: {', '.join(item_type_in_scope)}")
+            # Only show item types that are both in scope AND present in repo
+            types_to_deploy = [t for t in item_type_in_scope if t in repo_item_types]
+            if types_to_deploy:
+                self.logger.info(
+                    f"Item types in scope: {', '.join(sorted(types_to_deploy))}"
+                )
+            else:
+                self.logger.warning(f"No matching item types found in repository")
         if include_items:
             self.logger.info(f"Including items: {', '.join(include_items)}")
 
@@ -570,13 +627,16 @@ class WorkspaceDeployer:
         include_items: list[str] | None = None,
     ) -> None:
         """
-        Deploy items to workspace using fabric-cicd.
+        Deploy items to workspace using fabric-cicd with retry logic.
 
         Args:
             no_cleanup: Skip unpublishing orphaned items
             item_types: Specific item types to deploy
             include_items: Include only specific items (format: "ItemName.ItemType")
         """
+        max_retries = 3
+        retry_delay = 2  # seconds
+
         target_workspace = FabricWorkspace(
             workspace_id=self.workspace_id,
             repository_directory=str(self._repo_dir_resolved),
@@ -584,7 +644,33 @@ class WorkspaceDeployer:
             item_type_in_scope=item_types,
         )
 
-        _ = publish_all_items(target_workspace, items_to_include=include_items)
+        # Deploy with retry logic
+        for attempt in range(1, max_retries + 1):
+            try:
+                _ = publish_all_items(target_workspace, items_to_include=include_items)
+                break  # Success, exit retry loop
+            except Exception as e:
+                error_msg = str(e)
+                # Check if this is a connection error that should be retried
+                if (
+                    "Connection aborted" in error_msg
+                    or "RemoteDisconnected" in error_msg
+                ):
+                    if attempt < max_retries:
+                        self.logger.warning(
+                            f"Connection error on attempt {attempt}/{max_retries}: {error_msg}"
+                        )
+                        self.logger.info(f"Retrying in {retry_delay} seconds...")
+                        sleep(retry_delay)
+                    else:
+                        self.logger.error(
+                            f"Deployment failed after {max_retries} attempts: {error_msg}"
+                        )
+                        raise
+                else:
+                    # Not a connection error, don't retry
+                    raise
+
         if not no_cleanup:
             unpublish_all_orphan_items(
                 target_workspace, item_name_exclude_regex=self.lakehouse_name
@@ -625,7 +711,13 @@ class WorkspaceDeployer:
             phase1_types = FOUNDATIONAL_ITEMS
 
         if phase1_types:
-            self.logger.info(f"Foundational item types: {', '.join(phase1_types)}")
+            # Only show foundational types that are actually in the repo
+            repo_item_types = self._get_repo_item_types()
+            types_in_repo = [t for t in phase1_types if t in repo_item_types]
+            if types_in_repo:
+                self.logger.info(
+                    f"Foundational item types: {', '.join(sorted(types_in_repo))}"
+                )
             self._deploy_items(
                 no_cleanup=True,  # Don't cleanup in Phase 1
                 item_types=phase1_types,
@@ -647,7 +739,11 @@ class WorkspaceDeployer:
             phase2_types = None  # Deploy everything
 
         if phase2_types:
-            self.logger.info(f"Item types: {', '.join(phase2_types)}")
+            # Only show types that are actually in the repo
+            repo_item_types = self._get_repo_item_types()
+            types_in_repo = [t for t in phase2_types if t in repo_item_types]
+            if types_in_repo:
+                self.logger.info(f"Item types: {', '.join(sorted(types_in_repo))}")
 
         self._deploy_items(
             no_cleanup=no_cleanup,

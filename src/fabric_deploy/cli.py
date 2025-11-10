@@ -168,12 +168,22 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         help='Include only specific items (format: "ItemName.ItemType")',
     )
+    # Auto-detect is enabled by default. Provide an explicit opt-out flag.
     _ = deploy_parser.add_argument(
         "--auto-detect",
         "-d",
+        dest="auto_detect",
         action="store_true",
-        help="Auto-detect source IDs and generate parameters on-the-fly",
+        help="Enable auto-detect of source IDs and generate parameters on-the-fly (enabled by default)",
     )
+    _ = deploy_parser.add_argument(
+        "--no-auto-detect",
+        dest="auto_detect",
+        action="store_false",
+        help="Disable auto-detect (opt-out).",
+    )
+    # Default auto_detect to True so -d is the default behavior unless --no-auto-detect is provided
+    deploy_parser.set_defaults(auto_detect=True)
     _ = deploy_parser.add_argument(
         "--save-params",
         action="store_true",
@@ -217,6 +227,7 @@ def parse_args() -> argparse.Namespace:
                 "--include-items",
                 "-d",
                 "--auto-detect",
+                "--no-auto-detect",
                 "--save-params",
                 "-b",
                 "--branch",
@@ -237,7 +248,11 @@ def parse_args() -> argparse.Namespace:
         args.item_types = None
         args.exclude_types = None
         args.include_items = None
-        args.auto_detect = False
+        # Auto-detect enabled by default
+        args.auto_detect = True
+        # Ensure bootstrap and create_workspace defaults exist when no subcommand is provided
+        args.bootstrap = False
+        args.create_workspace = False
         args.save_params = False
         args.branch = None
 

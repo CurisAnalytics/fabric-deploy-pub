@@ -69,7 +69,8 @@ Options:
   --item-types, -t       Deploy specific types (e.g., Notebook DataPipeline)
   --exclude-types, -x    Exclude types (e.g., Report SemanticModel)
   --include-items, -i    Include specific items by name
-  --auto-detect, -d      Auto-detect source IDs and generate parameters on-the-fly
+  --auto-detect, -d      Auto-detect source IDs and generate parameters on-the-fly (default)
+  --no-auto-detect       Disable auto-detect (opt-out; use existing parameter.yml)
   --save-params          Save auto-detected parameters to parameter.yml.detected
   --branch, -b           Override git branch name for workspace resolution
   --bootstrap            Enable two-phase deployment (foundational items first, then all)
@@ -90,11 +91,11 @@ fabdep -x Report SemanticModel
 # Deploy to specific branch workspace
 fabdep --branch prod  # Deploys to "workspace_base_name [prod]"
 
-# Auto-detect parameters (no parameter.yml needed)
-fabdep -d
+# Auto-detect parameters (no parameter.yml needed — enabled by default)
+fabdep
 
-# Auto-detect and save generated parameters
-fabdep -d --save-params
+# Auto-detect and save generated parameters (auto-detect enabled by default)
+fabdep --save-params
 
 # Bootstrap mode - deploy to blank workspace
 fabdep --bootstrap
@@ -102,8 +103,8 @@ fabdep --bootstrap
 # Bootstrap mode - create workspace first, then deploy
 fabdep --bootstrap --create-workspace
 
-# Auto-detect + bootstrap (recommended for new workspaces)
-fabdep -d --bootstrap
+# Auto-detect + bootstrap (recommended for new workspaces — auto-detect enabled by default)
+fabdep --bootstrap
 ```
 
 ### Bootstrap Mode
