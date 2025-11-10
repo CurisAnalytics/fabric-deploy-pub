@@ -179,21 +179,26 @@ dependencies = [
 
 ## Configuration
 
-**parameter.yml** (in workspace repo):
+**fabdep.yml** (fabric-deploy config file):
 ```yaml
 # Workspace base name - combined with git branch to resolve workspace ID
 workspace_base_name: "my_workspace"
 ```
 
 **How it works**:
-1. Base name from parameter.yml: `my_workspace`
+1. Base name from fabdep.yml: `my_workspace`
 2. Current git branch: `prod` (case-insensitive)
-3. Combined workspace name: `my_workspace_prod`
+3. Combined workspace name: `my_workspace [prod]`
 4. Workspace ID lookup via Fabric REST API
 5. Deployment proceeds with resolved workspace ID
 
+**Why separate from parameter.yml?**
+- `fabdep.yml` is fabric-deploy specific configuration
+- `parameter.yml` is read by Microsoft's fabric-cicd and only supports: `find_replace`, `key_value_replace`, `spark_pool`
+- Adding custom fields to `parameter.yml` breaks fabric-cicd validation
+
 **Benefits**:
-- No need for `find_replace` entries
+- Clean separation: fabric-deploy config vs fabric-cicd parameters
 - Automatic workspace resolution based on branch
 - Supports any branch name (prod, dev, staging, feature branches, etc.)
 - Case-insensitive branch matching
@@ -305,6 +310,44 @@ Contains the `WorkspaceDeployer` dataclass:
 - Calls `_resolve_workspace_id_from_name()` to lookup workspace ID via Fabric API
 - Sets `self.workspace_id` and `self.environment = "default"`
 - Automatically called by `deploy()` if `workspace_id` is not set
+
+## Migration Guide
+
+### Moving from parameter.yml to fabdep.yml
+
+If you previously had `workspace_base_name` in your `parameter.yml`, you need to migrate to `fabdep.yml`:
+
+**Before** (parameter.yml):
+```yaml
+# This breaks fabric-cicd validation!
+workspace_base_name: "my_workspace"
+
+find_replace:
+  - find_value: "some-id"
+    replace_value:
+      prod: "replacement"
+```
+
+**After**:
+
+Create `fabdep.yml`:
+```yaml
+workspace_base_name: "my_workspace"
+```
+
+Update `parameter.yml` (remove workspace_base_name):
+```yaml
+# Only fabric-cicd fields remain
+find_replace:
+  - find_value: "some-id"
+    replace_value:
+      prod: "replacement"
+```
+
+**Why this change?**
+- Microsoft's fabric-cicd validates `parameter.yml` and only accepts: `find_replace`, `key_value_replace`, `spark_pool`
+- Custom fields like `workspace_base_name` cause validation failures
+- Separating configs ensures compatibility with fabric-cicd
 
 ## Troubleshooting
 
@@ -421,6 +464,7 @@ Options:
   --workspace-id, -w     Destination workspace ID (replaces parameter.yml)
   --auto-detect, -d      Auto-detect source IDs and generate parameters on-the-fly
   --save-params          Save auto-detected parameters to parameter.yml.detected
+  --branch, -b           Override git branch name for workspace resolution
   --help                 Show help message
 ```
 
@@ -509,6 +553,10 @@ fabdep --include-items "MyNotebook.Notebook" "MyPipeline.DataPipeline"
 
 # Explicit deploy subcommand also works
 fabdep deploy -t Notebook DataPipeline
+
+# Override git branch for workspace resolution
+fabdep --branch prod
+fabdep -b staging  # Deploy to "workspace_base_name [staging]"
 
 # Rename items to match display names (dry-run)
 fabdep rename
@@ -621,7 +669,7 @@ def rename_items_by_display_name(
 
 The CLI validates:
 - Workspace directory exists
-- `parameter.yml` exists with `workspace_base_name` field
+- `fabdep.yml` exists with `workspace_base_name` field
 - Git repository is available with valid branch
 - At least one `*.Lakehouse` directory exists
 - Lakehouse `.platform` metadata file is readable
@@ -629,7 +677,7 @@ The CLI validates:
 **Intelligent error handling**: The CLI automatically detects different error types and provides specific troubleshooting guidance:
 - **Connection errors**: Detects when DataPipelines/Dataflows reference missing tenant-wide connections, explains that connection GUIDs must be edited directly in repository source files (not via parameter.yml)
 - **Auth/authorization errors**: Detects authentication failures, displays account information and suggests relevant auth commands
-- **Validation errors**: Parameter file validation issues trigger automatic .bak renaming with clear explanation
+- **Config file errors**: Missing fabdep.yml triggers helpful error message with example configuration
 
 ## Development
 
@@ -733,12 +781,16 @@ rename_items_by_display_name(
 
 ## Troubleshooting
 
-**"parameter.yml not found"**
+**"fabdep.yml not found"**
 - Ensure you're running the command from a Fabric workspace directory
-- Check that `parameter.yml` exists in the workspace root
+- Create a `fabdep.yml` file in the workspace root with:
+  ```yaml
+  workspace_base_name: "your_workspace"
+  ```
+- **Migration**: If you have `workspace_base_name` in `parameter.yml`, move it to `fabdep.yml`
 
-**"No workspace_base_name found in parameter.yml"**
-- Ensure `parameter.yml` contains the `workspace_base_name` field
+**"No workspace_base_name found in fabdep.yml"**
+- Ensure `fabdep.yml` contains the `workspace_base_name` field
 - Format: `workspace_base_name: "your_workspace"`
 
 **"No lakehouse found in repository directory"**
