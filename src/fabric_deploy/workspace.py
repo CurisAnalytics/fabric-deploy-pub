@@ -52,6 +52,7 @@ class WorkspaceDeployer:
 
     # Private fields
     _repo_dir_resolved: Path = field(init=False, repr=False)
+    _auto_detect_summary: str | None = field(default=None, init=False, repr=False)
     logger: logging.Logger = field(init=False, repr=False)
 
     def __post_init__(self):
@@ -191,9 +192,7 @@ class WorkspaceDeployer:
                 "workspace_id must be provided when using auto-detect mode"
             )
 
-        self.logger.info("Auto-detecting source IDs from workspace files...")
-
-        # Detect parameters
+        # Detect parameters (suppress logs, we'll show summary later)
         detector = ParameterDetector(
             repo_dir=self._repo_dir_resolved, logger_name=self.logger.name
         )
@@ -201,10 +200,8 @@ class WorkspaceDeployer:
 
         # Check if source and target workspaces are the same
         if detector.should_skip_replacement(self.workspace_id):
-            self.logger.info(
-                f"Source and target workspace are the same ({self.workspace_id})"
-            )
-            self.logger.info(
+            self._auto_detect_summary = (
+                f"Source and target workspace are the same ({self.workspace_id})\n"
                 "No parameter file will be used -- deploying directly without replacements"
             )
             # Disable auto_detect so we don't try to clean up files later
@@ -244,18 +241,17 @@ class WorkspaceDeployer:
             skip_empty=True,
         )
 
-        # Count what was generated
-        with_dynamic = sum(
-            1 for p in detector.parameters.values() if p.dynamic_variable
-        )
+        # Count what was generated and store summary
+        dyns = sum(1 for p in detector.parameters.values() if p.dynamic_variable)
         total = len(detector.parameters)
 
-        self.logger.info(f"Generated parameter file with {with_dynamic} parameter(s)")
-        if with_dynamic < total:
-            self.logger.info(
-                f"Skipped {total - with_dynamic} parameter(s) without dynamic variables"
-            )
-        self.logger.info("Using dynamic variables in replace_value")
+        # Store summary to display after header
+        paran = (
+            "" if dyns >= total else f" ({total - dyns} external connections skipped)"
+        )
+        plr = "" if dyns == 1 else "s"
+        summary = f"Using {dyns} dynamic parameter{plr}{paran}"
+        self._auto_detect_summary = summary
 
     def _cleanup_dynamic_params(self) -> None:
         """
@@ -352,9 +348,13 @@ class WorkspaceDeployer:
             ]
 
         self.logger.info(f"Workspace Name: '{self.workspace_name}'")
+        self.logger.info(f"Workspace ID: {self.workspace_id}")
+        # Print auto-detect summary if available (on same line as workspace info)
+        if self._auto_detect_summary:
+            self.logger.info(self._auto_detect_summary)
+
         # self.logger.info(f"Lakehouse name: {self.lakehouse_name}")
         # self.logger.info(f"Input directory: {self._repo_dir_resolved}")
-        self.logger.info(f"Workspace ID: {self.workspace_id}")
         if item_type_in_scope:
             self.logger.info(f"Item types in scope: {', '.join(item_type_in_scope)}")
         if include_items:
