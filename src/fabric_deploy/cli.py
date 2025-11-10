@@ -169,11 +169,6 @@ def parse_args() -> argparse.Namespace:
         help='Include only specific items (format: "ItemName.ItemType")',
     )
     _ = deploy_parser.add_argument(
-        "--workspace-id",
-        "-w",
-        help="Destination workspace ID (replaces parameter.yml detection)",
-    )
-    _ = deploy_parser.add_argument(
         "--auto-detect",
         "-d",
         action="store_true",
@@ -210,11 +205,11 @@ def parse_args() -> argparse.Namespace:
                 "--exclude-types",
                 "-i",
                 "--include-items",
-                "-w",
-                "--workspace-id",
                 "-d",
                 "--auto-detect",
                 "--save-params",
+                "-b",
+                "--branch",
             }
             if any(arg in deploy_flags or not arg.startswith("-") for arg in argv):
                 # Inject 'deploy' as the first argument
@@ -230,7 +225,6 @@ def parse_args() -> argparse.Namespace:
         args.item_types = None
         args.exclude_types = None
         args.include_items = None
-        args.workspace_id = None
         args.auto_detect = False
         args.save_params = False
         args.branch = None
@@ -350,7 +344,6 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
         deployer = WorkspaceDeployer(
             repo_dir=args.directory,
             logger_name="fabric_deploy.cli",
-            workspace_id=args.workspace_id if args.workspace_id else None,
             auto_detect=bool(args.auto_detect),
             save_detected_params=bool(args.save_params),
             branch_override=args.branch,

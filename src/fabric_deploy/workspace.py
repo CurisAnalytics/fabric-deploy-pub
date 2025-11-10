@@ -29,26 +29,26 @@ class WorkspaceDeployer:
     Encapsulates configuration extraction, validation, and deployment logic.
 
     IMPORTANT: Initialization has side effects!
-    - Reads parameter.yml from disk
+    - Reads fabdep.yml from disk
     - Makes network calls to Fabric API (for workspace ID resolution)
     - Generates parameter files (if auto_detect=True)
     - Auto-detects lakehouse metadata
 
-    These operations occur in __post_init__ if workspace_id or lakehouse_name
-    are not explicitly provided.
+    All configuration is loaded from fabdep.yml in __post_init__.
     """
 
     repo_dir: Path | str
     logger_name: str | None = None
-
-    # Configuration fields - auto-loaded in __post_init__ if not provided
-    workspace_id: str | None = None
-    workspace_name: str | None = None  # Resolved workspace name (base_name [branch])
-    environment: str | None = None
-    lakehouse_name: str | None = None
     auto_detect: bool = False  # Enable auto-detection mode
     save_detected_params: bool = False  # Save detected parameters to .detected file
     branch_override: str | None = None  # Override git branch for workspace resolution
+
+    # Configuration fields - auto-loaded in __post_init__
+    workspace_id: str = field(init=False, repr=False)
+    workspace_name: str = field(
+        init=False, repr=False
+    )  # Resolved workspace name (base_name [branch])
+    lakehouse_name: str = field(init=False, repr=False)
 
     # Private fields
     _repo_dir_resolved: Path = field(init=False, repr=False)
@@ -62,16 +62,13 @@ class WorkspaceDeployer:
         WARNING: This method has side effects and performs I/O operations:
         1. Resolves repository directory path
         2. Initializes logger
-        3. If auto_detect=True:
+        3. Reads fabdep.yml from disk
+        4. Makes network call to Fabric REST API to resolve workspace ID
+        5. If auto_detect=True:
            - Scans workspace files to detect source IDs
-           - Checks if source/target workspaces match
-           - Generates parameter.yml (if workspaces differ)
+           - Generates parameter.yml with dynamic variables
            - Optionally saves parameter.yml.detected
-        4. If workspace_id is None:
-           - Reads fabdep.yml from disk
-           - Makes network call to Fabric REST API to resolve workspace ID
-        5. If lakehouse_name is None:
-           - Scans for .Lakehouse directories and reads .platform metadata
+        6. Scans for .Lakehouse directories and reads .platform metadata
 
         These operations happen automatically during object construction,
         not during the deploy() call.
@@ -79,21 +76,15 @@ class WorkspaceDeployer:
         self._repo_dir_resolved = Path(self.repo_dir).resolve()
         self.logger = get_logger(self.logger_name or __name__)
 
-        # Load workspace ID first (either from fabdep.yml or provided via CLI)
-        if self.workspace_id is None:
-            # No workspace ID provided - must load from fabdep.yml
-            self._load_config()
-        elif self.environment is None:
-            # Workspace ID provided but no environment - default value
-            self.environment = "env"
+        # Always load workspace ID from fabdep.yml
+        self._load_config()
 
-        # Auto-detect parameters if requested (now that workspace_id is set)
+        # Auto-detect parameters if requested
         if self.auto_detect:
-            # Generate parameter file dynamically
             self._generate_dynamic_params()
 
-        if self.lakehouse_name is None:
-            self._detect_lakehouse()
+        # Always detect lakehouse
+        self._detect_lakehouse()
 
     def _get_git_branch(self) -> str:
         """
@@ -176,22 +167,15 @@ class WorkspaceDeployer:
                 f"Workspace '{self.workspace_name}' not found for account: {account}"
             )
             raise
-        self.environment = "fabdep"
 
     def _generate_dynamic_params(self) -> None:
         """
         Generate parameter file dynamically using auto-detection.
 
-        Requires workspace_id to be set beforehand.
         Checks if source and target workspaces are the same - if so, skips generation.
         Creates parameter.yml and backs up existing parameter.yml if present.
         Optionally saves a copy to parameter.yml.detected if save_detected_params is True.
         """
-        if not self.workspace_id:
-            raise ValueError(
-                "workspace_id must be provided when using auto-detect mode"
-            )
-
         # Detect parameters (suppress logs, we'll show summary later)
         detector = ParameterDetector(
             repo_dir=self._repo_dir_resolved, logger_name=self.logger.name
@@ -209,13 +193,12 @@ class WorkspaceDeployer:
             return
 
         # Save detected parameters if requested
-        assert self.environment  # for typing
         if self.save_detected_params:
             detected_file = self._repo_dir_resolved / "parameter.yml.detected"
             detector.save_parameter_yml(
                 output_path=detected_file,
                 use_dynamic=True,
-                environment=self.environment,
+                environment="fabdep",
                 skip_empty=True,
             )
             # Count what was saved
@@ -237,7 +220,7 @@ class WorkspaceDeployer:
         detector.save_parameter_yml(
             output_path=param_file,
             use_dynamic=True,
-            environment=self.environment,
+            environment="fabdep",
             skip_empty=True,
         )
 
@@ -376,18 +359,16 @@ class WorkspaceDeployer:
                 f"Parameter file modified: {mtime.strftime('%d/%m/%Y %H:%M:%S')}"
             )
 
-        assert self.environment  # for typing
         target_workspace = FabricWorkspace(
             workspace_id=self.workspace_id,
             repository_directory=str(self._repo_dir_resolved),
-            environment=self.environment,
+            environment="fabdep",
             item_type_in_scope=item_type_in_scope,
         )
 
         try:
             _ = publish_all_items(target_workspace, items_to_include=include_items)
             if not no_cleanup:
-                assert self.lakehouse_name  # for typing
                 unpublish_all_orphan_items(
                     target_workspace, item_name_exclude_regex=self.lakehouse_name
                 )
