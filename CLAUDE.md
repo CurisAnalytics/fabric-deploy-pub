@@ -100,6 +100,7 @@ capacity_id: "12345-67890-abcd-..."  # Optional, auto-detected if not specified
 manual_parameters:
   - find_value: "ffffffff-ffff-ffff-ffff-ffffffffffff"  # Auto-detected from expressions.tmdl
     replace_value: "ffffffff-ffff-ffff-ffff-ffffffffffff"  # Keep same (external lakehouse)
+    item_type: ["SemanticModel"]
     description: "External Translytical SQL Endpoint ID"
 ```
 
@@ -141,11 +142,12 @@ manual_parameters:
 
 ### Manual Parameter Overrides
 
-Override the **replace_value** for auto-detected parameters that reference external resources.
+Override the **replace_value** and optionally scope to specific **item_type(s)** for auto-detected parameters that reference external resources.
 
 **How It Works**:
 1. **find_value** is still **auto-detected** from source files (e.g., SemanticModel expressions.tmdl)
 2. **replace_value** is manually specified in `fabdep.yml` when you want to keep an external reference
+3. **item_type** (optional) scopes the replacement to specific item types (e.g., `["SemanticModel"]`)
 
 **Use Cases**:
 - External lakehouse SQL endpoint IDs (from workspaces not being deployed)
@@ -163,16 +165,20 @@ workspace_base_name: "my_workspace"
 manual_parameters:
   - find_value: "ffffffff-ffff-ffff-ffff-ffffffffffff"  # Auto-detected from expressions.tmdl
     replace_value: "ffffffff-ffff-ffff-ffff-ffffffffffff"  # Keep same (external reference)
+    item_type: ["SemanticModel"]
     description: "External Translytical SQL Endpoint ID (not deployed)"
   
   - find_value: "old-server.database.windows.net"  # Auto-detected from pipeline
     replace_value: "new-server.database.windows.net"  # Custom replacement
+    item_type: ["DataPipeline"]
     description: "Production SQL Server connection"
 ```
 
 **Behavior**:
 - Manual overrides are applied to auto-detected parameters only
 - If find_value wasn't auto-detected, a warning is logged
+- If `item_type` is specified, replacement is scoped to those item types only
+- If `item_type` is omitted, the auto-detected item types are preserved
 - Overridden parameters are marked with "(manual override: description)" in logs
 - Logged as "Applied X manual parameter override(s)" in deployment summary
 
