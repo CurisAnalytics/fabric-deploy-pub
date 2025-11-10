@@ -228,8 +228,7 @@ src/fabric_deploy/
 ├── cli.py              # CLI interface
 ├── auth.py             # Azure auth utilities
 ├── log.py              # Logging and formatting
-├── rename.py           # Rename utility
-└── types.py            # Type definitions
+└── rename.py           # Rename utility
 ```
 
 **Key Components**:
@@ -239,37 +238,26 @@ src/fabric_deploy/
 
 ## Programmatic Usage
 
+**Note**: Primary interface is the CLI. Programmatic API is minimal and designed for Azure DevOps integration.
+
 ```python
-from fabric_deploy import (
-    WorkspaceDeployer,
-    ParameterDetector,
-    rename_items_by_display_name,
-)
+from fabric_deploy import WorkspaceDeployer
 
-# Parameter detection
-detector = ParameterDetector(repo_dir="/path/to/workspace")
-detector.detect_all()
-detector.print_detection_summary()
-detector.save_parameter_yml("parameter.yml", use_dynamic=True, environment="prod")
-
-# Deployment
+# Basic deployment (reads fabdep.yml from repo_dir)
 deployer = WorkspaceDeployer(repo_dir="/path/to/workspace")
-deployer.deploy(item_types=["Notebook", "DataPipeline"])
+deployer.deploy()
 
-# With auto-detect
+# With filtering and options
+deployer = WorkspaceDeployer(repo_dir="/path/to/workspace")
+deployer.deploy(item_types=["Notebook", "DataPipeline"], no_cleanup=False)
+
+# With auto-detect and branch override
 deployer = WorkspaceDeployer(
     repo_dir="/path/to/workspace",
     auto_detect=True,
     branch_override="prod",
 )
 deployer.deploy()
-
-# Rename utility
-rename_items_by_display_name(
-    repo_dir="/path/to/workspace",
-    dry_run=False,
-    clean=True,
-)
 ```
 
 ## Troubleshooting
