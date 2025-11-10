@@ -184,6 +184,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Save auto-detected parameters to parameter.yml.detected",
     )
+    _ = deploy_parser.add_argument(
+        "--branch",
+        "-b",
+        help="Override git branch name for workspace resolution (defaults to current git branch)",
+    )
 
     # Check if we should inject 'deploy' as default subcommand
     # This happens when no subcommand is specified but deploy-specific flags are used
@@ -228,6 +233,7 @@ def parse_args() -> argparse.Namespace:
         args.workspace_id = None
         args.auto_detect = False
         args.save_params = False
+        args.branch = None
 
     return args
 
@@ -340,12 +346,6 @@ def handle_detect_command(args: argparse.Namespace) -> None:
 def handle_deploy_command(args: argparse.Namespace) -> None:
     """Handle deploy subcommand execution."""
 
-    # Validate auto-detect mode
-    if args.auto_detect and not args.workspace_id:
-        print_error("\nError: --workspace-id is required when using --auto-detect\n")
-        print("Usage: fabdep --auto-detect --workspace-id <workspace-id>\n")
-        sys.exit(1)
-
     try:
         deployer = WorkspaceDeployer(
             repo_dir=args.directory,
@@ -353,6 +353,7 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
             workspace_id=args.workspace_id if args.workspace_id else None,
             auto_detect=bool(args.auto_detect),
             save_detected_params=bool(args.save_params),
+            branch_override=args.branch,
         )
     except FileNotFoundError as e:
         print_error(f"\n{e}\n")

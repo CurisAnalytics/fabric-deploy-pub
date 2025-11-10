@@ -127,8 +127,7 @@ def get_workspace_id_by_name(workspace_name: str) -> str:
             f"Available workspaces ({len(available)}):\n"
             + "\n".join(f"  - {name}" for name in sorted(available))
         )
-
-    if len(matches) > 1:
+    elif len(matches) > 1:
         raise ValueError(
             f"Multiple workspaces found with name '{workspace_name}':\n"
             + "\n".join(f"  - {ws['id']}: {ws['displayName']}" for ws in matches)

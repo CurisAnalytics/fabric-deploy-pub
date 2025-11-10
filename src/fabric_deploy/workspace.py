@@ -16,6 +16,7 @@ from fabric_cicd import (
 from fabric_cicd.constants import ACCEPTED_ITEM_TYPES
 
 from .api import get_workspace_id_by_name
+from .auth import get_current_account
 from .detect import ParameterDetector
 from .log import get_logger, print_header
 
@@ -42,10 +43,12 @@ class WorkspaceDeployer:
 
     # Configuration fields - auto-loaded in __post_init__ if not provided
     workspace_id: str | None = None
+    workspace_name: str | None = None  # Resolved workspace name (base_name [branch])
     environment: str | None = None
     lakehouse_name: str | None = None
     auto_detect: bool = False  # Enable auto-detection mode
     save_detected_params: bool = False  # Save detected parameters to .detected file
+    branch_override: str | None = None  # Override git branch for workspace resolution
 
     # Private fields
     _repo_dir_resolved: Path = field(init=False, repr=False)
@@ -64,7 +67,7 @@ class WorkspaceDeployer:
            - Generates parameter.yml (if workspaces differ)
            - Optionally saves parameter.yml.detected
         4. If workspace_id is None:
-           - Reads parameter.yml from disk
+           - Reads fabdep.yml from disk
            - Makes network call to Fabric REST API to resolve workspace ID
         5. If lakehouse_name is None:
            - Scans for .Lakehouse directories and reads .platform metadata
@@ -75,17 +78,18 @@ class WorkspaceDeployer:
         self._repo_dir_resolved = Path(self.repo_dir).resolve()
         self.logger = get_logger(self.logger_name or __name__)
 
-        # Auto-load configuration if not provided by user
+        # Load workspace ID first (either from fabdep.yml or provided via CLI)
+        if self.workspace_id is None:
+            # No workspace ID provided - must load from fabdep.yml
+            self._load_config()
+        elif self.environment is None:
+            # Workspace ID provided but no environment - default value
+            self.environment = "env"
+
+        # Auto-detect parameters if requested (now that workspace_id is set)
         if self.auto_detect:
             # Generate parameter file dynamically
             self._generate_dynamic_params()
-
-        if self.workspace_id is None:
-            # No workspace ID provided - must load from parameter.yml
-            self._load_config()
-        elif self.environment is None:
-            # Workspace ID provided but no environment - default to prod
-            self.environment = "prod"
 
         if self.lakehouse_name is None:
             self._detect_lakehouse()
@@ -121,82 +125,57 @@ class WorkspaceDeployer:
                 "Make sure you're in a git repository and git is installed."
             ) from e
 
-    def _resolve_workspace_id_from_name(self, base_name: str, branch: str) -> str:
-        """
-        Resolve workspace ID from base name and branch.
-
-        Combines base_name with branch suffix (case-insensitive) and looks up
-        workspace ID via Fabric API.
-
-        Args:
-            base_name: Workspace base name from parameter.yml
-            branch: Current git branch name
-
-        Returns:
-            Workspace ID (GUID)
-
-        Raises:
-            ValueError: If workspace not found
-            RuntimeError: If API call fails
-        """
-        workspace_name = f"{base_name} [{branch}]"
-        self.logger.info(f"Resolving workspace: '{workspace_name}'")
-        self.logger.info(f"  Base name: {base_name}")
-        self.logger.info(f"  Branch: {branch}")
-
-        try:
-            workspace_id = get_workspace_id_by_name(workspace_name)
-            self.logger.info(f"  Workspace ID: {workspace_id}")
-            return workspace_id
-        except ValueError as e:
-            # Re-raise with additional context
-            raise ValueError(
-                f"Failed to resolve workspace ID.\n{e}\n\n"
-                f"Expected workspace name: '{workspace_name}' "
-                f"(base: '{base_name}', branch: '{branch}')"
-            ) from e
-
     def _load_config(self) -> None:
-        """Load and validate workspace configuration from parameter.yml or parameter.yml.bak."""
+        """Load and validate workspace configuration from fabdep.yml."""
         if not self._repo_dir_resolved.exists():
             raise FileNotFoundError(
                 f"Directory does not exist: {self._repo_dir_resolved}"
             )
 
-        param_file = self._repo_dir_resolved / "parameter.yml"
-        bak_file = self._repo_dir_resolved / "parameter.yml.bak"
+        config_file = self._repo_dir_resolved / "fabdep.yml"
 
-        # Check for parameter.yml, fallback to .bak if not found
-        if not param_file.exists():
-            if bak_file.exists():
-                self.logger.info(f"parameter.yml not found, using {bak_file.name}")
-                param_file = bak_file
-            else:
-                raise FileNotFoundError(
-                    f"parameter.yml not found in {self._repo_dir_resolved}. "
-                    "Make sure you're running this from a Fabric workspace directory"
-                )
+        # Check for fabdep.yml
+        if not config_file.exists():
+            raise FileNotFoundError(
+                f"fabdep.yml not found in {self._repo_dir_resolved}.\n\n"
+                "Create a fabdep.yml file with:\n"
+                '  workspace_base_name: "your_workspace"\n\n'
+                "The workspace will be resolved from: {base_name} [{branch}]\n\n"
+                "Note: This is separate from parameter.yml which is used by fabric-cicd."
+            )
 
-        # Load workspace_base_name from parameter.yml
-        with open(param_file) as f:
-            params = yaml.safe_load(f)
+        # Load workspace_base_name from fabdep.yml
+        with open(config_file) as f:
+            config = yaml.safe_load(f)
 
-        workspace_base_name = params.get("workspace_base_name")
+        workspace_base_name = config.get("workspace_base_name")
 
         if not workspace_base_name:
             raise ValueError(
-                f"No workspace_base_name found in {param_file.name}.\n\n"
-                "parameter.yml must contain:\n"
+                "No workspace_base_name found in fabdep.yml.\n\n"
+                "fabdep.yml must contain:\n"
                 '  workspace_base_name: "your_workspace"\n\n'
                 "The workspace will be resolved from: {base_name} [{branch}]"
             )
 
         # Resolve workspace ID from base name + branch
-        self.logger.info("Using workspace base name from parameter.yml")
-        branch = self._get_git_branch()
-        workspace_id = self._resolve_workspace_id_from_name(workspace_base_name, branch)
-        self.workspace_id = workspace_id
-        self.environment = "default"
+        if self.branch_override:
+            branch = self.branch_override
+        else:
+            branch = self._get_git_branch()
+        self.workspace_name = f"{workspace_base_name} [{branch}]"
+        try:
+            self.workspace_id = get_workspace_id_by_name(self.workspace_name)
+        except ValueError:
+            account = get_current_account()  # some keys available: name, id, tenantId
+            assert account  # Should be set
+            account_name: str = account["user"]["name"]
+            self.logger.info(f"Current account: {account_name}")
+            self.logger.error(
+                f"Workspace '{self.workspace_name}' not found for account: {account}"
+            )
+            raise
+        self.environment = "fabdep"
 
     def _generate_dynamic_params(self) -> None:
         """
@@ -233,12 +212,13 @@ class WorkspaceDeployer:
             return
 
         # Save detected parameters if requested
+        assert self.environment  # for typing
         if self.save_detected_params:
             detected_file = self._repo_dir_resolved / "parameter.yml.detected"
             detector.save_parameter_yml(
                 output_path=detected_file,
                 use_dynamic=True,
-                environment="prod",
+                environment=self.environment,
                 skip_empty=True,
             )
             # Count what was saved
@@ -260,7 +240,7 @@ class WorkspaceDeployer:
         detector.save_parameter_yml(
             output_path=param_file,
             use_dynamic=True,
-            environment="prod",
+            environment=self.environment,
             skip_empty=True,
         )
 
@@ -329,9 +309,6 @@ class WorkspaceDeployer:
             exclude_types: Item types to exclude from deployment
             include_items: Include only specific items (format: "ItemName.ItemType")
         """
-        # Ensure configuration is loaded (helps type checker)
-        assert isinstance(self.environment, str), "environment must be a str"
-        assert isinstance(self.lakehouse_name, str), "lakehouse_name must be a str"
 
         print_header("Fabric CI/CD")
 
@@ -374,6 +351,7 @@ class WorkspaceDeployer:
                 t for t in ACCEPTED_ITEM_TYPES if t not in exclude_types
             ]
 
+        self.logger.info(f"Workspace Name: '{self.workspace_name}'")
         # self.logger.info(f"Lakehouse name: {self.lakehouse_name}")
         # self.logger.info(f"Input directory: {self._repo_dir_resolved}")
         self.logger.info(f"Workspace ID: {self.workspace_id}")
@@ -398,6 +376,7 @@ class WorkspaceDeployer:
                 f"Parameter file modified: {mtime.strftime('%d/%m/%Y %H:%M:%S')}"
             )
 
+        assert self.environment  # for typing
         target_workspace = FabricWorkspace(
             workspace_id=self.workspace_id,
             repository_directory=str(self._repo_dir_resolved),
@@ -407,20 +386,16 @@ class WorkspaceDeployer:
 
         try:
             _ = publish_all_items(target_workspace, items_to_include=include_items)
-
             if not no_cleanup:
+                assert self.lakehouse_name  # for typing
                 unpublish_all_orphan_items(
                     target_workspace, item_name_exclude_regex=self.lakehouse_name
                 )
-
             self.logger.info("Deployment complete!")
 
-        except Exception:
-            # Re-raise exception to be handled by caller
-            # CLI will handle error message formatting via handle_command_error()
-            # Programmatic users can catch and handle exceptions themselves
-            raise
-        finally:
-            # Cleanup auto-generated parameter file if in auto-detect mode
+        except Exception:  # Re-raise exception to be handled by caller
+            raise  # CLI will handle error message formatting via handle_command_error()
+        finally:  # Cleanup auto-generated parameter file if in auto-detect mode
+            print()
             if self.auto_detect:
                 self._cleanup_dynamic_params()

@@ -29,19 +29,25 @@ fabdep
 ```
 
 **Requirements**: 
-- `parameter.yml` with `workspace_base_name` field
+- `fabdep.yml` with `workspace_base_name` field
 - Git repository with current branch
 
 **How it works**:
-1. Reads `workspace_base_name` from `parameter.yml` (e.g., `"my_workspace"`)
+1. Reads `workspace_base_name` from `fabdep.yml` (e.g., `"my_workspace"`)
 2. Gets current git branch name (e.g., `"prod"`)
 3. Combines them: `my_workspace [prod]`
 4. Looks up workspace ID via Fabric REST API
 5. Deploys to resolved workspace
 
+**Why fabdep.yml instead of parameter.yml?**
+- `fabdep.yml` is fabric-deploy specific configuration
+- `parameter.yml` is read by Microsoft's fabric-cicd and only supports: `find_replace`, `key_value_replace`, `spark_pool`
+- Adding custom fields to `parameter.yml` breaks fabric-cicd validation
+
 **Benefits**:
 - No manual workspace ID management
-- Same parameter file works across all branches
+- Clean separation of fabric-deploy config vs fabric-cicd parameters
+- Same config file works across all branches
 - Automatic branch-based workspace routing
 
 ### Auto-Detect Mode (no parameter.yml needed)
@@ -84,6 +90,7 @@ Options:
   --workspace-id, -w     Destination workspace ID (replaces parameter.yml)
   --auto-detect, -d      Auto-detect source IDs and generate parameters on-the-fly
   --save-params          Save auto-detected parameters to parameter.yml.detected
+  --branch, -b           Override git branch name for workspace resolution
 ```
 
 The `deploy` subcommand is optional and defaults when deploy-specific options are used:
@@ -119,6 +126,10 @@ fabdep -d -w <workspace-id> --save-params
 
 # Deploy to same workspace (updates items in place, no parameter replacement)
 fabdep -d -w <same-workspace-id>  # Auto-detects match and skips parameter generation
+
+# Override git branch for workspace resolution
+fabdep --branch prod  # Deploy to "workspace_base_name [prod]"
+fabdep -b staging     # Deploy to "workspace_base_name [staging]"
 ```
 
 
@@ -242,14 +253,19 @@ This utility:
 
 ## Configuration
 
-### parameter.yml
+### fabdep.yml
 
-The configuration uses a workspace base name combined with the current git branch:
+The fabric-deploy configuration file uses a workspace base name combined with the current git branch:
 
 ```yaml
-# parameter.yml
+# fabdep.yml
 workspace_base_name: "my_workspace"
 ```
+
+**Why fabdep.yml?**
+- Keeps fabric-deploy configuration separate from fabric-cicd's `parameter.yml`
+- Prevents validation errors (fabric-cicd only accepts: `find_replace`, `key_value_replace`, `spark_pool`)
+- Clear separation of concerns
 
 **How it resolves**:
 - Base name: `my_workspace`
@@ -261,6 +277,20 @@ workspace_base_name: "my_workspace"
 - On `prod` branch → deploys to `my_workspace [prod]`
 - On `dev` branch → deploys to `my_workspace [dev]`
 - On `staging` branch → deploys to `my_workspace [staging]`
+
+**Override branch name**:
+You can override the git branch detection with the `--branch` flag:
+```bash
+# Deploy to prod workspace from any branch
+fabdep --branch prod
+
+# Deploy to staging workspace regardless of current git branch
+fabdep -b staging
+```
+This is useful when:
+- You want to deploy to a different environment without switching branches
+- You're in a feature branch but want to deploy to a main workspace
+- Your CI/CD pipeline needs to deploy to specific environments
 
 **Requirements**:
 - Must be in a git repository
@@ -313,6 +343,58 @@ The package is organized into focused modules:
 - **rename.py**: Rename utility for workspace item directories
 - **types.py**: Type definitions for Azure accounts and other shared types
 
+
+## Migration Guide
+
+### Moving from parameter.yml to fabdep.yml
+
+If you previously had `workspace_base_name` in your `parameter.yml`, you need to migrate to the new `fabdep.yml` config file:
+
+**Step 1: Create fabdep.yml**
+```yaml
+# fabdep.yml
+workspace_base_name: "your_workspace_name"
+```
+
+**Step 2: Remove workspace_base_name from parameter.yml**
+
+Before:
+```yaml
+# parameter.yml - DON'T DO THIS (breaks fabric-cicd validation)
+workspace_base_name: "my_workspace"
+
+find_replace:
+  - find_value: "some-id"
+    replace_value:
+      prod: "replacement"
+```
+
+After:
+```yaml
+# parameter.yml - Only fabric-cicd fields
+find_replace:
+  - find_value: "some-id"
+    replace_value:
+      prod: "replacement"
+```
+
+**Why this change?**
+- Microsoft's fabric-cicd validates `parameter.yml` strictly
+- Only three top-level fields are allowed: `find_replace`, `key_value_replace`, `spark_pool`
+- Custom fields like `workspace_base_name` cause validation errors
+- Separating configs ensures compatibility and clean separation of concerns
+
+**Quick Migration Script:**
+
+If you have `workspace_base_name` in `parameter.yml`:
+
+```bash
+# Extract workspace_base_name and create fabdep.yml
+grep "workspace_base_name:" parameter.yml > fabdep.yml
+
+# Remove it from parameter.yml
+sed -i.bak '/workspace_base_name:/d' parameter.yml
+```
 
 ## Links
 
