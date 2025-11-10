@@ -134,9 +134,10 @@ manual_parameters:
 
 ### WorkspaceDeployer.deploy() Flow
 1. Apply item type filtering (`item_types`, `exclude_types`, `include_items`)
-2. Create `FabricWorkspace` instance (from Microsoft's package)
-3. Call `publish_all_items()` with optional filtering
-4. Optionally call `unpublish_all_orphan_items()` unless `no_cleanup=True`
+2. If auto-detect mode + item filtering: regenerate parameter.yml with filtered parameters (prevents warnings about unused parameters)
+3. Create `FabricWorkspace` instance (from Microsoft's package)
+4. Call `publish_all_items()` with optional filtering
+5. Optionally call `unpublish_all_orphan_items()` unless `no_cleanup=True`
 
 ## Key Features
 
@@ -208,11 +209,33 @@ Auto-detect source IDs from workspace files and generate parameter.yml on-the-fl
 - **External Connections**: Parameters without dynamic variables (e.g., external connection IDs) are skipped because they're tenant-wide and require manual setup
 - External connections are NOT deployed by fabric-cicd and their IDs don't change between workspaces
 
+**Parameter Filtering with Item Types**:
+When using `--item-types` or `--exclude-types` with auto-detect mode, parameters are automatically filtered to only include those used by the targeted item types. This prevents warnings about unused parameters.
+
+For example, if deploying only Notebooks (`-t Notebook`), parameters scoped to SemanticModel or Report won't be included in the generated parameter.yml.
+
+**Example Scenario**:
+```
+# Detected parameters before filtering:
+1. Workspace ID "fb61a71c..." → item_types: [Notebook, DataPipeline, SemanticModel]
+2. Lakehouse ID "74113cfe..." → item_types: [Notebook, DataPipeline, SemanticModel]
+3. SQL Endpoint "EXAMPLEA..." → item_types: [SemanticModel]
+4. External Connection GUID → item_types: [DataPipeline]
+
+# Deploy with: fabdep -d -t Notebook
+# Generated parameter.yml includes only:
+- Workspace ID (used by Notebook)
+- Lakehouse ID (used by Notebook)
+
+# SQL Endpoint and External Connection filtered out (not used by Notebook)
+```
+
 **Usage**:
 ```bash
 fabdep --auto-detect              # Generate parameters on-the-fly
 fabdep -d --save-params           # Save generated parameters to parameter.yml.detected
-fabdep -d -t Notebook DataPipeline  # Auto-detect with filtering
+fabdep -d -t Notebook DataPipeline  # Auto-detect with filtering (parameters filtered to these types)
+fabdep -d -x Report SemanticModel  # Auto-detect excluding types (parameters for excluded types not included)
 ```
 
 ### Lakehouse Detection
@@ -314,6 +337,37 @@ fabdep -d --bootstrap
 [warn] Run 'fabdep detect --save' to see detected connection GUIDs
 ```
 
+### Automatic Retry Logic
+
+Deployment failures from connection issues are automatically retried to handle transient network errors.
+
+**Behavior**:
+- Retries up to 3 times for connection errors (`Connection aborted`, `RemoteDisconnected`)
+- 2-second delay between retry attempts
+- Logs warning message with attempt count: `Connection error on attempt 1/3: ...`
+- After 3 failed attempts, raises the error normally
+- Other error types (auth, validation, etc.) fail immediately without retry
+
+**Example Output**:
+```
+[warn] Connection error on attempt 1/3: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+[info] Retrying in 2 seconds...
+```
+
+### Smart Item Type Display
+
+When using item type filters (`--item-types` or `--exclude-types`), only displays item types that are both in scope AND present in the repository.
+
+**Before**:
+```
+Item types in scope: Notebook, DataPipeline, Report, SemanticModel, Lakehouse, Environment
+```
+
+**After** (when only Notebook and DataPipeline exist in repo):
+```
+Item types in scope: DataPipeline, Notebook
+```
+
 ## Dependencies
 
 ```toml
@@ -323,7 +377,9 @@ dependencies = [
     "pyyaml",                 # For fabdep.yml parsing
 ]
 ```
+</text>
 
+<old_text line=370>
 ## Implementation Details
 
 ### Key Modules
@@ -345,8 +401,10 @@ dependencies = [
 - `_load_config()`: Load fabdep.yml and resolve workspace_id via API
 - `_get_git_branch()`: Get current git branch name
 - `_resolve_workspace_id_from_name()`: Combine base_name + branch and lookup via API
+- `_get_repo_item_types()`: Scan repository to detect which item types are present
 - `_detect_lakehouse()`: Auto-detect lakehouse name from `.platform` files
 - `_generate_dynamic_params()`: Auto-detect source IDs and generate parameter.yml
+- `_deploy_items()`: Deploy items to workspace with retry logic for connection errors
 - `deploy()`: Main deployment method
 
 **`detect.py` - ParameterDetector class**
@@ -460,6 +518,12 @@ Commands:
 ```
 
 ## Error Handling
+
+**Automatic Retry Logic**:
+- Connection errors (`Connection aborted`, `RemoteDisconnected`) are automatically retried up to 3 times
+- 2-second delay between retry attempts
+- Logs warning on each retry with attempt count
+- Other errors (auth, config, etc.) fail immediately without retry
 
 **Intelligent error detection**:
 - **Connection errors**: Detects DataPipeline/Dataflow connection references, explains tenant-wide GUIDs must be edited in source files
