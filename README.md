@@ -6,6 +6,8 @@ CLI wrapper around Microsoft's [fabric-cicd](https://github.com/microsoft/fabric
 
 - **Workspace Base Name + Git Branch**: Automatically resolve workspace ID from base name + branch
 - **Dynamic Parameter Generation**: Auto-detect source IDs and generate parameter.yml with dynamic variables
+- **Bootstrap Mode**: Two-phase deployment for blank workspaces (foundational items first, then all items)
+- **Workspace Creation**: Create workspaces from scratch with `--create-workspace`
 - **Item Filtering**: Deploy specific item types or exclude types
 - **Auth Management**: Switch between Azure subscriptions
 - **Rename Utility**: Rename directories to match display names
@@ -29,6 +31,7 @@ pip install -e .
 
 ```yaml
 workspace_base_name: "my_workspace"
+capacity_id: "12345-67890-abcd-..."  # Optional, auto-detected if not specified
 ```
 
 ### Deploy
@@ -69,6 +72,8 @@ Options:
   --auto-detect, -d      Auto-detect source IDs and generate parameters on-the-fly
   --save-params          Save auto-detected parameters to parameter.yml.detected
   --branch, -b           Override git branch name for workspace resolution
+  --bootstrap            Enable two-phase deployment (foundational items first, then all)
+  --create-workspace     Create workspace if it doesn't exist (uses default capacity if not specified)
 ```
 
 **Examples**:
@@ -90,6 +95,43 @@ fabdep -d
 
 # Auto-detect and save generated parameters
 fabdep -d --save-params
+
+# Bootstrap mode - deploy to blank workspace
+fabdep --bootstrap
+
+# Bootstrap mode - create workspace first, then deploy
+fabdep --bootstrap --create-workspace
+
+# Auto-detect + bootstrap (recommended for new workspaces)
+fabdep -d --bootstrap
+```
+
+### Bootstrap Mode
+
+Deploy to blank workspaces or create workspaces from scratch with two-phase deployment.
+
+**Problem**: Notebooks and DataPipelines reference lakehouse IDs that don't exist yet. Bootstrap mode solves this by deploying foundational items (Lakehouse, SemanticModel, etc.) first, then deploying everything else.
+
+**Usage**:
+```bash
+# Deploy to existing blank workspace
+fabdep --bootstrap
+
+# Create workspace and deploy
+fabdep --bootstrap --create-workspace
+
+# Auto-detect + bootstrap (recommended)
+fabdep -d --bootstrap
+```
+
+**Phase 1** (Foundational items):
+- Lakehouse, SemanticModel, SQLDatabase, Warehouse, MirroredDatabase, Eventhouse
+
+**Phase 2** (All items):
+- Notebook, DataPipeline, Environment, Report, and all other items
+
+**Connection GUIDs**: Bootstrap mode detects external connection GUIDs and warns you that they must be configured manually in the target workspace.
+
 ```
 
 ### Detect Parameters
@@ -134,7 +176,6 @@ find_replace:
     item_type: ['Notebook']
 ```
 
-See [SMART_REPLACE.md](./SMART_REPLACE.md) for complete documentation.
 
 ### Authentication
 
@@ -189,7 +230,18 @@ fabdep rename -e -c
 
 ```yaml
 workspace_base_name: "my_workspace"
+capacity_id: "12345-67890-abcd-..."  # Optional, auto-detected if not specified
+
+# Optional: Manual parameter overrides (replace_value only, find_value is auto-detected)
+manual_parameters:
+  - find_value: "ffffffff-ffff-ffff-ffff-ffffffffffff"  # Auto-detected from source files
+    replace_value: "ffffffff-ffff-ffff-ffff-ffffffffffff"  # Keep same (external reference)
+    description: "External lakehouse SQL endpoint"
 ```
+
+**Notes**:
+- When using `--create-workspace`, if `capacity_id` is not specified, fabric-deploy automatically uses the first active Fabric capacity
+- `manual_parameters` allows you to override the replace_value for auto-detected parameters (e.g., to keep external references)
 
 **Why fabdep.yml?**
 - Separate from fabric-cicd's `parameter.yml`
@@ -258,6 +310,15 @@ deployer = WorkspaceDeployer(
     branch_override="prod",
 )
 deployer.deploy()
+
+# Bootstrap mode with workspace creation
+deployer = WorkspaceDeployer(
+    repo_dir="/path/to/workspace",
+    auto_detect=True,
+    bootstrap=True,
+    create_workspace=True,
+)
+deployer.deploy()
 ```
 
 ## Troubleshooting
@@ -288,7 +349,6 @@ deployer.deploy()
 
 ## Links
 
-- [SMART_REPLACE.md](./SMART_REPLACE.md) - Complete guide to dynamic parameter generation
 - [CLAUDE.md](./CLAUDE.md) - Detailed architecture and development guide
 - [Microsoft Fabric CI/CD Documentation](https://microsoft.github.io/fabric-cicd/)
 - [fabric-cicd on GitHub](https://github.com/microsoft/fabric-cicd)

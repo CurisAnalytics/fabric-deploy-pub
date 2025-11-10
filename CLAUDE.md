@@ -94,6 +94,13 @@ fabdep -t Notebook DataPipeline --no-cleanup
 **fabdep.yml** (required):
 ```yaml
 workspace_base_name: "my_workspace"
+capacity_id: "12345-67890-abcd-..."  # Optional, auto-detected if not specified
+
+# Optional: Manual parameter overrides (replace_value only, find_value is auto-detected)
+manual_parameters:
+  - find_value: "ffffffff-ffff-ffff-ffff-ffffffffffff"  # Auto-detected from expressions.tmdl
+    replace_value: "ffffffff-ffff-ffff-ffff-ffffffffffff"  # Keep same (external lakehouse)
+    description: "External Translytical SQL Endpoint ID"
 ```
 
 **How workspace resolution works**:
@@ -131,6 +138,43 @@ workspace_base_name: "my_workspace"
 4. Optionally call `unpublish_all_orphan_items()` unless `no_cleanup=True`
 
 ## Key Features
+
+### Manual Parameter Overrides
+
+Override the **replace_value** for auto-detected parameters that reference external resources.
+
+**How It Works**:
+1. **find_value** is still **auto-detected** from source files (e.g., SemanticModel expressions.tmdl)
+2. **replace_value** is manually specified in `fabdep.yml` when you want to keep an external reference
+
+**Use Cases**:
+- External lakehouse SQL endpoint IDs (from workspaces not being deployed)
+- Items that reference resources outside the current workspace
+- SQL endpoint IDs that should stay the same across deployments
+- Custom connection strings that shouldn't use dynamic variables
+
+**Example Scenario**:
+Your SemanticModel references a SQL endpoint ID `ffffffff-ffff-ffff-ffff-ffffffffffff` from an external "Translytical" lakehouse. The ID is auto-detected from `expressions.tmdl`, but you want to keep it the same (not replace it with the local lakehouse).
+
+**Configuration**:
+```yaml
+workspace_base_name: "my_workspace"
+
+manual_parameters:
+  - find_value: "ffffffff-ffff-ffff-ffff-ffffffffffff"  # Auto-detected from expressions.tmdl
+    replace_value: "ffffffff-ffff-ffff-ffff-ffffffffffff"  # Keep same (external reference)
+    description: "External Translytical SQL Endpoint ID (not deployed)"
+  
+  - find_value: "old-server.database.windows.net"  # Auto-detected from pipeline
+    replace_value: "new-server.database.windows.net"  # Custom replacement
+    description: "Production SQL Server connection"
+```
+
+**Behavior**:
+- Manual overrides are applied to auto-detected parameters only
+- If find_value wasn't auto-detected, a warning is logged
+- Overridden parameters are marked with "(manual override: description)" in logs
+- Logged as "Applied X manual parameter override(s)" in deployment summary
 
 ### Dynamic Parameter Generation (--auto-detect)
 
@@ -194,6 +238,74 @@ Manage Azure accounts:
 fabdep auth list                    # Show current + all available accounts
 fabdep auth switch <sub-id>         # Switch to different subscription
 fabdep auth rename <sub-id> <name>  # Rename subscription (auto-switches if needed)
+```
+
+### Bootstrap Mode (--bootstrap)
+
+Deploy to blank workspaces or create workspaces from scratch with two-phase deployment.
+
+**Problem**: Notebooks and DataPipelines reference lakehouse IDs that don't exist yet in a blank workspace. This creates a chicken-and-egg problem where dynamic variables can't resolve.
+
+**Solution**: Bootstrap mode deploys foundational items first (Phase 1), then deploys everything else (Phase 2).
+
+**Foundational Items** (Phase 1):
+- Lakehouse
+- SemanticModel
+- SQLDatabase
+- Warehouse
+- MirroredDatabase
+- Eventhouse
+
+**Dependent Items** (Phase 2):
+- Notebook
+- DataPipeline
+- Environment
+- Report
+- All other item types
+
+**Workflow**:
+```bash
+# Option 1: Deploy to existing blank workspace
+fabdep --bootstrap
+
+# Option 2: Create workspace first, then bootstrap deploy
+fabdep --bootstrap --create-workspace
+
+# Option 3: Auto-detect + bootstrap (recommended for new workspaces)
+fabdep -d --bootstrap
+```
+
+**Workspace Creation**:
+- Optional `capacity_id` in fabdep.yml:
+  ```yaml
+  workspace_base_name: "my_workspace"
+  capacity_id: "12345-67890-abcd-..."  # Optional, uses first active capacity if omitted
+  ```
+- If `capacity_id` is not specified, automatically uses the first active capacity the user has access to
+- Workspace name format: `{workspace_base_name} [{branch}]`
+- Checks if workspace exists before creating
+- Skips creation with info message if workspace already exists
+
+**Connection GUIDs**:
+- Bootstrap mode detects external connection GUIDs in DataPipelines/Dataflows
+- Warns user that connection GUIDs are tenant-wide and must be configured manually
+- Connection GUIDs are NOT deployed by fabric-cicd (they're tenant-wide references)
+- User must configure connections in target workspace manually
+
+**User Experience**:
+```
+[info] Bootstrap mode enabled - two-phase deployment
+[info] Phase 1: Deploying foundational items
+[info] Foundational item types: Lakehouse, SemanticModel
+[info] ✓ Phase 1 complete
+[info] Phase 2: Deploying all items
+[info] Item types: Notebook, DataPipeline, Environment
+[info] ✓ Phase 2 complete
+[info] Deployment complete!
+
+[warn] Found 3 external connection GUID(s) in DataPipelines/Dataflows
+[warn] Connection GUIDs are tenant-wide and must be configured manually in the target workspace
+[warn] Run 'fabdep detect --save' to see detected connection GUIDs
 ```
 
 ## Dependencies
@@ -283,6 +395,8 @@ Options:
   --auto-detect, -d      Auto-detect source IDs and generate parameters on-the-fly
   --save-params          Save auto-detected parameters to parameter.yml.detected
   --branch, -b           Override git branch name for workspace resolution
+  --bootstrap            Enable two-phase deployment (foundational items first, then all items)
+  --create-workspace     Create workspace if it doesn't exist (uses default capacity if not specified)
   --help                 Show help message
 ```
 
@@ -294,6 +408,11 @@ fabdep -d                           # Auto-detect parameters
 fabdep -t Notebook DataPipeline     # Deploy specific types
 fabdep -x Report SemanticModel      # Exclude types
 fabdep --no-cleanup                 # Skip orphan cleanup
+
+# Bootstrap mode (for blank workspaces)
+fabdep --bootstrap                  # Two-phase deployment
+fabdep --bootstrap --create-workspace  # Create workspace first, then deploy
+fabdep -d --bootstrap               # Auto-detect + bootstrap (recommended for new workspaces)
 ```
 
 ### Detect Parameters
@@ -384,6 +503,15 @@ deployer = WorkspaceDeployer(
     repo_dir="/path/to/workspace",
     auto_detect=True,
     branch_override="prod",
+)
+deployer.deploy()
+
+# Bootstrap mode with workspace creation
+deployer = WorkspaceDeployer(
+    repo_dir="/path/to/workspace",
+    auto_detect=True,
+    bootstrap=True,
+    create_workspace=True,
 )
 deployer.deploy()
 ```
