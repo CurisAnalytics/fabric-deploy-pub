@@ -236,6 +236,7 @@ capacity_id: "12345-67890-abcd-..."  # Optional, auto-detected if not specified
 manual_parameters:
   - find_value: "ffffffff-ffff-ffff-ffff-ffffffffffff"  # Auto-detected from source files
     replace_value: "ffffffff-ffff-ffff-ffff-ffffffffffff"  # Keep same (external reference)
+    item_type: ["SemanticModel"]
     description: "External lakehouse SQL endpoint"
 ```
 

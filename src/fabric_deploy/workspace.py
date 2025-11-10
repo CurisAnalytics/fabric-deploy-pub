@@ -223,8 +223,9 @@ class WorkspaceDeployer:
         This allows users to override the replace_value for parameters that were auto-detected
         but reference external resources (e.g., SQL endpoint IDs from other workspaces).
 
-        The find_value is still auto-detected from source files. Users only specify the
-        replace_value when they want to keep an external reference or use a custom value.
+        The find_value is still auto-detected from source files. Users can specify:
+        - replace_value: Custom replacement value or keep external reference
+        - item_type (optional): Scope replacement to specific item types (e.g., ["SemanticModel"])
 
         Args:
             detector: ParameterDetector instance with auto-detected parameters
@@ -248,6 +249,7 @@ class WorkspaceDeployer:
             find_value = param.get("find_value")
             replace_value = param.get("replace_value")
             description = param.get("description")
+            item_type = param.get("item_type")
 
             if not find_value or not replace_value:
                 self.logger.warning(
@@ -267,6 +269,17 @@ class WorkspaceDeployer:
                     replace_value = next(iter(replace_value.values()))
 
                 param_obj.dynamic_variable = replace_value
+
+                # Override item_types if specified in manual parameter
+                if item_type:
+                    if isinstance(item_type, list):
+                        param_obj.item_types = set(item_type)
+                    else:
+                        param_obj.item_types = {item_type}
+                    self.logger.debug(
+                        f"Manual item_type override for {find_value}: {item_type}"
+                    )
+
                 if description:
                     param_obj.description = (
                         f"{param_obj.description} (manual override: {description})"
@@ -274,6 +287,7 @@ class WorkspaceDeployer:
                 param_obj.source_files.add("fabdep.yml (manual override)")
                 count += 1
                 self.logger.debug(f"Manual override for {find_value}: {replace_value}")
+
             else:
                 # Parameter wasn't auto-detected, log warning
                 self.logger.warning(
