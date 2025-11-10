@@ -168,24 +168,23 @@ class ParameterDetector:
         if "workspace id" in desc_lower:
             return "$workspace.$id"
 
-        # Lakehouse ID
-        if "lakehouse id" in desc_lower and self._lakehouse_names:
+        if self._lakehouse_names:
             # Use first lakehouse name (most common case is single lakehouse)
             lakehouse_name = self._lakehouse_names[0]
-            return f"$items.Lakehouse.{lakehouse_name}.$id"
+            # Lakehouse ID
+            if "lakehouse id" in desc_lower:
+                return f"$items.Lakehouse.{lakehouse_name}.$id"
 
-        # SQL Analytics Endpoint Connection String
-        if "connection substring" in desc_lower or "connection string" in desc_lower:
-            if self._lakehouse_names:
-                lakehouse_name = self._lakehouse_names[0]
-                # Use $sqlendpoint attribute (fabric-cicd extracts connection string automatically)
+            # SQL Analytics Endpoint Connection String
+            if (
+                "connection substring" in desc_lower
+                or "connection string" in desc_lower
+            ):
+                # Use $sqlendpoint attribute (connection string)
                 return f"$items.Lakehouse.{lakehouse_name}.$sqlendpoint"
 
-        # SQL Analytics Endpoint Item ID
-        if "endpoint item id" in desc_lower or "endpoint id" in desc_lower:
-            if self._lakehouse_names:
-                lakehouse_name = self._lakehouse_names[0]
-                # This is the lakehouse's SQL endpoint ID, which is the same as lakehouse ID
+            if "endpoint item id" in desc_lower or "endpoint id" in desc_lower:
+                # Use $sqlendpoint attribute (connection string)
                 return f"$items.Lakehouse.{lakehouse_name}.$id"
 
         # External connection IDs - leave empty for manual entry
@@ -238,12 +237,15 @@ class ParameterDetector:
                 # Extract SQL connection string and endpoint ID
                 matches = self.SQL_DATABASE_PATTERN.findall(content)
                 for host_prefix, sql_string, endpoint_id in matches:
-                    # Add SQL connection string component
+                    # Add SQL connection string component (full hostname)
+                    full_hostname = (
+                        f"{host_prefix}-{sql_string}.datawarehouse.fabric.microsoft.com"
+                    )
                     self._add_parameter(
-                        find_value=sql_string,
+                        find_value=full_hostname,
                         item_type="SemanticModel",
                         source_file=str(expr_file.relative_to(self.repo_dir)),
-                        description="Lakehouse SQL Analytics Endpoint Connection Substring",
+                        description="Lakehouse SQL Analytics Endpoint Connection String",
                     )
 
                     # Add SQL endpoint item ID
@@ -452,3 +454,19 @@ class ParameterDetector:
             print(
                 "These typically require external setup (e.g., connection IDs) and don't change between deployments.\n"
             )
+
+    def count_connection_guids(self) -> int:
+        """
+        Count the number of external connection GUIDs detected.
+
+        Returns:
+            Number of connection GUIDs found
+        """
+        if not self.parameters:
+            self.detect_all()
+
+        return sum(
+            1
+            for p in self.parameters.values()
+            if "connection" in (p.description or "").lower() and not p.dynamic_variable
+        )

@@ -184,6 +184,16 @@ def parse_args() -> argparse.Namespace:
         "-b",
         help="Override git branch name for workspace resolution (defaults to current git branch)",
     )
+    _ = deploy_parser.add_argument(
+        "--bootstrap",
+        action="store_true",
+        help="Enable two-phase deployment (foundational items first, then all items)",
+    )
+    _ = deploy_parser.add_argument(
+        "--create-workspace",
+        action="store_true",
+        help="Create workspace if it doesn't exist (requires capacity_id in fabdep.yml)",
+    )
 
     # Check if we should inject 'deploy' as default subcommand
     # This happens when no subcommand is specified but deploy-specific flags are used
@@ -210,6 +220,8 @@ def parse_args() -> argparse.Namespace:
                 "--save-params",
                 "-b",
                 "--branch",
+                "--bootstrap",
+                "--create-workspace",
             }
             if any(arg in deploy_flags or not arg.startswith("-") for arg in argv):
                 # Inject 'deploy' as the first argument
@@ -347,6 +359,8 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
             auto_detect=bool(args.auto_detect),
             save_detected_params=bool(args.save_params),
             branch_override=args.branch,
+            bootstrap=bool(args.bootstrap),
+            create_workspace=bool(args.create_workspace),
         )
     except FileNotFoundError as e:
         print_error(f"\n{e}\n")
