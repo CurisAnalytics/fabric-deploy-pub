@@ -168,22 +168,13 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         help='Include only specific items (format: "ItemName.ItemType")',
     )
-    # Auto-detect is enabled by default. Provide an explicit opt-out flag.
-    _ = deploy_parser.add_argument(
-        "--auto-detect",
-        "-d",
-        dest="auto_detect",
-        action="store_true",
-        help="Enable auto-detect of source IDs and generate parameters on-the-fly (enabled by default)",
-    )
     _ = deploy_parser.add_argument(
         "--no-auto-detect",
         dest="auto_detect",
         action="store_false",
-        help="Disable auto-detect (opt-out).",
+        default=True,
+        help="Disable auto-detect of source IDs (uses existing parameter.yml)",
     )
-    # Default auto_detect to True so -d is the default behavior unless --no-auto-detect is provided
-    deploy_parser.set_defaults(auto_detect=True)
     _ = deploy_parser.add_argument(
         "--save-params",
         action="store_true",
@@ -206,55 +197,32 @@ def parse_args() -> argparse.Namespace:
     )
 
     # Check if we should inject 'deploy' as default subcommand
-    # This happens when no subcommand is specified but deploy-specific flags are used
+    # This happens when no subcommand is specified
     argv = sys.argv[1:]
     known_commands = ["auth", "deploy", "rename", "detect"]
 
+    # Inject 'deploy' if no subcommand and not just asking for help
     if argv and not any(cmd in argv for cmd in known_commands):
-        # Don't inject deploy if only help flag is present (show main help instead)
-        if argv == ["-h"] or argv == ["--help"]:
-            pass
-        else:
-            # Check if any deploy-specific flags are present
-            deploy_flags = {
-                "-n",
-                "--no-cleanup",
-                "-t",
-                "--item-types",
-                "-x",
-                "--exclude-types",
-                "-i",
-                "--include-items",
-                "-d",
-                "--auto-detect",
-                "--no-auto-detect",
-                "--save-params",
-                "-b",
-                "--branch",
-                "--bootstrap",
-                "--create-workspace",
-            }
-            if any(arg in deploy_flags or not arg.startswith("-") for arg in argv):
-                # Inject 'deploy' as the first argument
-                sys.argv.insert(1, "deploy")
+        if argv not in (["-h"], ["--help"]):
+            sys.argv.insert(1, "deploy")
 
     args = parser.parse_args()
 
-    # Default to deploy command if no command specified
+    # Default to deploy command if no command specified (e.g., running `fabdep` with no args)
     if args.command is None:
         args.command = "deploy"
-        args.directory = Path(".")
-        args.no_cleanup = False
-        args.item_types = None
-        args.exclude_types = None
-        args.include_items = None
-        # Auto-detect enabled by default
-        args.auto_detect = True
-        # Ensure bootstrap and create_workspace defaults exist when no subcommand is provided
-        args.bootstrap = False
-        args.create_workspace = False
-        args.save_params = False
-        args.branch = None
+        # Set deploy defaults (deploy_parser won't have set these if no subcommand provided)
+        if not hasattr(args, "directory"):
+            args.directory = Path(".")
+            args.no_cleanup = False
+            args.item_types = None
+            args.exclude_types = None
+            args.include_items = None
+            args.auto_detect = True
+            args.save_params = False
+            args.branch = None
+            args.bootstrap = False
+            args.create_workspace = False
 
     return args
 

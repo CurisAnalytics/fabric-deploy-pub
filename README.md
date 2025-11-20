@@ -88,7 +88,7 @@ Options:
 
 **Examples**:
 ```bash
-# Auto-detect parameters (no parameter.yml needed) and deploy all items
+# Deploy with auto-detect (default behavior, no parameter.yml needed)
 fabdep
 
 # Deploy only notebooks and pipelines
@@ -100,8 +100,11 @@ fabdep -x Report SemanticModel
 # Deploy to specific branch workspace
 fabdep -b prod  # Deploys to "workspace_base_name [prod]"
 
-# Auto-detect and save generated parameters (auto-detect enabled by default)
+# Save auto-detected parameters to parameter.yml.detected
 fabdep --save-params
+
+# Use existing parameter.yml instead of auto-detect
+fabdep --no-auto-detect
 
 # Bootstrap mode - deploy to blank workspace
 fabdep --bootstrap
