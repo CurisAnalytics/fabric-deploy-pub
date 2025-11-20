@@ -72,7 +72,7 @@ class WorkspaceDeployer:
 
     repo_dir: Path | str
     logger_name: str | None = None
-    auto_detect: bool = False  # Enable auto-detection mode
+    auto_detect: bool = True  # Enable auto-detection mode (default)
     save_detected_params: bool = False  # Save detected parameters to .detected file
     branch_override: str | None = None  # Override git branch for workspace resolution
     bootstrap: bool = False  # Enable two-phase deployment (foundational items first)
@@ -295,11 +295,6 @@ class WorkspaceDeployer:
                     f"Manual parameter '{find_value}' was not auto-detected. "
                     "Make sure the find_value matches exactly what's in the source files."
                 )
-
-        # if count > 0:
-        #     self.logger.info(
-        #         f"Applied {count} manual parameter override(s) from fabdep.yml"
-        #     )
 
         return count
 
@@ -575,8 +570,6 @@ class WorkspaceDeployer:
             for line in self._auto_detect_summary:
                 self.logger.info(line)
 
-        # self.logger.info(f"Lakehouse name: {self.lakehouse_name}")
-        # self.logger.info(f"Input directory: {self._repo_dir_resolved}")
         if item_type_in_scope:
             # Only show item types that are both in scope AND present in repo
             types_to_deploy = [t for t in item_type_in_scope if t in repo_item_types]
