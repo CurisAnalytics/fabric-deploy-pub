@@ -391,6 +391,22 @@ class WorkspaceDeployer:
                 f"Saved {with_dynamic} detected parameter(s) to {detected_file.name}"
             )
 
+        # Count what was detected
+        dyns = sum(1 for p in detector.parameters.values() if p.dynamic_variable)
+        total = len(detector.parameters)
+        connection_count = detector.count_connection_guids()
+
+        # Check if we have any parameters to replace
+        if dyns == 0 and manual_count == 0:
+            # No parameters to replace - skip parameter.yml creation
+            self._auto_detect_summary = [
+                "No parameters detected for replacement",
+                "Deploying without parameter.yml file",
+            ]
+            # Disable auto_detect so we don't try to clean up files later
+            self.auto_detect = False
+            return
+
         # Backup existing parameter.yml if it exists
         param_file = self._repo_dir_resolved / "parameter.yml"
         backup_file = self._repo_dir_resolved / "parameter.yml.backup"
@@ -406,11 +422,6 @@ class WorkspaceDeployer:
             environment="fabdep",
             skip_empty=True,
         )
-
-        # Count what was generated and store summary
-        dyns = sum(1 for p in detector.parameters.values() if p.dynamic_variable)
-        total = len(detector.parameters)
-        connection_count = detector.count_connection_guids()
 
         # Store summary to display after header
         paran = (

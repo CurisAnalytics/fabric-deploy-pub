@@ -115,6 +115,9 @@ class ParameterDetector:
         # Detect from pipelines (connections, etc.)
         self._detect_from_pipelines()
 
+        # Detect from copy jobs
+        self._detect_from_copyjobs()
+
         return self.parameters
 
     def _detect_lakehouse_names(self) -> None:
@@ -195,7 +198,7 @@ class ParameterDetector:
 
     def _detect_from_notebooks(self) -> None:
         """Detect workspace and lakehouse IDs from notebook metadata."""
-        notebook_files = self.repo_dir.glob("Notebooks/*.Notebook/notebook-content.py")
+        notebook_files = self.repo_dir.glob("**/*.Notebook/notebook-content.py")
 
         for notebook_file in notebook_files:
             try:
@@ -227,7 +230,7 @@ class ParameterDetector:
     def _detect_from_semantic_models(self) -> None:
         """Detect SQL connection strings and endpoint IDs from semantic models."""
         expression_files = self.repo_dir.glob(
-            "Power BI/*.SemanticModel/definition/expressions.tmdl"
+            "**/*.SemanticModel/definition/expressions.tmdl"
         )
 
         for expr_file in expression_files:
@@ -262,7 +265,7 @@ class ParameterDetector:
     def _detect_from_pipelines(self) -> None:
         """Detect connection IDs and other references from pipeline JSON files."""
         pipeline_files = self.repo_dir.glob(
-            "Pipelines/*.DataPipeline/pipeline-content.json"
+            "**/*.DataPipeline/pipeline-content.json"
         )
 
         for pipeline_file in pipeline_files:
@@ -302,6 +305,44 @@ class ParameterDetector:
             # Recurse into lists
             for item in obj:
                 self._extract_connections_recursive(item, source_file)
+
+    def _detect_from_copyjobs(self) -> None:
+        """Detect workspace and lakehouse IDs from CopyJob JSON files."""
+        copyjob_files = self.repo_dir.glob("**/*.CopyJob/copyjob-content.json")
+
+        for copyjob_file in copyjob_files:
+            try:
+                content = copyjob_file.read_text(encoding="utf-8")
+                data = json.loads(content)
+
+                # Extract workspace and lakehouse IDs from source and destination
+                for section_name in ["source", "destination"]:
+                    section = data.get("properties", {}).get(section_name, {})
+                    connection_settings = section.get("connectionSettings", {})
+                    type_properties = connection_settings.get("typeProperties", {})
+
+                    # Extract workspace ID
+                    workspace_id = type_properties.get("workspaceId")
+                    if workspace_id and self.UUID_PATTERN.match(workspace_id):
+                        self._add_parameter(
+                            find_value=workspace_id,
+                            item_type="CopyJob",
+                            source_file=str(copyjob_file.relative_to(self.repo_dir)),
+                            description="Workspace ID",
+                        )
+
+                    # Extract lakehouse ID (artifactId)
+                    artifact_id = type_properties.get("artifactId")
+                    if artifact_id and self.UUID_PATTERN.match(artifact_id):
+                        self._add_parameter(
+                            find_value=artifact_id,
+                            item_type="CopyJob",
+                            source_file=str(copyjob_file.relative_to(self.repo_dir)),
+                            description="Lakehouse ID",
+                        )
+
+            except Exception as e:
+                self._log_file_warning(copyjob_file, e)
 
     def generate_parameter_yml(
         self,
@@ -400,16 +441,17 @@ class ParameterDetector:
 
     def should_skip_replacement(self, target_workspace_id: str) -> bool:
         """
-        Check if target workspace matches detected source workspace.
+        Check if target workspace matches ALL detected source workspace IDs.
 
-        When source and target workspaces are the same, parameter replacement
-        should be skipped since all IDs are already correct.
+        When ALL detected workspace IDs match the target workspace, parameter
+        replacement should be skipped since all IDs are already correct.
 
         Args:
             target_workspace_id: Destination workspace ID to check
 
         Returns:
-            True if target matches source (skip replacement), False otherwise
+            True if ALL detected workspace IDs match target (skip replacement),
+            False otherwise
         """
         if not self.parameters:
             self.detect_all()
@@ -421,7 +463,12 @@ class ParameterDetector:
             if param.description == "Workspace ID"
         ]
 
-        return target_workspace_id in detected_workspace_ids
+        # If no workspace IDs detected, don't skip replacement
+        if not detected_workspace_ids:
+            return False
+
+        # Only skip if ALL detected workspace IDs match the target
+        return all(wid == target_workspace_id for wid in detected_workspace_ids)
 
     def print_detection_summary(self) -> None:
         """Print a summary of detected parameters."""
