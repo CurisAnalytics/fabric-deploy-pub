@@ -323,7 +323,7 @@ def handle_detect_command(args: argparse.Namespace) -> None:
     """Handle detect subcommand execution."""
     try:
         detector = ParameterDetector(repo_dir=args.directory)
-        _ = detector.detect_all()
+        detector.detect_all()
 
         # Print summary
         detector.print_detection_summary()

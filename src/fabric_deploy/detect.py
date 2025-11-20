@@ -8,6 +8,8 @@ from pathlib import Path
 
 from .log import get_logger
 
+regex = re.Pattern[str]
+
 
 @dataclass
 class DetectedParameter:
@@ -49,21 +51,21 @@ class ParameterDetector:
     """Detects source IDs from workspace repository files."""
 
     # Regex patterns for ID detection
-    UUID_PATTERN = re.compile(
+    UUID_PATTERN: regex = re.compile(
         r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE
     )
 
     # SQL Connection pattern: Sql.Database("HOST-SQLSTRING.datawarehouse...", "ENDPOINT-ID")
-    SQL_DATABASE_PATTERN = re.compile(
+    SQL_DATABASE_PATTERN: regex = re.compile(
         r'Sql\.Database\(\s*"([^"]+)-([A-Z0-9]+)\.datawarehouse\.fabric\.microsoft\.com"\s*,\s*"([0-9a-f-]+)"\s*\)',
         re.IGNORECASE,
     )
 
     # Notebook metadata patterns
-    WORKSPACE_ID_PATTERN = re.compile(
+    WORKSPACE_ID_PATTERN: regex = re.compile(
         r'"default_lakehouse_workspace_id":\s*"([0-9a-f-]+)"', re.IGNORECASE
     )
-    LAKEHOUSE_ID_PATTERN = re.compile(
+    LAKEHOUSE_ID_PATTERN: regex = re.compile(
         r'"default_lakehouse":\s*"([0-9a-f-]+)"', re.IGNORECASE
     )
 
@@ -94,31 +96,31 @@ class ParameterDetector:
         context_str = f" {context} from" if context else ""
         self.logger.warning(f"Failed to read{context_str} {file_path}: {error}")
 
-    def detect_all(self) -> dict[str, DetectedParameter]:
-        """
-        Detect all parameters from workspace files.
-
-        Returns:
-            Dictionary mapping find_value to DetectedParameter
-        """
+    def detect_all(self):
+        "Detect all parameters from workspace files."
         self.parameters = {}
 
         # Detect lakehouse names first (needed for dynamic variables)
         self._detect_lakehouse_names()
 
-        # Detect from notebooks
-        self._detect_from_notebooks()
-
-        # Detect from semantic models
-        self._detect_from_semantic_models()
-
-        # Detect from pipelines (connections, etc.)
-        self._detect_from_pipelines()
-
-        # Detect from copy jobs
-        self._detect_from_copyjobs()
-
-        return self.parameters
+        # Process all file types with their respective extractors
+        self._process_files(
+            "**/*.Notebook/notebook-content.py", self._extract_from_notebook
+        )
+        self._process_files(
+            "**/*.SemanticModel/definition/expressions.tmdl",
+            self._extract_from_semantic_model,
+        )
+        self._process_files(
+            "**/*.DataPipeline/pipeline-content.json",
+            self._extract_from_pipeline,
+            parse_json=True,
+        )
+        self._process_files(
+            "**/*.CopyJob/copyjob-content.json",
+            self._extract_from_copyjob,
+            parse_json=True,
+        )
 
     def _detect_lakehouse_names(self) -> None:
         """Detect lakehouse names from .Lakehouse/.platform files."""
@@ -134,6 +136,26 @@ class ParameterDetector:
                     self._lakehouse_names.append(display_name)
             except Exception as e:
                 self._log_file_warning(platform_file, e, "lakehouse metadata")
+
+    def _process_files(
+        self, glob_pattern: str, extract_func, parse_json: bool = False
+    ) -> None:
+        """
+        Generic file processor that handles glob, iteration, reading, and error handling.
+
+        Args:
+            glob_pattern: Glob pattern to match files
+            extract_func: Callback function that receives (file_path, content_or_data)
+            parse_json: If True, parse content as JSON before passing to extract_func
+        """
+        files = self.repo_dir.glob(glob_pattern)
+        for file_path in files:
+            try:
+                content = file_path.read_text(encoding="utf-8")
+                data = json.loads(content) if parse_json else content
+                extract_func(file_path, data)
+            except Exception as e:
+                self._log_file_warning(file_path, e)
 
     def _add_parameter(
         self, find_value: str, item_type: str, source_file: str, description: str = ""
@@ -154,6 +176,26 @@ class ParameterDetector:
         param.source_files.add(source_file)
         if description and not param.description:
             param.description = description
+
+    def _add_uuid_parameter(
+        self, value: str, item_type: str, source_file: str, description: str = ""
+    ):
+        """
+        Add parameter if value is a valid UUID.
+
+        Args:
+            value: Value to validate and add
+            item_type: Type of item where ID was found
+            source_file: Relative path to source file
+            description: Human-readable description
+        """
+        if value and self.UUID_PATTERN.match(value):
+            self._add_parameter(
+                find_value=value,
+                item_type=item_type,
+                source_file=source_file,
+                description=description,
+            )
 
     def _generate_dynamic_variable(self, description: str) -> str:
         """
@@ -196,90 +238,49 @@ class ParameterDetector:
 
         return ""
 
-    def _detect_from_notebooks(self) -> None:
-        """Detect workspace and lakehouse IDs from notebook metadata."""
-        notebook_files = self.repo_dir.glob("**/*.Notebook/notebook-content.py")
+    def _extract_from_notebook(self, file_path: Path, content: str) -> None:
+        """Extract workspace and lakehouse IDs from notebook metadata."""
+        source_file = str(file_path.relative_to(self.repo_dir))
 
-        for notebook_file in notebook_files:
-            try:
-                content = notebook_file.read_text(encoding="utf-8")
+        # Extract workspace ID
+        for workspace_id in self.WORKSPACE_ID_PATTERN.findall(content):
+            self._add_parameter(workspace_id, "Notebook", source_file, "Workspace ID")
 
-                # Extract workspace ID
-                workspace_matches = self.WORKSPACE_ID_PATTERN.findall(content)
-                for workspace_id in workspace_matches:
-                    self._add_parameter(
-                        find_value=workspace_id,
-                        item_type="Notebook",
-                        source_file=str(notebook_file.relative_to(self.repo_dir)),
-                        description="Workspace ID",
-                    )
+        # Extract lakehouse ID
+        for lakehouse_id in self.LAKEHOUSE_ID_PATTERN.findall(content):
+            self._add_parameter(lakehouse_id, "Notebook", source_file, "Lakehouse ID")
 
-                # Extract lakehouse ID
-                lakehouse_matches = self.LAKEHOUSE_ID_PATTERN.findall(content)
-                for lakehouse_id in lakehouse_matches:
-                    self._add_parameter(
-                        find_value=lakehouse_id,
-                        item_type="Notebook",
-                        source_file=str(notebook_file.relative_to(self.repo_dir)),
-                        description="Lakehouse ID",
-                    )
+    def _extract_from_semantic_model(self, file_path: Path, content: str) -> None:
+        """Extract SQL connection strings and endpoint IDs from semantic models."""
+        source_file = str(file_path.relative_to(self.repo_dir))
 
-            except Exception as e:
-                self._log_file_warning(notebook_file, e)
+        # Extract SQL connection string and endpoint ID
+        for host_prefix, sql_string, endpoint_id in self.SQL_DATABASE_PATTERN.findall(
+            content
+        ):
+            # Add SQL connection string component (full hostname)
+            full_hostname = (
+                f"{host_prefix}-{sql_string}.datawarehouse.fabric.microsoft.com"
+            )
+            self._add_parameter(
+                full_hostname,
+                "SemanticModel",
+                source_file,
+                "Lakehouse SQL Analytics Endpoint Connection String",
+            )
 
-    def _detect_from_semantic_models(self) -> None:
-        """Detect SQL connection strings and endpoint IDs from semantic models."""
-        expression_files = self.repo_dir.glob(
-            "**/*.SemanticModel/definition/expressions.tmdl"
-        )
+            # Add SQL endpoint item ID
+            self._add_parameter(
+                endpoint_id,
+                "SemanticModel",
+                source_file,
+                "Lakehouse SQL Analytics Endpoint Item ID",
+            )
 
-        for expr_file in expression_files:
-            try:
-                content = expr_file.read_text(encoding="utf-8")
-
-                # Extract SQL connection string and endpoint ID
-                matches = self.SQL_DATABASE_PATTERN.findall(content)
-                for host_prefix, sql_string, endpoint_id in matches:
-                    # Add SQL connection string component (full hostname)
-                    full_hostname = (
-                        f"{host_prefix}-{sql_string}.datawarehouse.fabric.microsoft.com"
-                    )
-                    self._add_parameter(
-                        find_value=full_hostname,
-                        item_type="SemanticModel",
-                        source_file=str(expr_file.relative_to(self.repo_dir)),
-                        description="Lakehouse SQL Analytics Endpoint Connection String",
-                    )
-
-                    # Add SQL endpoint item ID
-                    self._add_parameter(
-                        find_value=endpoint_id,
-                        item_type="SemanticModel",
-                        source_file=str(expr_file.relative_to(self.repo_dir)),
-                        description="Lakehouse SQL Analytics Endpoint Item ID",
-                    )
-
-            except Exception as e:
-                self._log_file_warning(expr_file, e)
-
-    def _detect_from_pipelines(self) -> None:
-        """Detect connection IDs and other references from pipeline JSON files."""
-        pipeline_files = self.repo_dir.glob(
-            "**/*.DataPipeline/pipeline-content.json"
-        )
-
-        for pipeline_file in pipeline_files:
-            try:
-                content = pipeline_file.read_text(encoding="utf-8")
-                data = json.loads(content)
-
-                # Look for external connection references
-                self._extract_connections_recursive(
-                    data, str(pipeline_file.relative_to(self.repo_dir))
-                )
-
-            except Exception as e:
-                self._log_file_warning(pipeline_file, e)
+    def _extract_from_pipeline(self, file_path: Path, data: dict) -> None:
+        """Extract connection IDs from pipeline JSON."""
+        source_file = str(file_path.relative_to(self.repo_dir))
+        self._extract_connections_recursive(data, source_file)
 
     def _extract_connections_recursive(self, obj, source_file: str) -> None:
         """Recursively extract connection IDs from nested JSON structures."""
@@ -288,14 +289,12 @@ class ParameterDetector:
             if "externalReferences" in obj:
                 ext_refs = obj["externalReferences"]
                 if isinstance(ext_refs, dict) and "connection" in ext_refs:
-                    connection_id = ext_refs["connection"]
-                    if self.UUID_PATTERN.match(connection_id):
-                        self._add_parameter(
-                            find_value=connection_id,
-                            item_type="DataPipeline",
-                            source_file=source_file,
-                            description="External connection ID",
-                        )
+                    self._add_uuid_parameter(
+                        value=ext_refs["connection"],
+                        item_type="DataPipeline",
+                        source_file=source_file,
+                        description="External connection ID",
+                    )
 
             # Recurse into nested dictionaries
             for value in obj.values():
@@ -306,43 +305,30 @@ class ParameterDetector:
             for item in obj:
                 self._extract_connections_recursive(item, source_file)
 
-    def _detect_from_copyjobs(self) -> None:
-        """Detect workspace and lakehouse IDs from CopyJob JSON files."""
-        copyjob_files = self.repo_dir.glob("**/*.CopyJob/copyjob-content.json")
+    def _extract_from_copyjob(self, file_path: Path, data: dict) -> None:
+        """Extract workspace and lakehouse IDs from CopyJob JSON."""
+        source_file = str(file_path.relative_to(self.repo_dir))
 
-        for copyjob_file in copyjob_files:
-            try:
-                content = copyjob_file.read_text(encoding="utf-8")
-                data = json.loads(content)
+        # Extract workspace and lakehouse IDs from source and destination
+        for section_name in ["source", "destination"]:
+            section = data.get("properties", {}).get(section_name, {})
+            type_properties = section.get("connectionSettings", {}).get(
+                "typeProperties", {}
+            )
 
-                # Extract workspace and lakehouse IDs from source and destination
-                for section_name in ["source", "destination"]:
-                    section = data.get("properties", {}).get(section_name, {})
-                    connection_settings = section.get("connectionSettings", {})
-                    type_properties = connection_settings.get("typeProperties", {})
-
-                    # Extract workspace ID
-                    workspace_id = type_properties.get("workspaceId")
-                    if workspace_id and self.UUID_PATTERN.match(workspace_id):
-                        self._add_parameter(
-                            find_value=workspace_id,
-                            item_type="CopyJob",
-                            source_file=str(copyjob_file.relative_to(self.repo_dir)),
-                            description="Workspace ID",
-                        )
-
-                    # Extract lakehouse ID (artifactId)
-                    artifact_id = type_properties.get("artifactId")
-                    if artifact_id and self.UUID_PATTERN.match(artifact_id):
-                        self._add_parameter(
-                            find_value=artifact_id,
-                            item_type="CopyJob",
-                            source_file=str(copyjob_file.relative_to(self.repo_dir)),
-                            description="Lakehouse ID",
-                        )
-
-            except Exception as e:
-                self._log_file_warning(copyjob_file, e)
+            # Extract workspace ID and lakehouse ID (artifactId)
+            self._add_uuid_parameter(
+                type_properties.get("workspaceId"),
+                "CopyJob",
+                source_file,
+                "Workspace ID",
+            )
+            self._add_uuid_parameter(
+                type_properties.get("artifactId"),
+                "CopyJob",
+                source_file,
+                "Lakehouse ID",
+            )
 
     def generate_parameter_yml(
         self,
@@ -371,19 +357,19 @@ class ParameterDetector:
         find_replace = []
 
         # Sort parameters by description for better organization
-        sorted_params = sorted(
-            self.parameters.values(),
-            key=lambda p: (
-                0
-                if "Workspace ID" in p.description
-                else 1
-                if "Lakehouse ID" in p.description
-                else 2
-                if "SQL" in p.description
-                else 3,
-                p.description,
-            ),
-        )
+        def _get_sort_key(param: DetectedParameter) -> tuple[int, str]:
+            """Return sort key tuple for parameter ordering."""
+            if "Workspace ID" in param.description:
+                priority = 0
+            elif "Lakehouse ID" in param.description:
+                priority = 1
+            elif "SQL" in param.description:
+                priority = 2
+            else:
+                priority = 3
+            return (priority, param.description)
+
+        sorted_params = sorted(self.parameters.values(), key=_get_sort_key)
 
         # Add parameters with dynamic variables
         for param in sorted_params:
@@ -503,17 +489,13 @@ class ParameterDetector:
             )
 
     def count_connection_guids(self) -> int:
-        """
-        Count the number of external connection GUIDs detected.
-
-        Returns:
-            Number of connection GUIDs found
-        """
+        "Returns the number of connection GUIDs detected"
         if not self.parameters:
             self.detect_all()
 
-        return sum(
-            1
-            for p in self.parameters.values()
-            if "connection" in (p.description or "").lower() and not p.dynamic_variable
-        )
+        connection_count = 0
+        for param in self.parameters.values():
+            description = param.description or ""
+            if "connection" in description.lower() and not param.dynamic_variable:
+                connection_count += 1
+        return connection_count

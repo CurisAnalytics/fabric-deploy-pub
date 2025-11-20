@@ -349,7 +349,7 @@ class WorkspaceDeployer:
         detector = ParameterDetector(
             repo_dir=self._repo_dir_resolved, logger_name=self.logger.name
         )
-        _ = detector.detect_all()
+        detector.detect_all()
 
         # Load manual parameters from fabdep.yml if specified
         manual_count = self._load_manual_parameters(detector)
