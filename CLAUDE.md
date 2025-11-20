@@ -1,16 +1,16 @@
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 ## Project Overview
 
 `fabric-deploy` is a **thin CLI wrapper** around Microsoft's official [`fabric-cicd`](https://github.com/microsoft/fabric-cicd) package. It provides workspace-based deployment using workspace name + git branch resolution via Fabric REST API.
 
-## Purpose
-
-- **Wrapper**: Thin CLI layer over Microsoft's `fabric-cicd` package
+**Key Features**:
 - **Workspace Resolution**: Combines workspace base name + git branch to resolve workspace ID via Fabric API
-- **Dynamic Parameter Generation**: Auto-detect source IDs and generate parameter.yml with dynamic variables (enabled by default)
-- **CLI convenience**: Simple command-line interface for deployments
-- **Smart Replace Support**: Handles dynamic parameterization with auto-generated variables
+- **Auto-Detect (Default)**: Scans workspace files to detect source IDs and generates dynamic parameter replacements
+- **Bootstrap Mode**: Two-phase deployment for blank workspaces (foundational items first)
+- **CLI Convenience**: Simple command-line interface wrapping Microsoft's fabric-cicd package
 
 ## Architecture
 
@@ -39,64 +39,74 @@ fabric-deploy/
 - Feature modules (`auth.py`, `workspace.py`, `rename.py`) contain ONLY business logic
 - Clear separation: CLI/presentation layer vs business logic layer
 
-## Usage Pattern
+## Development Commands
 
-**Old way** (inline cicd.py in workspace repo):
-```python
-from fabric_cicd import FabricWorkspace, publish_all_items, unpublish_all_orphan_items
-
-workspace_id = "bfefe424-11b0-4919-b395-0ad9692d4123"
-target_workspace = FabricWorkspace(
-    workspace_id=workspace_id,
-    repository_directory=str(Path(__file__).resolve().parent),
-    environment="env",
-)
-publish_all_items(target_workspace)
-unpublish_all_orphan_items(target_workspace, lakehouse_name)
-```
-
-**New way** (CLI wrapper):
 ```bash
-pip install -e .  # Installs Microsoft's fabric-cicd as dependency
-cd path/to/workspace
-fabdep  # Auto-resolves workspace from base name + git branch, auto-detects parameters
+# Install in editable mode
+pip install -e .
+
+# Deploy workspace (from workspace directory with fabdep.yml)
+fabdep
+
+# Deploy with item filtering
+fabdep -t Notebook DataPipeline
+
+# Bootstrap mode for blank workspaces
+fabdep --bootstrap --create-workspace
+
+# Disable auto-detect (use existing parameter.yml)
+fabdep --no-auto-detect
+
+# Authentication management
+fabdep auth list
+fabdep auth switch <subscription-id>
+
+# Rename item directories to match display names
+fabdep rename --execute
 ```
 
-## Deployment Flow
+## Code Architecture
 
-### CLI Flow
-1. `cli.py`: `parse_args()` parses command-line arguments
-2. `cli.py`: `main()` creates `WorkspaceDeployer` dataclass instance
-3. `workspace.py`: `WorkspaceDeployer.__post_init__()` loads configuration
-4. `workspace.py`: `WorkspaceDeployer.deploy()` orchestrates deployment
+### Deployment Flow
 
-### WorkspaceDeployer Initialization Flow
-1. Load fabdep.yml to get `workspace_base_name`
-2. Get branch name (from git or `--branch` override)
-3. Resolve workspace_id via Fabric API: `get_workspace_id_by_name(f"{base_name} [{branch}]")`
-4. If auto-detect enabled (default): generate parameter.yml dynamically
-5. Detect lakehouse name from `.platform` files
+**CLI Entry → WorkspaceDeployer → fabric-cicd**
 
-### WorkspaceDeployer.deploy() Flow
-1. Apply item type filtering (`item_types`, `exclude_types`, `include_items`)
-2. If auto-detect mode + item filtering: regenerate parameter.yml with filtered parameters (prevents warnings about unused parameters)
-3. Create `FabricWorkspace` instance (from Microsoft's package)
-4. Call `publish_all_items()` with optional filtering
-5. Optionally call `unpublish_all_orphan_items()` unless `no_cleanup=True`
+1. **CLI Layer** (`cli.py`):
+   - `parse_args()` → parses command-line arguments
+   - `handle_deploy_command()` → creates `WorkspaceDeployer` instance and calls `deploy()`
+
+2. **WorkspaceDeployer Initialization** (`workspace.py`):
+   - Load `fabdep.yml` to get `workspace_base_name`
+   - Get branch name (from git or `--branch` override)
+   - Resolve workspace_id via Fabric API: `get_workspace_id_by_name(f"{base_name} [{branch}]")`
+   - If auto-detect enabled (default): call `ParameterDetector.detect_all()` and generate dynamic parameters
+   - Detect lakehouse name from `.platform` files
+
+3. **Deployment Execution** (`WorkspaceDeployer.deploy()`):
+   - Apply item type filtering (`item_types`, `exclude_types`, `include_items`)
+   - If auto-detect + filtering: regenerate parameters for filtered items only
+   - Create `FabricWorkspace` instance (Microsoft's fabric-cicd)
+   - Call `publish_all_items()` with retry logic for connection errors
+   - Call `unpublish_all_orphan_items()` unless `no_cleanup=True`
 
 ## Key Implementation Details
 
 ### Auto-Detect (Default Behavior)
 
-Auto-detect is **enabled by default**. Users can opt-out with `--no-auto-detect` to use an existing `parameter.yml` file.
+Auto-detect is **enabled by default** since version 0.2.0. Users can opt-out with `--no-auto-detect` to use an existing `parameter.yml` file.
 
-**Detection Sources**:
-- **Notebook Metadata**: Extracts `default_lakehouse_workspace_id` and `default_lakehouse`
-- **SemanticModel Files**: Parses `expressions.tmdl` for SQL connection strings and endpoint IDs
-- **Pipeline JSON**: Scans `pipeline-content.json` for connection references
-- **Lakehouse Metadata**: Reads `.platform` files for display names
+**How It Works**:
+- `ParameterDetector.detect_all()` scans workspace files for source IDs (UUIDs, SQL endpoints, etc.)
+- Generates dynamic variable replacements for Microsoft's fabric-cicd parameter system
+- Automatically skips external connections (tenant-wide, not deployed by fabric-cicd)
 
-**Dynamic Variable Generation**:
+**Detection Sources** (`detect.py`):
+- **Notebooks**: `default_lakehouse_workspace_id` and `default_lakehouse` from metadata
+- **SemanticModels**: SQL connection strings and endpoint IDs from `expressions.tmdl`
+- **Pipelines**: Connection references from `pipeline-content.json`
+- **Lakehouses**: Display names from `.platform` files
+
+**Dynamic Variable Examples**:
 ```python
 # Workspace ID → $workspace.$id
 "fb61a71c-b2af-49dc-9150-9040010c79bb" → "$workspace.$id"
@@ -104,16 +114,12 @@ Auto-detect is **enabled by default**. Users can opt-out with `--no-auto-detect`
 # Lakehouse ID → $items.Lakehouse.<name>.$id
 "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" → "$items.Lakehouse.my_lakehouse.$id"
 
-# SQL Connection → $items.Lakehouse.<name>.$sqlendpoint
+# SQL Endpoint → $items.Lakehouse.<name>.$sqlendpoint
 "EXAMPLEABC123XYZ" → "$items.Lakehouse.my_lakehouse.$sqlendpoint"
 ```
 
-**Auto-Skip Logic**:
-- **External Connections**: Parameters without dynamic variables (e.g., external connection IDs) are skipped because they're tenant-wide and require manual setup
-- External connections are NOT deployed by fabric-cicd and their IDs don't change between workspaces
-
-**Parameter Filtering with Item Types**:
-When using `--item-types` or `--exclude-types`, parameters are automatically filtered to only include those used by the targeted item types. This prevents warnings about unused parameters.
+**Parameter Filtering**:
+When using `--item-types` or `--exclude-types`, parameters are regenerated to include only those used by targeted item types (prevents warnings about unused parameters).
 
 ### Manual Parameter Overrides
 
@@ -143,159 +149,100 @@ manual_parameters:
 
 ### Bootstrap Mode
 
-Two-phase deployment for blank workspaces:
+Two-phase deployment for blank workspaces (`--bootstrap` flag):
 
-**Foundational Items** (Phase 1):
-- Lakehouse, SemanticModel, SQLDatabase, Warehouse, MirroredDatabase, Eventhouse
+**Phase 1 - Foundational Items**: Lakehouse, SemanticModel, SQLDatabase, Warehouse, MirroredDatabase, Eventhouse
+**Phase 2 - Dependent Items**: Notebook, DataPipeline, Environment, Report, and all other item types
 
-**Dependent Items** (Phase 2):
-- Notebook, DataPipeline, Environment, Report, and all other item types
+This solves circular dependencies (e.g., Notebooks reference Lakehouse IDs that don't exist yet).
 
-**Workspace Creation**:
-- Optional `capacity_id` in fabdep.yml
-- If not specified, automatically uses the first active capacity the user has access to
-- Workspace name format: `{workspace_base_name} [{branch}]`
-- Checks if workspace exists before creating
+**Workspace Creation** (`--create-workspace`):
+- Creates workspace if it doesn't exist: `{workspace_base_name} [{branch}]`
+- Uses `capacity_id` from fabdep.yml, or auto-selects first active capacity
+- Warns about external connection GUIDs (tenant-wide, must be configured manually)
 
-**Connection GUIDs**:
-- Bootstrap mode detects external connection GUIDs in DataPipelines/Dataflows
-- Warns user that connection GUIDs are tenant-wide and must be configured manually
-- Connection GUIDs are NOT deployed by fabric-cicd (they're tenant-wide references)
-
-### Automatic Retry Logic
-
-Deployment failures from connection issues are automatically retried to handle transient network errors.
-
-**Behavior**:
-- Retries up to 3 times for connection errors (`Connection aborted`, `RemoteDisconnected`)
-- 2-second delay between retry attempts
-- Logs warning message with attempt count: `Connection error on attempt 1/3: ...`
-- After 3 failed attempts, raises the error normally
-- Other error types (auth, validation, etc.) fail immediately without retry
-
-### Smart Item Type Display
-
-When using item type filters, only displays item types that are both in scope AND present in the repository.
-
-## Implementation Details
-
-### Key Modules
-
-**`api.py` - Fabric REST API integration**
-- `get_access_token()`: Acquires Azure access token via `az account get-access-token`
-- `list_workspaces()`: Returns all accessible workspaces
-- `get_workspace_id_by_name(workspace_name)`: Case-insensitive workspace lookup
-- Uses Python's built-in `urllib` (no external dependencies)
-
-**`workspace.py` - WorkspaceDeployer dataclass**
-- `repo_dir`: Workspace directory path (required)
-- `logger_name`: Optional custom logger name
-- `branch_override`: Optional branch override (from --branch flag)
-- `auto_detect`: Enable dynamic parameter generation (default: True)
-- `save_detected_params`: Save generated parameters to file
-- `bootstrap`: Enable two-phase deployment
-- `create_workspace`: Create workspace if it doesn't exist
-
-**Key Methods**:
-- `_load_config()`: Load fabdep.yml and resolve workspace_id via API
-- `_get_git_branch()`: Get current git branch name
-- `_resolve_workspace_id_from_name()`: Combine base_name + branch and lookup via API
-- `_get_repo_item_types()`: Scan repository to detect which item types are present
-- `_detect_lakehouse()`: Auto-detect lakehouse name from `.platform` files
-- `_generate_dynamic_params()`: Auto-detect source IDs and generate parameter.yml
-- `_deploy_items()`: Deploy items to workspace with retry logic for connection errors
-- `deploy()`: Main deployment method
-
-**`detect.py` - ParameterDetector class**
-- `detect_all()`: Scan workspace files and detect source IDs
-- `generate_parameter_yml()`: Create parameter.yml structure with dynamic variables
-- `save_parameter_yml()`: Write parameter.yml to file
-- `print_detection_summary()`: Display detected parameters with dynamic variables
-
-**`cli.py` - CLI interface**
-- `parse_args()`: Configure argument parsers (auth, rename, deploy)
-- `handle_deploy_command()`: Execute deployment with auto-detect support
-- `handle_auth_command()`: Execute auth subcommands
-- `handle_rename_command()`: Execute rename utility
-- `main()`: CLI entry point - routes to appropriate handler
-
-**`auth.py` - Azure auth utilities**
-- `list_accounts()`: List all Azure accounts
-- `get_current_account()`: Get currently active account
-- `switch_account()`: Switch to different subscription
-- `rename_subscription()`: Rename subscription (auto-switches if needed)
-- `is_connection_error()`: Detect connection reference errors
-- `is_auth_error()`: Detect authentication/authorization errors
-
-**`log.py` - Logging and formatting**
-- `get_logger()`: Configure logger with custom formatter
-- `print_header()`: Print styled header
-- `print_error()`: Print error message
-- `format_account_list()`: Format Azure accounts with current marker
-- `format_auth_error_message()`: Format auth error with troubleshooting tips
-- `format_connection_error_message()`: Format connection error message
-
-**`rename.py` - Rename utility**
-- `rename_items_by_display_name()`: Rename workspace item directories to match display names
-- Supports dry-run mode and cleaning (lowercase + underscores)
-
-## Error Handling
+### Error Handling
 
 **Automatic Retry Logic**:
-- Connection errors (`Connection aborted`, `RemoteDisconnected`) are automatically retried up to 3 times
-- 2-second delay between retry attempts
-- Logs warning on each retry with attempt count
-- Other errors (auth, config, etc.) fail immediately without retry
+- Connection errors retried up to 3 times with 2-second delay
+- Other errors (auth, validation) fail immediately
 
-**Intelligent error detection**:
-- **Connection errors**: Detects DataPipeline/Dataflow connection references, explains tenant-wide GUIDs must be edited in source files
-- **Auth errors**: Detects authentication failures, displays account info and suggests auth commands
-- **Config errors**: Missing fabdep.yml triggers helpful error with example configuration
+**Intelligent Error Messages** (`cli.py`):
+- **Connection errors**: Detects DataPipeline/Dataflow connection references, explains tenant-wide GUIDs
+- **Auth errors**: Shows current account and suggests `fabdep auth` commands
+- **Config errors**: Missing fabdep.yml shows example configuration
 
-**Validation**:
-- Workspace directory exists
-- fabdep.yml exists with `workspace_base_name` field
-- Git repository available with valid branch
-- Lakehouse `.platform` files readable
+## Module Architecture
 
-## Dependencies
+### Core Modules
+
+**`workspace.py`** - WorkspaceDeployer dataclass
+- Main deployment orchestration logic
+- Key methods: `_load_config()`, `_generate_dynamic_params()`, `_deploy_items()`, `deploy()`
+- Wraps Microsoft's `FabricWorkspace` and `publish_all_items()`
+
+**`detect.py`** - ParameterDetector class
+- Scans workspace files for source IDs (UUIDs, SQL endpoints, connection strings)
+- Generates dynamic variable mappings for fabric-cicd parameter system
+- Methods: `detect_all()`, `generate_parameter_yml()`, `save_parameter_yml()`
+
+**`api.py`** - Fabric REST API integration
+- Authentication: `get_access_token()` via `az account get-access-token`
+- Workspace operations: `list_workspaces()`, `get_workspace_id_by_name()`, `create_workspace()`
+- Uses Python's built-in `urllib` (zero external dependencies)
+
+**`cli.py`** - CLI interface (presentation layer only)
+- Argument parsing: `parse_args()`
+- Command handlers: `handle_deploy_command()`, `handle_auth_command()`, `handle_rename_command()`
+- Error formatting and user-facing messages
+
+**`auth.py`** - Azure authentication utilities (business logic)
+- Account management: `list_accounts()`, `switch_account()`, `rename_subscription()`
+- Error detection: `is_auth_error()`, `is_connection_error()`
+
+**`log.py`** - Logging and console formatting
+- Custom logger configuration with styled output
+- Error message formatting for different error types
+
+**`rename.py`** - Rename utility
+- Rename workspace item directories to match `.platform` display names
+- Supports dry-run and cleaning (lowercase + underscores)
+
+### Dependencies
 
 ```toml
 [project]
 dependencies = [
-    "fabric-cicd>=0.1.29",    # Microsoft's official package for deployment
-    "pyyaml",                 # For fabdep.yml parsing
+    "fabric-cicd>=0.1.29",    # Microsoft's official deployment package
+    "pyyaml",                 # fabdep.yml parsing
 ]
 ```
 
+**Key Dependency**: `fabric-cicd` provides `FabricWorkspace`, `publish_all_items()`, `unpublish_all_orphan_items()`
+
 ## Programmatic Usage
 
-**Note**: Primary interface is the CLI (`fabdep` command). Programmatic API is minimal and designed for Azure DevOps integration and testing.
+**Note**: Primary interface is CLI. Minimal programmatic API for Azure DevOps integration and testing.
 
 ```python
 from fabric_deploy import WorkspaceDeployer
 
-# Basic deployment (reads fabdep.yml from repo_dir)
+# Basic deployment (reads fabdep.yml, auto-detects parameters)
 deployer = WorkspaceDeployer(repo_dir="/path/to/workspace")
 deployer.deploy()
 
-# With item filtering
-deployer = WorkspaceDeployer(repo_dir="/path/to/workspace")
-deployer.deploy(item_types=["Notebook", "DataPipeline"], no_cleanup=False)
+# Item filtering
+deployer.deploy(item_types=["Notebook", "DataPipeline"])
 
 # Disable auto-detect (use existing parameter.yml)
-deployer = WorkspaceDeployer(
-    repo_dir="/path/to/workspace",
-    auto_detect=False,
-)
+deployer = WorkspaceDeployer(repo_dir="/path/to/workspace", auto_detect=False)
 deployer.deploy()
 
 # Bootstrap mode with workspace creation
 deployer = WorkspaceDeployer(
     repo_dir="/path/to/workspace",
-    auto_detect=True,
     bootstrap=True,
-    create_workspace=True,
+    create_workspace=True
 )
 deployer.deploy()
 ```
@@ -304,14 +251,29 @@ deployer.deploy()
 
 **Documentation**: https://microsoft.github.io/fabric-cicd/
 
-**Key Classes/Functions**:
+This package wraps Microsoft's `fabric-cicd` which provides:
 - `FabricWorkspace(workspace_id, repository_directory, environment, item_type_in_scope)`
 - `publish_all_items(workspace)` - Deploys items to Fabric
 - `unpublish_all_orphan_items(workspace)` - Cleans up orphaned items
 
-**Supported Item Types**:
-- DataPipeline, Environment, Notebook, Report, SemanticModel
-- Lakehouse, MirroredDatabase, VariableLibrary, CopyJob
-- Eventhouse, KQLDatabase, KQLQueryset, Reflex, Eventstream
-- Warehouse, SQLDatabase, KQLDashboard, Dataflow, GraphQLApi
-- ApacheAirflowJob, MountedDataFactory
+**Supported Item Types**: DataPipeline, Environment, Notebook, Report, SemanticModel, Lakehouse, MirroredDatabase, Warehouse, SQLDatabase, Eventhouse, KQLDatabase, Dataflow, and more.
+
+## Configuration Files
+
+**fabdep.yml** (required in workspace root):
+```yaml
+workspace_base_name: "my_workspace"  # Combined with git branch: "my_workspace [main]"
+capacity_id: "optional-capacity-id"  # Auto-detected if omitted
+
+# Optional: Override auto-detected parameters (e.g., external references)
+manual_parameters:
+  - find_value: "auto-detected-uuid"
+    replace_value: "keep-same-or-change"
+    item_type: ["SemanticModel"]  # Optional: scope to specific item types
+    description: "External lakehouse SQL endpoint"
+```
+
+**parameter.yml** (auto-generated, optional with `--no-auto-detect`):
+- Auto-generated by default from workspace file scans
+- Use `--save-params` to save to `parameter.yml.detected` for inspection
+- Only needed when `--no-auto-detect` is used
