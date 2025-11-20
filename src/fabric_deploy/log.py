@@ -7,7 +7,6 @@ and Azure account information display utilities.
 
 import logging
 import re
-import sys
 from collections.abc import Sequence
 from typing import ClassVar
 

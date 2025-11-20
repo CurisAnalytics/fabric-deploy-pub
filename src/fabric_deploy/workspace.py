@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from json import loads
 from pathlib import Path
-from time import sleep
 
 import yaml
 from fabric_cicd import (
@@ -20,9 +19,7 @@ from .api import (
     create_workspace,
     get_default_capacity_id,
     get_workspace_id_by_name,
-    workspace_exists,
 )
-from .auth import get_current_account
 from .detect import ParameterDetector
 from .log import get_logger, print_header
 
@@ -88,6 +85,7 @@ class WorkspaceDeployer:
     # Private fields
     _repo_dir_resolved: Path = field(init=False, repr=False)
     _auto_detect_summary: list[str] | None = field(default=None, init=False, repr=False)
+    _logged_manual_warnings: set[str] = field(default_factory=set, init=False, repr=False)
     logger: logging.Logger = field(init=False, repr=False)
 
     def __post_init__(self):
@@ -205,17 +203,7 @@ class WorkspaceDeployer:
             self._create_workspace_if_needed(capacity_id)
 
         # Resolve workspace ID
-        try:
-            self.workspace_id = get_workspace_id_by_name(self.workspace_name)
-        except ValueError:
-            account = get_current_account()  # some keys available: name, id, tenantId
-            assert account  # Should be set
-            account_name: str = account["user"]["name"]
-            self.logger.info(f"Current account: {account_name}")
-            self.logger.error(
-                f"Workspace '{self.workspace_name}' not found for account: {account}"
-            )
-            raise
+        self.workspace_id = get_workspace_id_by_name(self.workspace_name)
 
     def _load_manual_parameters(self, detector: ParameterDetector) -> int:
         """
@@ -254,7 +242,7 @@ class WorkspaceDeployer:
 
             if not find_value or not replace_value:
                 self.logger.warning(
-                    f"Skipping manual parameter with missing find_value or replace_value"
+                    "Skipping manual parameter with missing find_value or replace_value"
                 )
                 continue
 
@@ -290,11 +278,13 @@ class WorkspaceDeployer:
                 self.logger.debug(f"Manual override for {find_value}: {replace_value}")
 
             else:
-                # Parameter wasn't auto-detected, log warning
-                self.logger.warning(
-                    f"Manual parameter '{find_value}' was not auto-detected. "
-                    "Make sure the find_value matches exactly what's in the source files."
-                )
+                # Parameter wasn't auto-detected, log warning (only once)
+                if find_value not in self._logged_manual_warnings:
+                    self.logger.warning(
+                        f"Manual parameter '{find_value}' was not auto-detected. "
+                        "Make sure the find_value matches exactly what's in the source files."
+                    )
+                    self._logged_manual_warnings.add(find_value)
 
         return count
 
@@ -310,12 +300,7 @@ class WorkspaceDeployer:
             - Info when creating new workspace
             - Success message with workspace ID
         """
-        # Check if workspace already exists
-        if workspace_exists(self.workspace_name):
-            self.logger.info(f"Workspace already exists: {self.workspace_name}")
-            return
-
-        # Create workspace
+        # Try to create workspace (will raise ValueError if already exists)
         self.logger.info(f"Creating workspace: {self.workspace_name}")
         try:
             workspace_id = create_workspace(
@@ -323,6 +308,12 @@ class WorkspaceDeployer:
                 capacity_id=capacity_id,
             )
             self.logger.info(f"✓ Workspace created: {workspace_id}")
+        except ValueError as e:
+            # Workspace already exists
+            if "already exists" in str(e):
+                self.logger.info(f"Workspace already exists: {self.workspace_name}")
+            else:
+                raise
         except Exception as e:
             self.logger.error(f"Failed to create workspace: {e}")
             raise
@@ -389,7 +380,6 @@ class WorkspaceDeployer:
         # Count what was detected
         dyns = sum(1 for p in detector.parameters.values() if p.dynamic_variable)
         total = len(detector.parameters)
-        connection_count = detector.count_connection_guids()
 
         # Check if we have any parameters to replace
         if dyns == 0 and manual_count == 0:
@@ -578,7 +568,7 @@ class WorkspaceDeployer:
                     f"Item types in scope: {', '.join(sorted(types_to_deploy))}"
                 )
             else:
-                self.logger.warning(f"No matching item types found in repository")
+                self.logger.warning("No matching item types found in repository")
         if include_items:
             self.logger.info(f"Including items: {', '.join(include_items)}")
 
@@ -638,9 +628,6 @@ class WorkspaceDeployer:
             item_types: Specific item types to deploy
             include_items: Include only specific items (format: "ItemName.ItemType")
         """
-        max_retries = 3
-        retry_delay = 2  # seconds
-
         target_workspace = FabricWorkspace(
             workspace_id=self.workspace_id,
             repository_directory=str(self._repo_dir_resolved),
@@ -648,32 +635,7 @@ class WorkspaceDeployer:
             item_type_in_scope=item_types,
         )
 
-        # Deploy with retry logic
-        for attempt in range(1, max_retries + 1):
-            try:
-                _ = publish_all_items(target_workspace, items_to_include=include_items)
-                break  # Success, exit retry loop
-            except Exception as e:
-                error_msg = str(e)
-                # Check if this is a connection error that should be retried
-                if (
-                    "Connection aborted" in error_msg
-                    or "RemoteDisconnected" in error_msg
-                ):
-                    if attempt < max_retries:
-                        self.logger.warning(
-                            f"Connection error on attempt {attempt}/{max_retries}: {error_msg}"
-                        )
-                        self.logger.info(f"Retrying in {retry_delay} seconds...")
-                        sleep(retry_delay)
-                    else:
-                        self.logger.error(
-                            f"Deployment failed after {max_retries} attempts: {error_msg}"
-                        )
-                        raise
-                else:
-                    # Not a connection error, don't retry
-                    raise
+        _ = publish_all_items(target_workspace, items_to_include=include_items)
 
         if not no_cleanup:
             unpublish_all_orphan_items(
