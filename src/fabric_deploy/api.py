@@ -2,7 +2,13 @@
 
 import json
 import subprocess
+import urllib.error
+import urllib.request
 from typing import TypedDict
+
+from fabric_deploy.auth import get_current_account
+
+# pyright: reportMissingTypeArgument=false
 
 
 class FabricWorkspaceInfo(TypedDict):
@@ -20,7 +26,6 @@ __all__ = [
     "get_access_token",
     "list_workspaces",
     "get_workspace_id_by_name",
-    "workspace_exists",
     "create_workspace",
     "list_capacities",
     "get_default_capacity_id",
@@ -64,6 +69,55 @@ def get_access_token() -> str:
         raise RuntimeError(f"Failed to parse access token response: {e}") from e
 
 
+def _fabric_api_request(
+    endpoint: str,
+    method: str = "GET",
+    data: dict | None = None,
+    error_context: str = "API request",
+) -> dict:
+    """
+    Generic Fabric API request handler with error handling.
+
+    Args:
+        endpoint: API endpoint path (e.g., "/v1/workspaces")
+        method: HTTP method (GET or POST)
+        data: Optional request payload for POST requests
+        error_context: Context string for error messages
+
+    Returns:
+        Parsed JSON response as dictionary
+
+    Raises:
+        RuntimeError: If API call fails
+    """
+    token = get_access_token()
+    url = f"https://api.fabric.microsoft.com{endpoint}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+
+    request_data = json.dumps(data).encode() if data else None
+
+    try:
+        req = urllib.request.Request(
+            url, data=request_data, headers=headers, method=method
+        )
+        with urllib.request.urlopen(req) as response:
+            return json.loads(response.read().decode())
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode() if e.fp else ""
+        raise RuntimeError(
+            f"Failed to {error_context} (HTTP {e.code}).\n{error_body}\n\n"
+            "Check your permissions and network connectivity."
+        ) from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(
+            f"Failed to connect to Fabric API.\n{e.reason}\n\n"
+            "Check your network connectivity."
+        ) from e
+
+
 def list_workspaces() -> list[FabricWorkspaceInfo]:
     """
     List all Fabric workspaces accessible to the current user.
@@ -74,33 +128,8 @@ def list_workspaces() -> list[FabricWorkspaceInfo]:
     Raises:
         RuntimeError: If API call fails
     """
-    import urllib.error
-    import urllib.request
-
-    token = get_access_token()
-
-    url = "https://api.fabric.microsoft.com/v1/workspaces"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
-
-    try:
-        req = urllib.request.Request(url, headers=headers, method="GET")
-        with urllib.request.urlopen(req) as response:
-            data = json.loads(response.read().decode())
-            return data.get("value", [])
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode() if e.fp else ""
-        raise RuntimeError(
-            f"Failed to list Fabric workspaces (HTTP {e.code}).\n{error_body}\n\n"
-            "Check your permissions and network connectivity."
-        ) from e
-    except urllib.error.URLError as e:
-        raise RuntimeError(
-            f"Failed to connect to Fabric API.\n{e.reason}\n\n"
-            "Check your network connectivity."
-        ) from e
+    data = _fabric_api_request("/v1/workspaces", error_context="list Fabric workspaces")
+    return data.get("value", [])
 
 
 def list_capacities() -> list[dict]:
@@ -118,33 +147,8 @@ def list_capacities() -> list[dict]:
     Raises:
         RuntimeError: If API call fails
     """
-    import urllib.error
-    import urllib.request
-
-    token = get_access_token()
-
-    url = "https://api.fabric.microsoft.com/v1/capacities"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
-
-    try:
-        req = urllib.request.Request(url, headers=headers, method="GET")
-        with urllib.request.urlopen(req) as response:
-            data = json.loads(response.read().decode())
-            return data.get("value", [])
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode() if e.fp else ""
-        raise RuntimeError(
-            f"Failed to list Fabric capacities (HTTP {e.code}).\n{error_body}\n\n"
-            "Check your permissions and network connectivity."
-        ) from e
-    except urllib.error.URLError as e:
-        raise RuntimeError(
-            f"Failed to connect to Fabric API.\n{e.reason}\n\n"
-            "Check your network connectivity."
-        ) from e
+    data = _fabric_api_request("/v1/capacities", error_context="list Fabric capacities")
+    return data.get("value", [])
 
 
 def get_default_capacity_id() -> str:
@@ -207,11 +211,24 @@ def get_workspace_id_by_name(workspace_name: str) -> str:
     ]
 
     if len(matches) == 0:
+        # Get current account info
+        current_account = get_current_account()
+        account_info = ""
+        if current_account:
+            account_info = (
+                "Using Azure account:\n"
+                f"  Account name: {current_account['name']}\n"
+                f"  Account ID: {current_account['id']}\n"
+                f"  User: {current_account['user']['name']}\n\n"
+            )
+
         available = [ws["displayName"] for ws in workspaces]
         raise ValueError(
             f"Workspace not found: '{workspace_name}'\n\n"
+            f"{account_info}"
             f"Available workspaces ({len(available)}):\n"
             + "\n".join(f"  - {name}" for name in sorted(available))
+            + "\n"
         )
     elif len(matches) > 1:
         raise ValueError(
@@ -220,26 +237,6 @@ def get_workspace_id_by_name(workspace_name: str) -> str:
         )
 
     return matches[0]["id"]
-
-
-def workspace_exists(workspace_name: str) -> bool:
-    """
-    Check if a workspace exists with the given display name.
-
-    Args:
-        workspace_name: Workspace display name to search for
-
-    Returns:
-        True if workspace exists, False otherwise
-
-    Raises:
-        RuntimeError: If API call fails
-    """
-    try:
-        get_workspace_id_by_name(workspace_name)
-        return True
-    except ValueError:
-        return False
 
 
 def create_workspace(
@@ -262,20 +259,17 @@ def create_workspace(
         RuntimeError: If API call fails
         ValueError: If workspace already exists
     """
-    import urllib.error
-    import urllib.request
-
     # Check if workspace already exists
-    if workspace_exists(workspace_name):
+    try:
+        _ = get_workspace_id_by_name(workspace_name)
+        # If we get here, workspace exists
         raise ValueError(f"Workspace already exists: '{workspace_name}'")
-
-    token = get_access_token()
-
-    url = "https://api.fabric.microsoft.com/v1/workspaces"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
+    except ValueError as e:
+        # If it's our "already exists" error, re-raise it
+        if "already exists" in str(e):
+            raise
+        # Otherwise it's "not found" error, which means we can create it
+        pass
 
     payload = {
         "displayName": workspace_name,
@@ -284,24 +278,10 @@ def create_workspace(
     if description:
         payload["description"] = description
 
-    try:
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode(),
-            headers=headers,
-            method="POST",
-        )
-        with urllib.request.urlopen(req) as response:
-            data = json.loads(response.read().decode())
-            return data["id"]
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode() if e.fp else ""
-        raise RuntimeError(
-            f"Failed to create workspace '{workspace_name}' (HTTP {e.code}).\n{error_body}\n\n"
-            "Check your permissions and capacity ID."
-        ) from e
-    except urllib.error.URLError as e:
-        raise RuntimeError(
-            f"Failed to connect to Fabric API.\n{e.reason}\n\n"
-            "Check your network connectivity."
-        ) from e
+    data = _fabric_api_request(
+        "/v1/workspaces",
+        method="POST",
+        data=payload,
+        error_context=f"create workspace '{workspace_name}'",
+    )
+    return data["id"]

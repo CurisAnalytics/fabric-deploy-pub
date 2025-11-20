@@ -8,6 +8,8 @@ from pathlib import Path
 
 from .log import get_logger
 
+# pyright: reportMissingTypeArgument=false
+
 regex = re.Pattern[str]
 
 
@@ -39,10 +41,9 @@ class DetectedParameter:
 
         # Dynamic variables must still be in dictionary format with environment keys
         if use_dynamic and self.dynamic_variable:
-            entry["replace_value"] = {environment: self.dynamic_variable}
-        else:
-            # Empty value for manual entry
-            entry["replace_value"] = {environment: ""}
+            entry["replace_value"] = {environment: self.dynamic_variable}  # pyright: ignore[reportArgumentType]
+        else:  # Empty value for manual entry
+            entry["replace_value"] = {environment: ""}  # pyright: ignore[reportArgumentType]
 
         return entry
 
@@ -407,23 +408,23 @@ class ParameterDetector:
         output_path = Path(output_path)
         with open(output_path, "w", encoding="utf-8") as f:
             # Custom YAML dump with comments
-            f.write("find_replace:\n")
+            _ = f.write("find_replace:\n")
 
             for entry in param_dict["find_replace"]:
                 comment = entry.pop("_comment", None)
                 if comment:
-                    f.write(f"  # {comment}\n")
+                    _ = f.write(f"  # {comment}\n")
 
                 # Write the entry
-                f.write(f'  - find_value: "{entry["find_value"]}"\n')
+                _ = f.write(f'  - find_value: "{entry["find_value"]}"\n')
 
                 # Replace value is always a dict with environment keys
                 replace_value = entry["replace_value"]
-                f.write(f"    replace_value:\n")
+                _ = f.write("    replace_value:\n")
                 for env, val in replace_value.items():
-                    f.write(f'      {env}: "{val}"\n')
+                    _ = f.write(f'      {env}: "{val}"\n')
 
-                f.write(f"    item_type: {entry['item_type']}\n")
+                _ = f.write(f"    item_type: {entry['item_type']}\n")
 
     def should_skip_replacement(self, target_workspace_id: str) -> bool:
         """
@@ -475,7 +476,7 @@ class ParameterDetector:
             if param.dynamic_variable:
                 print(f"    Dynamic variable: {param.dynamic_variable}")
             else:
-                print(f"    Dynamic variable: (skipped - requires manual setup)")
+                print("    Dynamic variable: (skipped - requires manual setup)")
             print(f"    Item Types: {', '.join(sorted(param.item_types))}")
             print(f"    Found in: {len(param.source_files)} file(s)")
             print()
