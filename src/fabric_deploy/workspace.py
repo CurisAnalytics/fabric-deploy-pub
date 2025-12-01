@@ -408,6 +408,9 @@ class WorkspaceDeployer:
             skip_empty=True,
         )
 
+        # Post-process parameter file to add domain substitution for .database connections
+        self._add_domain_substitutions(param_file, detector)
+
         # Store summary to display after header
         paran = (
             "" if dyns >= total else f" ({total - dyns} external connections skipped)"
@@ -422,6 +425,84 @@ class WorkspaceDeployer:
         summary.append(f"Using {dyns} dynamic parameter{plr}{paran}{man}")
 
         self._auto_detect_summary = summary
+
+    def _add_domain_substitutions(
+        self, param_file: Path, detector: ParameterDetector
+    ) -> None:
+        """
+        Post-process parameter file to add domain substitution for non-default connections.
+
+        Handles two cases:
+        1. .database.fabric.microsoft.com: Changes .datawarehouse back to .database
+        2. .pbidedicated.windows.net: Changes .fabric.microsoft.com back to .pbidedicated.windows.net
+
+        All substitutions are targeted using database identifiers to avoid affecting
+        other connections.
+
+        Args:
+            param_file: Path to parameter.yml file
+            detector: ParameterDetector with detected parameters
+        """
+        # Find parameters that need domain substitution
+        connections_needing_substitution = []
+
+        for param in detector.parameters.values():
+            domain_suffix = param.metadata.get("domain_suffix", "").lower()
+            domain_type = param.metadata.get("domain_type", "").lower()
+            db_name = param.metadata.get("db_name")
+
+            # Skip parameters without database name (can't create targeted replacement)
+            if not db_name:
+                continue
+
+            # .database connections that need domain type change
+            if domain_type == "database":
+                connections_needing_substitution.append(("database_type", param))
+            # .pbidedicated.windows.net connections that need domain suffix change
+            elif domain_suffix == "pbidedicated.windows.net":
+                connections_needing_substitution.append(("pbidedicated_suffix", param))
+
+        if not connections_needing_substitution:
+            return  # No connections need domain substitution
+
+        # Read the existing parameter.yml
+        with open(param_file) as f:
+            param_data = yaml.safe_load(f)
+
+        if not param_data or "find_replace" not in param_data:
+            return
+
+        # Add targeted domain substitution entries
+        for substitution_type, param in connections_needing_substitution:
+            db_name = param.metadata.get("db_name")
+            if not db_name:
+                continue  # Can't create targeted replacement without database name
+
+            if substitution_type == "database_type":
+                # For .database connections, change .datawarehouse back to .database
+                targeted_find = f'.datawarehouse.fabric.microsoft.com","{db_name}'
+                targeted_replace = f'.database.fabric.microsoft.com","{db_name}'
+
+            elif substitution_type == "pbidedicated_suffix":
+                # For .pbidedicated.windows.net connections, change .fabric.microsoft.com back to .pbidedicated.windows.net
+                domain_type = param.metadata.get("domain_type", "datawarehouse")
+                targeted_find = f'.{domain_type}.fabric.microsoft.com","{db_name}'
+                targeted_replace = f'.{domain_type}.pbidedicated.windows.net","{db_name}'
+
+            else:
+                continue
+
+            domain_substitution = {
+                "find_value": targeted_find,
+                "replace_value": {"fabdep": targeted_replace},
+                "item_type": ["SemanticModel"],
+            }
+
+            param_data["find_replace"].append(domain_substitution)
+
+        # Write back the modified parameter file
+        with open(param_file, "w") as f:
+            yaml.dump(param_data, f, default_flow_style=False, sort_keys=False)
 
     def _cleanup_dynamic_params(self) -> None:
         """
