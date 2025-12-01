@@ -22,6 +22,7 @@ class DetectedParameter:
     source_files: set[str] = field(default_factory=set)
     description: str = ""
     dynamic_variable: str = ""  # Smart replace dynamic variable
+    metadata: dict = field(default_factory=dict)  # Additional context (e.g., domain_type)
 
     def to_dict(self, use_dynamic: bool = True, environment: str = "prod") -> dict:
         """
@@ -42,6 +43,11 @@ class DetectedParameter:
         # Dynamic variables must still be in dictionary format with environment keys
         if use_dynamic and self.dynamic_variable:
             entry["replace_value"] = {environment: self.dynamic_variable}  # pyright: ignore[reportArgumentType]
+
+            # Store domain metadata for post-processing
+            if self.metadata.get("domain_type") == "database":
+                entry["_domain_type"] = "database"  # Custom field for post-processing
+
         else:  # Empty value for manual entry
             entry["replace_value"] = {environment: ""}  # pyright: ignore[reportArgumentType]
 
@@ -56,9 +62,10 @@ class ParameterDetector:
         r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE
     )
 
-    # SQL Connection pattern: Sql.Database("HOST-SQLSTRING.datawarehouse...", "ENDPOINT-ID")
+    # SQL Connection pattern: Sql.Database("HOST-SQLSTRING.datawarehouse|database.DOMAIN", "DB-NAME" or "DB-NAME-UUID")
+    # Captures: (1) host prefix, (2) SQL endpoint string, (3) domain type, (4) domain suffix, (5) db name, (6) optional UUID
     SQL_DATABASE_PATTERN: regex = re.compile(
-        r'Sql\.Database\(\s*"([^"]+)-([A-Z0-9]+)\.datawarehouse\.fabric\.microsoft\.com"\s*,\s*"([0-9a-f-]+)"\s*\)',
+        r'Sql\.Database\(\s*"([^"]+)-([A-Z0-9]+)\.(datawarehouse|database)\.(fabric\.microsoft\.com|pbidedicated\.windows\.net)"\s*,\s*"([^"]+?)(?:-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}))?"\s*\)',
         re.IGNORECASE,
     )
 
@@ -109,7 +116,7 @@ class ParameterDetector:
             "**/*.Notebook/notebook-content.py", self._extract_from_notebook
         )
         self._process_files(
-            "**/*.SemanticModel/definition/expressions.tmdl",
+            "**/*.SemanticModel/definition/**/*.tmdl",
             self._extract_from_semantic_model,
         )
         self._process_files(
@@ -160,7 +167,7 @@ class ParameterDetector:
 
     def _add_parameter(
         self, find_value: str, item_type: str, source_file: str, description: str = ""
-    ) -> None:
+    ) -> DetectedParameter:
         """Add or update a detected parameter with dynamic variable generation."""
         if find_value not in self.parameters:
             # Generate dynamic variable based on description and context
@@ -177,6 +184,8 @@ class ParameterDetector:
         param.source_files.add(source_file)
         if description and not param.description:
             param.description = description
+
+        return param
 
     def _add_uuid_parameter(
         self, value: str, item_type: str, source_file: str, description: str = ""
@@ -222,15 +231,12 @@ class ParameterDetector:
                 return f"$items.Lakehouse.{lakehouse_name}.$id"
 
             # SQL Analytics Endpoint Connection String
-            if (
-                "connection substring" in desc_lower
-                or "connection string" in desc_lower
-            ):
-                # Use $sqlendpoint attribute (connection string)
+            if "sql analytics endpoint connection string" in desc_lower:
+                # Use $sqlendpoint attribute (returns full .datawarehouse hostname)
                 return f"$items.Lakehouse.{lakehouse_name}.$sqlendpoint"
 
-            if "endpoint item id" in desc_lower or "endpoint id" in desc_lower:
-                # Use $sqlendpoint attribute (connection string)
+            # Lakehouse SQL Analytics Endpoint Item ID
+            if "lakehouse sql analytics endpoint item id" in desc_lower:
                 return f"$items.Lakehouse.{lakehouse_name}.$id"
 
         # External connection IDs - leave empty for manual entry
@@ -256,27 +262,41 @@ class ParameterDetector:
         source_file = str(file_path.relative_to(self.repo_dir))
 
         # Extract SQL connection string and endpoint ID
-        for host_prefix, sql_string, endpoint_id in self.SQL_DATABASE_PATTERN.findall(
+        # Captures: (1) host prefix, (2) SQL endpoint string, (3) domain type, (4) domain suffix, (5) db name, (6) optional UUID
+        for host_prefix, sql_string, domain_type, domain_suffix, db_name, uuid in self.SQL_DATABASE_PATTERN.findall(
             content
         ):
-            # Add SQL connection string component (full hostname)
-            full_hostname = (
-                f"{host_prefix}-{sql_string}.datawarehouse.fabric.microsoft.com"
-            )
-            self._add_parameter(
+            # Store the full hostname with domain for replacement
+            full_hostname = f"{host_prefix}-{sql_string}.{domain_type}.{domain_suffix}"
+
+            # Add hostname parameter with domain metadata
+            hostname_param = self._add_parameter(
                 full_hostname,
                 "SemanticModel",
                 source_file,
-                "Lakehouse SQL Analytics Endpoint Connection String",
+                "SQL Analytics Endpoint Connection String",
             )
 
-            # Add SQL endpoint item ID
-            self._add_parameter(
-                endpoint_id,
-                "SemanticModel",
-                source_file,
-                "Lakehouse SQL Analytics Endpoint Item ID",
-            )
+            # Store domain type, domain suffix, and database name in metadata for later processing
+            if hostname_param:
+                hostname_param.metadata["domain_type"] = domain_type.lower()
+                hostname_param.metadata["domain_suffix"] = domain_suffix.lower()
+                hostname_param.metadata["host_prefix"] = host_prefix
+                hostname_param.metadata["db_name"] = db_name  # Always store db_name
+
+            # Add UUID parameter if present
+            if uuid:
+                is_sql_database = domain_type.lower() == "database"
+                uuid_description = (
+                    "SQL Database Item ID" if is_sql_database
+                    else "Lakehouse SQL Analytics Endpoint Item ID"
+                )
+                self._add_parameter(
+                    uuid,
+                    "SemanticModel",
+                    source_file,
+                    uuid_description,
+                )
 
     def _extract_from_pipeline(self, file_path: Path, data: dict) -> None:
         """Extract connection IDs from pipeline JSON."""
