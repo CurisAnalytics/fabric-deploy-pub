@@ -81,11 +81,16 @@ class WorkspaceDeployer:
         init=False, repr=False
     )  # Resolved workspace name (base_name [branch])
     lakehouse_name: str = field(init=False, repr=False)
+    repo_item_types: set[str] = field(
+        init=False, repr=False
+    )  # Item types present in repo
 
     # Private fields
     _repo_dir_resolved: Path = field(init=False, repr=False)
     _auto_detect_summary: list[str] | None = field(default=None, init=False, repr=False)
-    _logged_manual_warnings: set[str] = field(default_factory=set, init=False, repr=False)
+    _logged_manual_warnings: set[str] = field(
+        default_factory=set, init=False, repr=False
+    )
     logger: logging.Logger = field(init=False, repr=False)
 
     def __post_init__(self):
@@ -116,7 +121,8 @@ class WorkspaceDeployer:
         if self.auto_detect:
             self._generate_dynamic_params()
 
-        # Always detect lakehouse
+        # Detect item types and lakehouse
+        self.repo_item_types = self._get_repo_item_types()
         self._detect_lakehouse()
 
     def _get_git_branch(self) -> str:
@@ -487,7 +493,9 @@ class WorkspaceDeployer:
                 # For .pbidedicated.windows.net connections, change .fabric.microsoft.com back to .pbidedicated.windows.net
                 domain_type = param.metadata.get("domain_type", "datawarehouse")
                 targeted_find = f'.{domain_type}.fabric.microsoft.com","{db_name}'
-                targeted_replace = f'.{domain_type}.pbidedicated.windows.net","{db_name}'
+                targeted_replace = (
+                    f'.{domain_type}.pbidedicated.windows.net","{db_name}'
+                )
 
             else:
                 continue
@@ -615,9 +623,6 @@ class WorkspaceDeployer:
                     f"Supported types: {', '.join(ACCEPTED_ITEM_TYPES)}"
                 )
 
-        # Detect which item types are present in repository
-        repo_item_types = self._get_repo_item_types()
-
         # Build item_type_in_scope based on include/exclude flags
         item_type_in_scope = None
         if item_types:
@@ -643,7 +648,9 @@ class WorkspaceDeployer:
 
         if item_type_in_scope:
             # Only show item types that are both in scope AND present in repo
-            types_to_deploy = [t for t in item_type_in_scope if t in repo_item_types]
+            types_to_deploy = [
+                t for t in item_type_in_scope if t in self.repo_item_types
+            ]
             if types_to_deploy:
                 self.logger.info(
                     f"Item types in scope: {', '.join(sorted(types_to_deploy))}"
@@ -759,8 +766,7 @@ class WorkspaceDeployer:
 
         if phase1_types:
             # Only show foundational types that are actually in the repo
-            repo_item_types = self._get_repo_item_types()
-            types_in_repo = [t for t in phase1_types if t in repo_item_types]
+            types_in_repo = [t for t in phase1_types if t in self.repo_item_types]
             if types_in_repo:
                 self.logger.info(
                     f"Foundational item types: {', '.join(sorted(types_in_repo))}"
@@ -787,8 +793,7 @@ class WorkspaceDeployer:
 
         if phase2_types:
             # Only show types that are actually in the repo
-            repo_item_types = self._get_repo_item_types()
-            types_in_repo = [t for t in phase2_types if t in repo_item_types]
+            types_in_repo = [t for t in phase2_types if t in self.repo_item_types]
             if types_in_repo:
                 self.logger.info(f"Item types: {', '.join(sorted(types_in_repo))}")
 

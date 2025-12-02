@@ -12,9 +12,9 @@ from .auth import (
 )
 from .detect import ParameterDetector
 from .log import (
+    SEP,
     format_account_list,
     format_auth_error_message,
-    format_connection_error_message,
     is_auth_error,
     is_connection_error,
     print_error,
@@ -35,18 +35,44 @@ def handle_command_error(error: Exception, context: str) -> None:
 
     # Check for connection errors first (before auth errors, as they can contain auth keywords)
     if is_connection_error(error_msg):
-        connection_help = format_connection_error_message()
+        connection_help = f"""{SEP}
+            Connection Reference Error Detected
+            {SEP}
+
+            This error occurs when a DataPipeline (or other item) references a connection
+            \tthat doesn't exist in the target tenant.
+
+            Root Cause:
+            \t• Connection GUIDs are TENANT-WIDE (not workspace-specific)
+            \t• Your workspace repo contains connection GUIDs from a different tenant
+            \t• This indicates the workspace repo is misconfigured for the target tenant
+
+            Solution:
+            \t• Identify the correct connections between the repo and the Fabric UI
+            \t• If possible/advisable, fix the connections in the Fabric UI and push changes
+            \t• Otherwise edit the pipeline files in your workspace repository directly
+            \t\t◦ Update connection GUIDs to match the target tenant's connections
+            \t\t◦ Commit the updated files to your repository
+            \t\t◦ Re-run deployment
+
+            Notes:
+            \t• DO NOT use parameter.yml find/replace for connection GUIDs
+            \t• Connections must exist in the target tenant for a DataPipeline to be deployed
+            \t• Use 'fabdep detect' to find connection GUIDs in your current repo
+
+            Common locations for connection references:
+            \t• DataPipeline: pipeline-content.json files
+            \t• Dataflow: dataflow configuration files
+
+            {SEP}
+            """
         print_error(connection_help)
     # Show friendly auth error message if this is an auth issue
     elif is_auth_error(error_msg):
-        try:
-            current = get_current_account()
-            all_accounts = list_accounts()
-            auth_help = format_auth_error_message(current, all_accounts)
-            print_error(auth_help)
-        except Exception:
-            # If we can't get account info, just show the basic error
-            pass
+        current = get_current_account()
+        all_accounts = list_accounts()
+        auth_help = format_auth_error_message(current, all_accounts)
+        print_error(auth_help)
 
     sys.exit(1)
 
@@ -350,6 +376,8 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
         print("Usage: fabdep [OPTIONS]")
         print("Run 'fabdep -h' for more information.\n")
         sys.exit(1)
+    except Exception as e:
+        handle_command_error(e, "Workspace initialization")
 
     try:
         deployer.deploy(
