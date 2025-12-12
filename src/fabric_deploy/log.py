@@ -23,6 +23,7 @@ __all__ = [
     "format_account_list",
     "is_auth_error",
     "is_connection_error",
+    "is_transient_error",
 ]
 
 SEP = "=" * 100
@@ -162,6 +163,41 @@ def is_connection_error(error_msg: str) -> bool:
     ]
 
     return any(pattern in error_lower for pattern in connection_patterns)
+
+
+def is_transient_error(error_msg: str) -> bool:
+    """
+    Check if error message indicates a transient/retryable API error.
+
+    These are typically intermittent Fabric API errors that may succeed on retry.
+
+    Args:
+        error_msg: Error message string to check
+
+    Returns:
+        True if error appears transient and retryable, False otherwise
+    """
+    error_lower = error_msg.lower()
+
+    # Transient error patterns - API glitches, temporary failures
+    transient_patterns = [
+        "unhandled error occurred",
+        "an error occured",  # Note: API typo is intentional
+        "an error occurred",
+        "internal server error",
+        "service unavailable",
+        "gateway timeout",
+        "bad gateway",
+        "connection reset",
+        "connection timed out",
+        "temporarily unavailable",
+    ]
+
+    # Don't retry if it's clearly an auth or connection config error
+    if is_auth_error(error_msg) or is_connection_error(error_msg):
+        return False
+
+    return any(pattern in error_lower for pattern in transient_patterns)
 
 
 def is_auth_error(error_msg: str) -> bool:

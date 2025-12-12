@@ -21,7 +21,7 @@ from .api import (
     get_workspace_id_by_name,
 )
 from .detect import ParameterDetector
-from .log import get_logger, print_header
+from .log import get_logger, is_transient_error, print_header
 
 # Item types that create workspace objects (foundational)
 # These must be deployed first in bootstrap mode
@@ -33,15 +33,6 @@ FOUNDATIONAL_ITEMS = [
     "MirroredDatabase",
     "Eventhouse",
 ]
-
-# Item types that reference workspace objects (dependent)
-# These can be deployed after foundational items exist
-DEPENDENT_ITEMS = [
-    item_type
-    for item_type in ACCEPTED_ITEM_TYPES
-    if item_type not in FOUNDATIONAL_ITEMS
-]
-
 
 @dataclass
 class WorkspaceDeployer:
@@ -55,8 +46,8 @@ class WorkspaceDeployer:
             auto_detect: Enable auto-detection mode to generate parameter.yml dynamically
             save_detected_params: Save detected parameters to parameter.yml.detected file
             branch_override: Override git branch for workspace name resolution (defaults to current branch)
-            bootstrap: Enable two-phase deployment (foundational items first, then all items)
-            create_workspace: Create workspace if it doesn't exist (requires capacity_id in fabdep.yml)
+            bootstrap: Two-phase deployment (foundational items first, then all)
+            new_workspace: Create workspace if it doesn't exist
 
     IMPORTANT: Initialization has side effects!
     - Reads fabdep.yml from disk
@@ -72,8 +63,8 @@ class WorkspaceDeployer:
     auto_detect: bool = True  # Enable auto-detection mode (default)
     save_detected_params: bool = False  # Save detected parameters to .detected file
     branch_override: str | None = None  # Override git branch for workspace resolution
-    bootstrap: bool = False  # Enable two-phase deployment (foundational items first)
-    create_workspace: bool = False  # Create workspace if it doesn't exist
+    bootstrap: bool = False  # Two-phase deployment (foundational items first)
+    new_workspace: bool = False  # Create workspace if it doesn't exist
 
     # Configuration fields - auto-loaded in __post_init__
     workspace_id: str = field(init=False, repr=False)
@@ -91,6 +82,7 @@ class WorkspaceDeployer:
     _logged_manual_warnings: set[str] = field(
         default_factory=set, init=False, repr=False
     )
+    _created_param_file: bool = field(default=False, init=False, repr=False)
     logger: logging.Logger = field(init=False, repr=False)
 
     def __post_init__(self):
@@ -164,21 +156,39 @@ class WorkspaceDeployer:
             )
 
         config_file = self._repo_dir_resolved / "fabdep.yml"
+        config: dict = {}
 
-        # Check for fabdep.yml
+        # Check for fabdep.yml - if missing, try directory name as workspace_base_name
         if not config_file.exists():
-            raise FileNotFoundError(
-                f"fabdep.yml not found in {self._repo_dir_resolved}.\n\n"
-                "Create a fabdep.yml file with:\n"
-                '  workspace_base_name: "your_workspace"\n'
-                '  capacity_id: "your_capacity_id"  # Optional, required for --create-workspace\n\n'
-                "The workspace will be resolved from: {base_name} [{branch}]\n\n"
-                "Note: This is separate from parameter.yml which is used by fabric-cicd."
-            )
+            # Try using directory name as workspace_base_name (silent fallback)
+            dir_name = self._repo_dir_resolved.name
+            branch = self.branch_override or self._get_git_branch()
+            test_workspace_name = f"{dir_name} [{branch}]"
+
+            try:
+                # Attempt to resolve workspace - if it works, use directory name
+                test_workspace_id = get_workspace_id_by_name(test_workspace_name)
+                # Success - use directory name as workspace_base_name
+                self.workspace_name = test_workspace_name
+                self.workspace_id = test_workspace_id
+                self.logger.debug(
+                    f"Using directory name '{dir_name}' as workspace_base_name"
+                )
+                return  # Config loaded successfully via fallback
+            except ValueError:
+                # Workspace not found with directory name - show helpful error
+                raise FileNotFoundError(
+                    f"fabdep.yml not found in {self._repo_dir_resolved}.\n\n"
+                    "Create a fabdep.yml file with:\n"
+                    '  workspace_base_name: "your_workspace"\n'
+                    '  capacity_id: "your_capacity_id"  # Optional\n\n'
+                    "The workspace will be resolved from: {base_name} [{branch}]\n\n"
+                    "Note: This is separate from parameter.yml which is used by fabric-cicd."
+                ) from None
 
         # Load workspace_base_name from fabdep.yml
         with open(config_file) as f:
-            config = yaml.safe_load(f)
+            config = yaml.safe_load(f) or {}
 
         workspace_base_name = config.get("workspace_base_name")
 
@@ -198,7 +208,7 @@ class WorkspaceDeployer:
         self.workspace_name = f"{workspace_base_name} [{branch}]"
 
         # Create workspace if requested
-        if self.create_workspace:
+        if self.new_workspace:
             capacity_id = config.get("capacity_id")
             if not capacity_id:
                 # Use default capacity (first active capacity)
@@ -362,8 +372,6 @@ class WorkspaceDeployer:
                 f"Source and target workspace are the same ({self.workspace_id})",
                 "No parameter file will be used -- deploying directly without replacements",
             ]
-            # Disable auto_detect so we don't try to clean up files later
-            self.auto_detect = False
             return
 
         # Save detected parameters if requested
@@ -394,8 +402,6 @@ class WorkspaceDeployer:
                 "No parameters detected for replacement",
                 "Deploying without parameter.yml file",
             ]
-            # Disable auto_detect so we don't try to clean up files later
-            self.auto_detect = False
             return
 
         # Backup existing parameter.yml if it exists
@@ -413,6 +419,7 @@ class WorkspaceDeployer:
             environment="fabdep",
             skip_empty=True,
         )
+        self._created_param_file = True
 
         # Post-process parameter file to add domain substitution for .database connections
         self._add_domain_substitutions(param_file, detector)
@@ -591,6 +598,7 @@ class WorkspaceDeployer:
             include_items: Include only specific items (format: "ItemName.ItemType")
         """
 
+        print()  # Newline before first output
         print_header("Fabric CI/CD")
 
         # Enable experimental feature flags if name-based filtering is requested
@@ -697,8 +705,8 @@ class WorkspaceDeployer:
 
         except Exception:  # Re-raise exception to be handled by caller
             raise  # CLI will handle error message formatting via handle_command_error()
-        finally:  # Cleanup auto-generated parameter file if in auto-detect mode
-            if self.auto_detect:
+        finally:  # Cleanup auto-generated parameter file
+            if self._created_param_file:
                 self._cleanup_dynamic_params()
             print()
 
@@ -707,6 +715,7 @@ class WorkspaceDeployer:
         no_cleanup: bool = False,
         item_types: list[str] | None = None,
         include_items: list[str] | None = None,
+        _retry_attempt: int = 0,
     ) -> None:
         """
         Deploy items to workspace using fabric-cicd with retry logic.
@@ -715,6 +724,7 @@ class WorkspaceDeployer:
             no_cleanup: Skip unpublishing orphaned items
             item_types: Specific item types to deploy
             include_items: Include only specific items (format: "ItemName.ItemType")
+            _retry_attempt: Internal retry counter (do not set manually)
         """
         target_workspace = FabricWorkspace(
             workspace_id=self.workspace_id,
@@ -723,7 +733,21 @@ class WorkspaceDeployer:
             item_type_in_scope=item_types,
         )
 
-        _ = publish_all_items(target_workspace, items_to_include=include_items)
+        try:
+            _ = publish_all_items(target_workspace, items_to_include=include_items)
+        except Exception as e:
+            error_msg = str(e)
+            # Retry once on transient errors
+            if _retry_attempt == 0 and is_transient_error(error_msg):
+                self.logger.warning(f"Transient error detected: {error_msg}")
+                self.logger.info("Retrying deployment...")
+                return self._deploy_items(
+                    no_cleanup=no_cleanup,
+                    item_types=item_types,
+                    include_items=include_items,
+                    _retry_attempt=1,
+                )
+            raise  # Re-raise if not retryable or already retried
 
         if not no_cleanup:
             unpublish_all_orphan_items(

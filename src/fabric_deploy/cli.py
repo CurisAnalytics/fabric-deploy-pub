@@ -183,46 +183,50 @@ def parse_args() -> argparse.Namespace:
         "--item-types",
         "-t",
         nargs="+",
-        help="Specific item types to deploy (e.g., Notebook DataPipeline)",
+        help="Item types to deploy (e.g., Notebook DataPipeline)",
     )
     _ = deploy_parser.add_argument(
         "--exclude-types",
         "-x",
         nargs="+",
-        help="Item types to exclude from deployment (e.g., Report SemanticModel)",
+        help="Item types to exclude (e.g., Report SemanticModel)",
     )
     _ = deploy_parser.add_argument(
         "--include-items",
         "-i",
         nargs="+",
-        help='Include only specific items (format: "ItemName.ItemType")',
+        help='Specific items only (format: "Name.Type")',
     )
     _ = deploy_parser.add_argument(
         "--no-auto-detect",
+        "-A",
         dest="auto_detect",
         action="store_false",
         default=True,
-        help="Disable auto-detect of source IDs (uses existing parameter.yml)",
+        help="Disable auto-detect (use existing parameter.yml)",
     )
     _ = deploy_parser.add_argument(
         "--save-params",
+        "-s",
         action="store_true",
         help="Save auto-detected parameters to parameter.yml.detected",
     )
     _ = deploy_parser.add_argument(
         "--branch",
         "-b",
-        help="Override git branch name for workspace resolution (defaults to current git branch)",
+        help="Override git branch for workspace resolution",
     )
     _ = deploy_parser.add_argument(
         "--bootstrap",
+        "-B",
         action="store_true",
-        help="Enable two-phase deployment (foundational items first, then all items)",
+        help="Two-phase deployment (foundational items first)",
     )
     _ = deploy_parser.add_argument(
-        "--create-workspace",
+        "--new-workspace",
+        "-N",
         action="store_true",
-        help="Create workspace if it doesn't exist (requires capacity_id in fabdep.yml)",
+        help="Create workspace if it doesn't exist",
     )
 
     # Check if we should inject 'deploy' as default subcommand
@@ -251,7 +255,7 @@ def parse_args() -> argparse.Namespace:
             args.save_params = False
             args.branch = None
             args.bootstrap = False
-            args.create_workspace = False
+            args.new_workspace = False
 
     return args
 
@@ -372,7 +376,7 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
             save_detected_params=bool(args.save_params),
             branch_override=args.branch,
             bootstrap=bool(args.bootstrap),
-            create_workspace=bool(args.create_workspace),
+            new_workspace=bool(args.new_workspace),
         )
     except FileNotFoundError as e:
         print_error(f"\n{e}\n")

@@ -56,10 +56,10 @@ fabdep
 # Deploy specific item types only
 fabdep -t Notebook DataPipeline
 
-# Bootstrap mode for blank workspaces
-fabdep --bootstrap --create-workspace
+# Create new workspace
+fabdep -N
 ```
 
 **Configuration**: `fabdep.yml` in workspace root defines `workspace_base_name`. Target workspace is resolved as `{workspace_base_name} [{branch}]` via Fabric API.
 
-**Auto-Detection**: Source IDs (workspace, lakehouse, SQL endpoints) are auto-detected and dynamically replaced during deployment. Use `--no-auto-detect` to use a manual `parameter.yml` instead.
+**Auto-Detection**: Source IDs are auto-detected and dynamically replaced. Use `-A` for manual `parameter.yml`.
