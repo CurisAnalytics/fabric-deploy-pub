@@ -3,6 +3,7 @@
 import argparse
 import sys
 from pathlib import Path
+from textwrap import dedent
 
 from .auth import (
     get_current_account,
@@ -35,7 +36,8 @@ def handle_command_error(error: Exception, context: str) -> None:
 
     # Check for connection errors first (before auth errors, as they can contain auth keywords)
     if is_connection_error(error_msg):
-        connection_help = f"""{SEP}
+        connection_help = dedent(
+            f"""{SEP}
             Connection Reference Error Detected
             {SEP}
 
@@ -66,6 +68,7 @@ def handle_command_error(error: Exception, context: str) -> None:
 
             {SEP}
             """
+        )
         print_error(connection_help)
     # Show friendly auth error message if this is an auth issue
     elif is_auth_error(error_msg):
