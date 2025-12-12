@@ -50,6 +50,7 @@ fabdep -N                     # Create new workspace
 fabdep -B                     # Two-phase bootstrap deployment
 fabdep -A                     # Disable auto-detect (use existing parameter.yml)
 fabdep -b feature-branch      # Override git branch
+fabdep -r 2                   # Retry up to 2 times on transient errors
 fabdep auth list              # Show Azure accounts
 fabdep rename -e              # Rename directories to match display names
 ```
@@ -154,7 +155,7 @@ Creates workspace if it doesn't exist: `{workspace_base_name} [{branch}]`
 
 ### Error Handling
 
-**Automatic Retry**: Transient API errors (timeouts, 5xx) retried once automatically.
+**Automatic Retry**: Transient API errors (timeouts, 5xx, connection failures) retried automatically. Default: 1 retry, configurable with `--max-retries` / `-r`.
 
 **Intelligent Error Messages** (`cli.py`):
 - **Connection errors**: Detects DataPipeline/Dataflow connection references, explains tenant-wide GUIDs
@@ -219,8 +220,12 @@ deployer.deploy()
 # With options
 deployer.deploy(item_types=["Notebook", "DataPipeline"])
 
-# New workspace
-deployer = WorkspaceDeployer(repo_dir="/path/to/workspace", new_workspace=True)
+# New workspace with custom retries
+deployer = WorkspaceDeployer(
+    repo_dir="/path/to/workspace",
+    new_workspace=True,
+    max_retries=2
+)
 deployer.deploy()
 ```
 

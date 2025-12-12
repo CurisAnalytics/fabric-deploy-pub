@@ -1,5 +1,11 @@
 """Auto-detection of source IDs from workspace repository for parameter generation."""
 
+# pyright: reportMissingTypeArgument=false
+# pyright: reportUnknownMemberType=false
+# pyright: reportUnknownParameterType=false
+# pyright: reportUnknownArgumentType=false
+# pyright: reportUnknownVariableType=false
+
 import json
 import logging
 import re
@@ -7,8 +13,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .log import get_logger
-
-# pyright: reportMissingTypeArgument=false
 
 regex = re.Pattern[str]
 
@@ -22,7 +26,9 @@ class DetectedParameter:
     source_files: set[str] = field(default_factory=set)
     description: str = ""
     dynamic_variable: str = ""  # Smart replace dynamic variable
-    metadata: dict = field(default_factory=dict)  # Additional context (e.g., domain_type)
+    metadata: dict = field(
+        default_factory=dict
+    )  # Additional context (e.g., domain_type)
 
     def to_dict(self, use_dynamic: bool = True, environment: str = "prod") -> dict:
         """
@@ -85,7 +91,7 @@ class ParameterDetector:
             repo_dir: Path to workspace repository directory
             logger_name: Optional logger name (defaults to module name)
         """
-        self.repo_dir = Path(repo_dir).resolve()
+        self.repo_dir = Path(repo_dir).resolve()  # pyright: ignore[reportUnannotatedClassAttribute]
         self.parameters: dict[str, DetectedParameter] = {}
         self._lakehouse_names: list[str] = []
         self.logger: logging.Logger = get_logger(logger_name or __name__)
@@ -200,7 +206,7 @@ class ParameterDetector:
             description: Human-readable description
         """
         if value and self.UUID_PATTERN.match(value):
-            self._add_parameter(
+            _ = self._add_parameter(
                 find_value=value,
                 item_type=item_type,
                 source_file=source_file,
@@ -251,11 +257,15 @@ class ParameterDetector:
 
         # Extract workspace ID
         for workspace_id in self.WORKSPACE_ID_PATTERN.findall(content):
-            self._add_parameter(workspace_id, "Notebook", source_file, "Workspace ID")
+            _ = self._add_parameter(
+                workspace_id, "Notebook", source_file, "Workspace ID"
+            )
 
         # Extract lakehouse ID
         for lakehouse_id in self.LAKEHOUSE_ID_PATTERN.findall(content):
-            self._add_parameter(lakehouse_id, "Notebook", source_file, "Lakehouse ID")
+            _ = self._add_parameter(
+                lakehouse_id, "Notebook", source_file, "Lakehouse ID"
+            )
 
     def _extract_from_semantic_model(self, file_path: Path, content: str) -> None:
         """Extract SQL connection strings and endpoint IDs from semantic models."""
@@ -263,9 +273,14 @@ class ParameterDetector:
 
         # Extract SQL connection string and endpoint ID
         # Captures: (1) host prefix, (2) SQL endpoint string, (3) domain type, (4) domain suffix, (5) db name, (6) optional UUID
-        for host_prefix, sql_string, domain_type, domain_suffix, db_name, uuid in self.SQL_DATABASE_PATTERN.findall(
-            content
-        ):
+        for (
+            host_prefix,
+            sql_string,
+            domain_type,
+            domain_suffix,
+            db_name,
+            uuid,
+        ) in self.SQL_DATABASE_PATTERN.findall(content):
             # Store the full hostname with domain for replacement
             full_hostname = f"{host_prefix}-{sql_string}.{domain_type}.{domain_suffix}"
 
@@ -293,10 +308,11 @@ class ParameterDetector:
             if uuid_to_add:
                 is_sql_database = domain_type.lower() == "database"
                 uuid_description = (
-                    "SQL Database Item ID" if is_sql_database
+                    "SQL Database Item ID"
+                    if is_sql_database
                     else "Lakehouse SQL Analytics Endpoint Item ID"
                 )
-                self._add_parameter(
+                _ = self._add_parameter(
                     uuid_to_add,
                     "SemanticModel",
                     source_file,

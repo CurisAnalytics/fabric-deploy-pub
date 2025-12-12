@@ -1,5 +1,9 @@
 """Workspace deployment abstraction for Microsoft Fabric workspaces."""
 
+# pyright: reportUnknownMemberType=false
+# pyright: reportUnknownArgumentType=false
+# pyright: reportUnknownVariableType=false
+
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -34,6 +38,7 @@ FOUNDATIONAL_ITEMS = [
     "Eventhouse",
 ]
 
+
 @dataclass
 class WorkspaceDeployer:
     """
@@ -48,6 +53,7 @@ class WorkspaceDeployer:
             branch_override: Override git branch for workspace name resolution (defaults to current branch)
             bootstrap: Two-phase deployment (foundational items first, then all)
             new_workspace: Create workspace if it doesn't exist
+            max_retries: Max retries for transient errors (default: 1)
 
     IMPORTANT: Initialization has side effects!
     - Reads fabdep.yml from disk
@@ -65,6 +71,7 @@ class WorkspaceDeployer:
     branch_override: str | None = None  # Override git branch for workspace resolution
     bootstrap: bool = False  # Two-phase deployment (foundational items first)
     new_workspace: bool = False  # Create workspace if it doesn't exist
+    max_retries: int = 1  # Max retries for transient errors
 
     # Configuration fields - auto-loaded in __post_init__
     workspace_id: str = field(init=False, repr=False)
@@ -156,7 +163,7 @@ class WorkspaceDeployer:
             )
 
         config_file = self._repo_dir_resolved / "fabdep.yml"
-        config: dict = {}
+        config: dict = {}  # pyright: ignore[reportMissingTypeArgument]
 
         # Check for fabdep.yml - if missing, try directory name as workspace_base_name
         if not config_file.exists():
@@ -212,6 +219,7 @@ class WorkspaceDeployer:
             capacity_id = config.get("capacity_id")
             if not capacity_id:
                 # Use default capacity (first active capacity)
+                print()
                 self.logger.info("No capacity_id specified, using default capacity")
                 capacity_id = get_default_capacity_id()
                 self.logger.info(f"Using capacity: {capacity_id}")
@@ -600,7 +608,6 @@ class WorkspaceDeployer:
             include_items: Include only specific items (format: "ItemName.ItemType")
         """
 
-        print()  # Newline before first output
         print_header("Fabric CI/CD")
 
         # Enable experimental feature flags if name-based filtering is requested
@@ -739,17 +746,19 @@ class WorkspaceDeployer:
             _ = publish_all_items(target_workspace, items_to_include=include_items)
         except Exception as e:
             error_msg = str(e)
-            # Retry once on transient errors
-            if _retry_attempt == 0 and is_transient_error(error_msg):
+            # Retry on transient errors (up to max_retries)
+            if _retry_attempt < self.max_retries and is_transient_error(error_msg):
                 self.logger.warning(f"Transient error detected: {error_msg}")
-                self.logger.info("Retrying deployment...")
+                self.logger.info(
+                    f"Retrying deployment (attempt {_retry_attempt + 2}/{self.max_retries + 1})..."
+                )
                 return self._deploy_items(
                     no_cleanup=no_cleanup,
                     item_types=item_types,
                     include_items=include_items,
-                    _retry_attempt=1,
+                    _retry_attempt=_retry_attempt + 1,
                 )
-            raise  # Re-raise if not retryable or already retried
+            raise  # Re-raise if not retryable or max retries exceeded
 
         if not no_cleanup:
             unpublish_all_orphan_items(
