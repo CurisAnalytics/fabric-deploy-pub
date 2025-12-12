@@ -104,11 +104,17 @@ Auto-detect is **enabled by default** since version 0.2.0. Users can opt-out wit
 # Lakehouse ID → $items.Lakehouse.<name>.$id
 "74113cfe-..." → "$items.Lakehouse.my_lakehouse.$id"
 
-# SQL Endpoint hostname → $items.Lakehouse.<name>.$sqlendpoint
+# Lakehouse SQL Endpoint → $items.Lakehouse.<name>.$sqlendpoint
 "ABC123...XYZ.datawarehouse.fabric.microsoft.com" → "$items.Lakehouse.my_lakehouse.$sqlendpoint"
 
-# SQL Endpoint ID → $items.Lakehouse.<name>.$sqlendpointid
+# Lakehouse SQL Endpoint ID → $items.Lakehouse.<name>.$sqlendpointid
 "dc24980a-..." → "$items.Lakehouse.my_lakehouse.$sqlendpointid"
+
+# SQL Database Endpoint → $items.SQLDatabase.<name>.$sqlendpoint
+"XYZ123...ABC.database.fabric.microsoft.com" → "$items.SQLDatabase.my_database.$sqlendpoint"
+
+# SQL Database Name → $items.SQLDatabase.<name>.$name
+"my_database-ba66912d-..." → "$items.SQLDatabase.my_database.$name"
 ```
 
 **Parameter Filtering**:
