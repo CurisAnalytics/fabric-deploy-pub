@@ -94,6 +94,7 @@ class ParameterDetector:
         self.repo_dir = Path(repo_dir).resolve()  # pyright: ignore[reportUnannotatedClassAttribute]
         self.parameters: dict[str, DetectedParameter] = {}
         self._lakehouse_names: list[str] = []
+        self._sqldatabase_names: list[str] = []
         self.logger: logging.Logger = get_logger(logger_name or __name__)
 
     def _log_file_warning(
@@ -114,8 +115,9 @@ class ParameterDetector:
         "Detect all parameters from workspace files."
         self.parameters = {}
 
-        # Detect lakehouse names first (needed for dynamic variables)
+        # Detect item names first (needed for dynamic variables)
         self._detect_lakehouse_names()
+        self._detect_sqldatabase_names()
 
         # Process all file types with their respective extractors
         self._process_files(
@@ -150,6 +152,21 @@ class ParameterDetector:
                     self._lakehouse_names.append(display_name)
             except Exception as e:
                 self._log_file_warning(platform_file, e, "lakehouse metadata")
+
+    def _detect_sqldatabase_names(self) -> None:
+        """Detect SQL Database names from .SQLDatabase/.platform files."""
+        sqldatabase_dirs = self.repo_dir.glob("*.SQLDatabase")
+        for sqldatabase_dir in sqldatabase_dirs:
+            platform_file = sqldatabase_dir / ".platform"
+            if not platform_file.exists():
+                continue
+            try:
+                metadata = json.loads(platform_file.read_text(encoding="utf-8"))
+                display_name = metadata.get("metadata", {}).get("displayName", "")
+                if display_name:
+                    self._sqldatabase_names.append(display_name)
+            except Exception as e:
+                self._log_file_warning(platform_file, e, "SQL Database metadata")
 
     def _process_files(
         self, glob_pattern: str, extract_func, parse_json: bool = False
@@ -245,6 +262,25 @@ class ParameterDetector:
             if "lakehouse sql analytics endpoint item id" in desc_lower:
                 return f"$items.Lakehouse.{lakehouse_name}.$sqlendpointid"
 
+        if self._sqldatabase_names:
+            # Use first SQL Database name (most common case is single database)
+            sqldatabase_name = self._sqldatabase_names[0]
+
+            # SQL Database Connection String
+            # Attribute exists but value may not be available until endpoint is provisioned
+            # Requires manual configuration in fabdep.yml for now
+            if "sql database connection string" in desc_lower:
+                return ""  # External - endpoint may not be provisioned
+
+            # SQL Database Item ID
+            if "sql database item id" in desc_lower:
+                return f"$items.SQLDatabase.{sqldatabase_name}.$id"
+
+            # SQL Database Name (full name with UUID suffix)
+            # Not supported - requires manual configuration (no $name attribute)
+            if "sql database name" in desc_lower:
+                return ""  # External - mark for manual entry
+
         # External connection IDs - leave empty for manual entry
         if "connection id" in desc_lower:
             return ""
@@ -283,13 +319,19 @@ class ParameterDetector:
         ) in self.SQL_DATABASE_PATTERN.findall(content):
             # Store the full hostname with domain for replacement
             full_hostname = f"{host_prefix}-{sql_string}.{domain_type}.{domain_suffix}"
+            is_sql_database = domain_type.lower() == "database"
 
             # Add hostname parameter with domain metadata
+            hostname_description = (
+                "SQL Database Connection String"
+                if is_sql_database
+                else "SQL Analytics Endpoint Connection String"
+            )
             hostname_param = self._add_parameter(
                 full_hostname,
                 "SemanticModel",
                 source_file,
-                "SQL Analytics Endpoint Connection String",
+                hostname_description,
             )
 
             # Store domain type, domain suffix, and database name in metadata for later processing
@@ -306,7 +348,6 @@ class ParameterDetector:
                 uuid_to_add = db_name
 
             if uuid_to_add:
-                is_sql_database = domain_type.lower() == "database"
                 uuid_description = (
                     "SQL Database Item ID"
                     if is_sql_database
@@ -317,6 +358,17 @@ class ParameterDetector:
                     "SemanticModel",
                     source_file,
                     uuid_description,
+                )
+
+            # Add full database name parameter if it includes a UUID
+            # This is needed for SQL Database connections where the database name is "{displayName}-{itemId}"
+            if uuid and db_name:
+                full_db_name = f"{db_name}-{uuid}"
+                _ = self._add_parameter(
+                    full_db_name,
+                    "SemanticModel",
+                    source_file,
+                    "SQL Database Name",
                 )
 
     def _extract_from_pipeline(self, file_path: Path, data: dict) -> None:

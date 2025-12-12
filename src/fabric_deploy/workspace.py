@@ -435,17 +435,20 @@ class WorkspaceDeployer:
         self._add_domain_substitutions(param_file, detector)
 
         # Store summary to display after header
-        paran = (
-            "" if dyns >= total else f" ({total - dyns} external connections skipped)"
+        external_count = max(total - dyns, 0)
+        external_part = (
+            f" + {external_count} external connection{'s' if external_count != 1 else ''}"
+            if external_count
+            else ""
         )
-        plr = "" if dyns == 1 else "s"
-        # Add manual parameter count if any
-        if manual_count > 0:
-            manual_plr = "" if manual_count == 1 else "s"
-            man = f" + {manual_count} manual parameter{manual_plr}"
-        else:
-            man = ""
-        summary.append(f"Using {dyns} dynamic parameter{plr}{paran}{man}")
+        manual_part = (
+            f" + {manual_count} manual parameter{'s' if manual_count != 1 else ''}"
+            if manual_count
+            else ""
+        )
+        summary.append(
+            f"Found {dyns} dynamic parameter{'s' if dyns != 1 else ''}{external_part}{manual_part}"
+        )
 
         self._auto_detect_summary = summary
 
