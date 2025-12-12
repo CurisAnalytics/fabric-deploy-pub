@@ -284,15 +284,20 @@ class ParameterDetector:
                 hostname_param.metadata["host_prefix"] = host_prefix
                 hostname_param.metadata["db_name"] = db_name  # Always store db_name
 
-            # Add UUID parameter if present
-            if uuid:
+            # Add UUID parameter if present (either as explicit suffix or as the db_name itself)
+            uuid_to_add = uuid  # Check explicit UUID suffix first
+            if not uuid_to_add and db_name and self.UUID_PATTERN.fullmatch(db_name):
+                # db_name is itself a UUID (no prefix)
+                uuid_to_add = db_name
+
+            if uuid_to_add:
                 is_sql_database = domain_type.lower() == "database"
                 uuid_description = (
                     "SQL Database Item ID" if is_sql_database
                     else "Lakehouse SQL Analytics Endpoint Item ID"
                 )
                 self._add_parameter(
-                    uuid,
+                    uuid_to_add,
                     "SemanticModel",
                     source_file,
                     uuid_description,
