@@ -42,27 +42,16 @@ fabric-deploy/
 ## Development Commands
 
 ```bash
-# Install in editable mode
-pip install -e .
-
-# Deploy workspace (from workspace directory with fabdep.yml)
-fabdep
-
-# Deploy with item filtering
-fabdep -t Notebook DataPipeline
-
-# Bootstrap mode for blank workspaces
-fabdep --bootstrap --create-workspace
-
-# Disable auto-detect (use existing parameter.yml)
-fabdep --no-auto-detect
-
-# Authentication management
-fabdep auth list
-fabdep auth switch <subscription-id>
-
-# Rename item directories to match display names
-fabdep rename --execute
+pip install -e .              # Install in editable mode
+fabdep                        # Deploy workspace (auto-detects from fabdep.yml)
+fabdep -t Notebook Pipeline   # Deploy specific item types
+fabdep -x Report              # Exclude item types
+fabdep -N                     # Create new workspace
+fabdep -B                     # Two-phase bootstrap deployment
+fabdep -A                     # Disable auto-detect (use existing parameter.yml)
+fabdep -b feature-branch      # Override git branch
+fabdep auth list              # Show Azure accounts
+fabdep rename -e              # Rename directories to match display names
 ```
 
 ## Code Architecture
@@ -109,13 +98,16 @@ Auto-detect is **enabled by default** since version 0.2.0. Users can opt-out wit
 **Dynamic Variable Examples**:
 ```python
 # Workspace ID → $workspace.$id
-"fb61a71c-b2af-49dc-9150-9040010c79bb" → "$workspace.$id"
+"fb61a71c-..." → "$workspace.$id"
 
 # Lakehouse ID → $items.Lakehouse.<name>.$id
-"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" → "$items.Lakehouse.my_lakehouse.$id"
+"74113cfe-..." → "$items.Lakehouse.my_lakehouse.$id"
 
-# SQL Endpoint → $items.Lakehouse.<name>.$sqlendpoint
-"EXAMPLEABC123XYZ" → "$items.Lakehouse.my_lakehouse.$sqlendpoint"
+# SQL Endpoint hostname → $items.Lakehouse.<name>.$sqlendpoint
+"ABC123...XYZ.datawarehouse.fabric.microsoft.com" → "$items.Lakehouse.my_lakehouse.$sqlendpoint"
+
+# SQL Endpoint ID → $items.Lakehouse.<name>.$sqlendpointid
+"dc24980a-..." → "$items.Lakehouse.my_lakehouse.$sqlendpointid"
 ```
 
 **Parameter Filtering**:
@@ -147,25 +139,22 @@ manual_parameters:
 - If `item_type` is specified, replacement is scoped to those item types only
 - Overridden parameters are marked with "(manual override: description)" in logs
 
-### Bootstrap Mode
+### Bootstrap Mode (`-B`)
 
-Two-phase deployment for blank workspaces (`--bootstrap` flag):
+Optional two-phase deployment:
+- **Phase 1**: Lakehouse, SemanticModel, SQLDatabase, Warehouse, MirroredDatabase, Eventhouse
+- **Phase 2**: All remaining items
 
-**Phase 1 - Foundational Items**: Lakehouse, SemanticModel, SQLDatabase, Warehouse, MirroredDatabase, Eventhouse
-**Phase 2 - Dependent Items**: Notebook, DataPipeline, Environment, Report, and all other item types
+Usually unnecessary - fabric-cicd handles item ordering internally. Use if you encounter dependency issues.
 
-This solves circular dependencies (e.g., Notebooks reference Lakehouse IDs that don't exist yet).
+### Workspace Creation (`-N`)
 
-**Workspace Creation** (`--create-workspace`):
-- Creates workspace if it doesn't exist: `{workspace_base_name} [{branch}]`
+Creates workspace if it doesn't exist: `{workspace_base_name} [{branch}]`
 - Uses `capacity_id` from fabdep.yml, or auto-selects first active capacity
-- Warns about external connection GUIDs (tenant-wide, must be configured manually)
 
 ### Error Handling
 
-**Automatic Retry Logic**:
-- Connection errors retried up to 3 times with 2-second delay
-- Other errors (auth, validation) fail immediately
+**Automatic Retry**: Transient API errors (timeouts, 5xx) retried once automatically.
 
 **Intelligent Error Messages** (`cli.py`):
 - **Connection errors**: Detects DataPipeline/Dataflow connection references, explains tenant-wide GUIDs
@@ -196,13 +185,12 @@ This solves circular dependencies (e.g., Notebooks reference Lakehouse IDs that 
 - Command handlers: `handle_deploy_command()`, `handle_auth_command()`, `handle_rename_command()`
 - Error formatting and user-facing messages
 
-**`auth.py`** - Azure authentication utilities (business logic)
+**`auth.py`** - Azure authentication utilities
 - Account management: `list_accounts()`, `switch_account()`, `rename_subscription()`
-- Error detection: `is_auth_error()`, `is_connection_error()`
 
 **`log.py`** - Logging and console formatting
-- Custom logger configuration with styled output
-- Error message formatting for different error types
+- Custom logger with styled output
+- Error detection: `is_auth_error()`, `is_connection_error()`, `is_transient_error()`
 
 **`rename.py`** - Rename utility
 - Rename workspace item directories to match `.platform` display names
@@ -222,28 +210,17 @@ dependencies = [
 
 ## Programmatic Usage
 
-**Note**: Primary interface is CLI. Minimal programmatic API for Azure DevOps integration and testing.
-
 ```python
 from fabric_deploy import WorkspaceDeployer
 
-# Basic deployment (reads fabdep.yml, auto-detects parameters)
 deployer = WorkspaceDeployer(repo_dir="/path/to/workspace")
 deployer.deploy()
 
-# Item filtering
+# With options
 deployer.deploy(item_types=["Notebook", "DataPipeline"])
 
-# Disable auto-detect (use existing parameter.yml)
-deployer = WorkspaceDeployer(repo_dir="/path/to/workspace", auto_detect=False)
-deployer.deploy()
-
-# Bootstrap mode with workspace creation
-deployer = WorkspaceDeployer(
-    repo_dir="/path/to/workspace",
-    bootstrap=True,
-    create_workspace=True
-)
+# New workspace
+deployer = WorkspaceDeployer(repo_dir="/path/to/workspace", new_workspace=True)
 deployer.deploy()
 ```
 

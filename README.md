@@ -4,13 +4,12 @@ CLI wrapper around Microsoft's [fabric-cicd](https://github.com/microsoft/fabric
 
 ### Features
 
-- **Workspace Base Name + Git Branch**: Automatically resolve workspace ID from base name + branch
-- **Dynamic Parameter Generation**: Auto-detect source IDs and generate parameter.yml with dynamic variables
-- **Bootstrap Mode**: Two-phase deployment for blank workspaces (foundational items first, then all items)
-- **Workspace Creation**: Create workspaces from scratch with `--create-workspace`
-- **Item Filtering**: Deploy specific item types or exclude types
-- **Auth Management**: Switch between Azure subscriptions
-- **Rename Utility**: Rename directories to match display names
+- **Workspace Resolution**: Base name + git branch → workspace ID via Fabric API
+- **Auto-Detect Parameters**: Scans workspace files, generates dynamic parameter.yml
+- **Workspace Creation**: Create new workspaces with `-N`
+- **Item Filtering**: Deploy/exclude specific item types
+- **Auth Management**: Switch Azure subscriptions
+- **Retry Logic**: Auto-retry on transient API errors
 
 
 ## Architecture
@@ -66,67 +65,32 @@ fabdep
 
 ## Commands
 
-### Deploy (default command)
+### Deploy (default)
 
 ```bash
-fabdep [deploy] [DIRECTORY] [OPTIONS]
-
-Arguments:
-  DIRECTORY              Path to workspace directory (default: current)
+fabdep [DIRECTORY] [OPTIONS]
 
 Options:
-  --no-cleanup, -n       Skip unpublishing orphaned items
-  --item-types, -t       Deploy specific types (e.g., Notebook DataPipeline)
-  --exclude-types, -x    Exclude types (e.g., Report SemanticModel)
-  --include-items, -i    Include specific items by name
-  --no-auto-detect       Disable auto-detect (opt-out; use existing parameter.yml)
-  --save-params          Save auto-detected parameters to parameter.yml.detected
-  --branch, -b           Override git branch name for workspace resolution
-  --bootstrap            Enable two-phase deployment (foundational items first, then all)
-  --create-workspace     Create workspace if it doesn't exist (uses default capacity if not specified)
+  -n, --no-cleanup       Skip unpublishing orphaned items
+  -t, --item-types       Item types to deploy (e.g., Notebook DataPipeline)
+  -x, --exclude-types    Item types to exclude (e.g., Report SemanticModel)
+  -i, --include-items    Specific items only (format: "Name.Type")
+  -A, --no-auto-detect   Use existing parameter.yml instead of auto-detect
+  -s, --save-params      Save auto-detected parameters to parameter.yml.detected
+  -b, --branch           Override git branch for workspace resolution
+  -B, --bootstrap        Two-phase deployment (foundational items first)
+  -N, --new-workspace    Create workspace if it doesn't exist
 ```
 
 **Examples**:
 ```bash
-# Deploy with auto-detect (default behavior, no parameter.yml needed)
-fabdep
-
-# Deploy only notebooks and pipelines
-fabdep -t Notebook DataPipeline
-
-# Deploy excluding reports
-fabdep -x Report SemanticModel
-
-# Deploy to specific branch workspace
-fabdep -b prod  # Deploys to "workspace_base_name [prod]"
-
-# Save auto-detected parameters to parameter.yml.detected
-fabdep --save-params
-
-# Use existing parameter.yml instead of auto-detect
-fabdep --no-auto-detect
-
-# Bootstrap mode - deploy to blank workspace
-fabdep --bootstrap
-
-# Bootstrap mode - create workspace first, then deploy
-fabdep --bootstrap --create-workspace
+fabdep                    # Deploy (auto-detect parameters)
+fabdep -t Notebook        # Deploy only notebooks
+fabdep -x Report          # Deploy excluding reports
+fabdep -b prod            # Deploy to "base_name [prod]"
+fabdep -N                 # Create workspace and deploy
+fabdep -s                 # Save detected params to .detected file
 ```
-
-### Bootstrap Mode
-
-Deploy to blank workspaces or create workspaces from scratch with two-phase deployment.
-
-Notebooks and DataPipelines reference lakehouse IDs that don't exist yet.
-
-Bootstrap mode solves this by deploying foundational items (Lakehouse, SemanticModel, etc.) first, then deploying everything else.
-
-*Phase 1 (Foundational items)*: Lakehouse, SemanticModel, SQLDatabase, Warehouse, MirroredDatabase, and Eventhouse items.
-
-*Phase 2 (All items)*: Notebook, DataPipeline, Environment, Report, and all other items.
-
-**Connection GUIDs**: Bootstrap mode detects external connection GUIDs and warns you that they must be configured manually in the target workspace.
-
 
 ---
 
@@ -190,8 +154,8 @@ manual_parameters:
 ```
 
 **Notes**:
-- When using `--create-workspace`, if `capacity_id` is not specified, fabric-deploy automatically uses the first active Fabric capacity
-- `manual_parameters` allows you to override the replace_value for auto-detected parameters (e.g., to keep external references)
+- With `-N`, if `capacity_id` is not specified, first active Fabric capacity is used
+- `manual_parameters` overrides auto-detected parameters (e.g., to keep external references)
 
 
 **How workspace resolution works**:

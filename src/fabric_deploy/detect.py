@@ -235,9 +235,9 @@ class ParameterDetector:
                 # Use $sqlendpoint attribute (returns full .datawarehouse hostname)
                 return f"$items.Lakehouse.{lakehouse_name}.$sqlendpoint"
 
-            # Lakehouse SQL Analytics Endpoint Item ID
+            # Lakehouse SQL Analytics Endpoint Item ID (distinct from Lakehouse ID)
             if "lakehouse sql analytics endpoint item id" in desc_lower:
-                return f"$items.Lakehouse.{lakehouse_name}.$id"
+                return f"$items.Lakehouse.{lakehouse_name}.$sqlendpointid"
 
         # External connection IDs - leave empty for manual entry
         if "connection id" in desc_lower:
