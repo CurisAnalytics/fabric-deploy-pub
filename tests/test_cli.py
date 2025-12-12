@@ -1,5 +1,6 @@
 """CLI integration tests using test-wkspc submodule."""
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -14,16 +15,26 @@ class TestCLI:
     @pytest.fixture
     def test_workspace_dir(self):
         """Path to test-wkspc submodule."""
-        return Path(__file__).parent.parent / "test-wkspc"
+        return Path(__file__).parent / "test-wkspc"
 
     def test_workspace_deployer(self, test_workspace_dir):
         """Test creating a WorkspaceDeployer instance for the test workspace."""
-        deployer = WorkspaceDeployer(test_workspace_dir)
-        assert deployer is not None
-        print("Workspace object created successfully")
-        for item_type in deployer.repo_item_types:
-            print("Deploying items of type: " + item_type)
-            deployer.deploy(item_types=[item_type])
+        # Change to test workspace directory
+        original_cwd = os.getcwd()
+        os.chdir(test_workspace_dir)
+
+        try:
+            deployer = WorkspaceDeployer(test_workspace_dir, branch_override="MAIN")
+            assert deployer is not None
+            print("\nWorkspace object created successfully")
+
+            # Deploy each item type separately
+            for item_type in deployer.repo_item_types:
+                print(f"Deploying items of type: {item_type}")
+                deployer.deploy(item_types=[item_type])
+        finally:
+            # Restore original directory
+            os.chdir(original_cwd)
 
     def test_fabdep_no_args(self, test_workspace_dir):
         """Test running fabdep with no arguments exits without error."""

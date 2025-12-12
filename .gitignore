@@ -1,8 +1,8 @@
 # Mac file manager caches
 **/.DS_Store
 
-# CI/CD error log -- this is a temporary workaround before archiving is implemented
-fabric_cicd.error.log
+# CI/CD error log 
+**/fabric_cicd.error.log
 
 # Python environment
 .venv/
