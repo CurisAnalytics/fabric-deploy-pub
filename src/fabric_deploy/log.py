@@ -38,7 +38,7 @@ class CustomFormatter(logging.Formatter):
         "CRITICAL": Style.BRIGHT + Fore.RED,
     }
 
-    def format(self, record: logging.LogRecord) -> str:
+    def format(self, record: logging.LogRecord) -> str:  # pyright: ignore[reportImplicitOverride]
         level_color = self.LEVEL_COLORS.get(record.levelname, "")
         level_name = {
             "WARNING": "warn",
@@ -179,7 +179,7 @@ def is_transient_error(error_msg: str) -> bool:
     """
     error_lower = error_msg.lower()
 
-    # Transient error patterns - API glitches, temporary failures
+    # Transient error patterns - API glitches, temporary failures, network issues
     transient_patterns = [
         "unhandled error occurred",
         "an error occured",  # Note: API typo is intentional
@@ -190,6 +190,9 @@ def is_transient_error(error_msg: str) -> bool:
         "bad gateway",
         "connection reset",
         "connection timed out",
+        "connection aborted",
+        "remote end closed connection",
+        "remotedisconnected",
         "temporarily unavailable",
     ]
 

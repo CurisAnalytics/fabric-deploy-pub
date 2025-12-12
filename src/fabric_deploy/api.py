@@ -6,9 +6,12 @@ import urllib.error
 import urllib.request
 from typing import TypedDict
 
-from fabric_deploy.auth import get_current_account
+from .auth import get_current_account
 
 # pyright: reportMissingTypeArgument=false
+# pyright: reportUnknownMemberType=false
+# pyright: reportUnknownParameterType=false
+# pyright: reportUnknownVariableType=false
 
 
 class FabricWorkspaceInfo(TypedDict):

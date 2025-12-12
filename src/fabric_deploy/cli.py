@@ -228,6 +228,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Create workspace if it doesn't exist",
     )
+    _ = deploy_parser.add_argument(
+        "--max-retries",
+        "-r",
+        type=int,
+        default=1,
+        help="Max retries for transient errors (default: 1)",
+    )
 
     # Check if we should inject 'deploy' as default subcommand
     # This happens when no subcommand is specified
@@ -256,6 +263,7 @@ def parse_args() -> argparse.Namespace:
             args.branch = None
             args.bootstrap = False
             args.new_workspace = False
+            args.max_retries = 1
 
     return args
 
@@ -377,6 +385,7 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
             branch_override=args.branch,
             bootstrap=bool(args.bootstrap),
             new_workspace=bool(args.new_workspace),
+            max_retries=int(args.max_retries),
         )
     except FileNotFoundError as e:
         print_error(f"\n{e}\n")
@@ -384,10 +393,10 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
         print("Run 'fabdep -h' for more information.\n")
         sys.exit(1)
     except Exception as e:
-        handle_command_error(e, "Workspace initialization")
+        handle_command_error(e, "Workspace initialization")  # Runs sys.exit
 
     try:
-        deployer.deploy(
+        deployer.deploy(  # pyright: ignore[reportPossiblyUnboundVariable]
             no_cleanup=args.no_cleanup,
             item_types=args.item_types,
             exclude_types=args.exclude_types,

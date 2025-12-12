@@ -9,7 +9,7 @@ CLI wrapper around Microsoft's [fabric-cicd](https://github.com/microsoft/fabric
 - **Workspace Creation**: Create new workspaces with `-N`
 - **Item Filtering**: Deploy/exclude specific item types
 - **Auth Management**: Switch Azure subscriptions
-- **Retry Logic**: Auto-retry on transient API errors
+- **Configurable Retries**: Auto-retry transient errors (customizable with `-r`)
 
 
 ## Architecture
@@ -80,6 +80,7 @@ Options:
   -b, --branch           Override git branch for workspace resolution
   -B, --bootstrap        Two-phase deployment (foundational items first)
   -N, --new-workspace    Create workspace if it doesn't exist
+  -r, --max-retries      Max retries for transient errors (default: 1)
 ```
 
 **Examples**:
@@ -89,6 +90,7 @@ fabdep -t Notebook        # Deploy only notebooks
 fabdep -x Report          # Deploy excluding reports
 fabdep -b prod            # Deploy to "base_name [prod]"
 fabdep -N                 # Create workspace and deploy
+fabdep -r 2               # Retry up to 2 times on errors
 fabdep -s                 # Save detected params to .detected file
 ```
 
