@@ -311,10 +311,8 @@ class WorkspaceDeployer:
         Args:
             capacity_id: Fabric capacity ID for workspace creation
 
-        Logs:
-            - Info if workspace already exists
-            - Info when creating new workspace
-            - Success message with workspace ID
+        Raises:
+            ValueError: If workspace already exists (prevents accidental overwrites)
         """
         # Try to create workspace (will raise ValueError if already exists)
         self.logger.info(f"Creating workspace: {self.workspace_name}")
@@ -325,9 +323,13 @@ class WorkspaceDeployer:
             )
             self.logger.info(f"✓ Workspace created: {workspace_id}")
         except ValueError as e:
-            # Workspace already exists
+            # Workspace already exists - fail fast to prevent accidental reuse
             if "already exists" in str(e):
-                self.logger.info(f"Workspace already exists: {self.workspace_name}")
+                raise ValueError(
+                    f"Workspace '{self.workspace_name}' already exists.\n\n"
+                    "The -N/--new-workspace flag is only for creating new workspaces.\n"
+                    "To deploy to an existing workspace, remove the -N flag."
+                ) from None
             else:
                 raise
         except Exception as e:
