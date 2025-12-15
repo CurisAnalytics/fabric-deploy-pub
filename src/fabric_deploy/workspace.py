@@ -401,12 +401,13 @@ class WorkspaceDeployer:
                 f"Saved {with_dynamic} detected parameter(s) to {detected_file.name}"
             )
 
-        # Count what was detected
+        # Count what was detected (after filtering)
         dyns = sum(1 for p in detector.parameters.values() if p.dynamic_variable)
         total = len(detector.parameters)
 
-        # Check if we have any parameters to replace
-        if dyns == 0 and manual_count == 0:
+        # Check if we have any parameters that will actually be written to the file
+        # When skip_empty=True, only parameters with dynamic variables are written
+        if dyns == 0:
             # No parameters to replace - skip parameter.yml creation
             self._auto_detect_summary = [
                 "No parameters detected for replacement",
