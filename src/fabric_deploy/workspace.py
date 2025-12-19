@@ -553,24 +553,24 @@ class WorkspaceDeployer:
         """
         Scan repository to detect which item types are present.
 
+        Scans recursively to find all .platform files and extracts item types
+        from their parent directory names.
+
         Returns:
             Set of item type names found in the repository
         """
         item_types = set()
 
-        # Scan all directories in repo for .platform files
-        for item_dir in self._repo_dir_resolved.iterdir():
-            if not item_dir.is_dir():
-                continue
+        # Recursively scan for .platform files
+        for platform_file in self._repo_dir_resolved.rglob(".platform"):
+            item_dir = platform_file.parent
 
             # Check if directory follows ItemName.ItemType pattern
             if "." in item_dir.name:
                 parts = item_dir.name.rsplit(".", 1)
                 if len(parts) == 2:
                     item_type = parts[1]
-                    # Verify it has a .platform file
-                    platform_file = item_dir / ".platform"
-                    if platform_file.exists() and item_type in ACCEPTED_ITEM_TYPES:
+                    if item_type in ACCEPTED_ITEM_TYPES:
                         item_types.add(item_type)
 
         return item_types
@@ -668,13 +668,13 @@ class WorkspaceDeployer:
                 self.logger.info(line)
 
         if item_type_in_scope:
-            # Only show item types that are both in scope AND present in repo
-            types_to_deploy = [
-                t for t in item_type_in_scope if t in self.repo_item_types
-            ]
+            # Show item types in scope, filtered by what exists in repo
+            types_to_deploy = sorted(
+                set(item_type_in_scope) & self.repo_item_types
+            )
             if types_to_deploy:
                 self.logger.info(
-                    f"Item types in scope: {', '.join(sorted(types_to_deploy))}"
+                    f"Item types in scope: {', '.join(types_to_deploy)}"
                 )
             else:
                 self.logger.warning("No matching item types found in repository")
