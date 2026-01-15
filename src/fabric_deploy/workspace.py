@@ -90,6 +90,7 @@ class WorkspaceDeployer:
         default_factory=set, init=False, repr=False
     )
     _created_param_file: bool = field(default=False, init=False, repr=False)
+    _backed_up_original: bool = field(default=False, init=False, repr=False)
     logger: logging.Logger = field(init=False, repr=False)
 
     def __post_init__(self):
@@ -415,13 +416,21 @@ class WorkspaceDeployer:
             ]
             return
 
-        # Backup existing parameter.yml if it exists
+        # Backup existing parameter.yml if it exists (but don't overwrite existing backup)
         param_file = self._repo_dir_resolved / "parameter.yml"
         backup_file = self._repo_dir_resolved / "parameter.yml.backup"
         summary = []
-        if param_file.exists():
-            _ = param_file.rename(backup_file)
-            summary.append(f"Backed up existing parameter.yml to {backup_file.name}")
+
+        # Only backup on first call to this method
+        if not self._backed_up_original:
+            # First call: backup existing parameter.yml if present
+            if param_file.exists():
+                _ = param_file.rename(backup_file)
+                summary.append(f"Backed up existing parameter.yml to {backup_file.name}")
+            self._backed_up_original = True
+        elif param_file.exists():
+            # Subsequent calls: remove auto-generated file before recreating
+            param_file.unlink()
 
         # Generate parameter file for deployment (using dynamic variables)
         detector.save_parameter_yml(
