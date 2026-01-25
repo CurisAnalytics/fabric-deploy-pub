@@ -410,6 +410,10 @@ class WorkspaceDeployer:
         # When skip_empty=True, only parameters with dynamic variables are written
         if dyns == 0:
             # No parameters to replace - skip parameter.yml creation
+            # Also clean up any existing param file from initial detection
+            param_file = self._repo_dir_resolved / "parameter.yml"
+            if param_file.exists():
+                param_file.unlink()
             self._auto_detect_summary = [
                 "No parameters detected for replacement",
                 "Deploying without parameter.yml file",
