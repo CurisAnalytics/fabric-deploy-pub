@@ -138,35 +138,38 @@ class ParameterDetector:
             parse_json=True,
         )
 
-    def _detect_lakehouse_names(self) -> None:
-        """Detect lakehouse names from .Lakehouse/.platform files."""
-        lakehouse_dirs = self.repo_dir.glob("*.Lakehouse")
-        for lakehouse_dir in lakehouse_dirs:
-            platform_file = lakehouse_dir / ".platform"
+    def _detect_item_names(self, item_type: str) -> list[str]:
+        """
+        Detect item names from .{item_type}/.platform files.
+
+        Args:
+            item_type: Fabric item type (e.g., "Lakehouse", "SQLDatabase")
+
+        Returns:
+            List of display names found for items of this type
+        """
+        names: list[str] = []
+        item_dirs = self.repo_dir.glob(f"*.{item_type}")
+        for item_dir in item_dirs:
+            platform_file = item_dir / ".platform"
             if not platform_file.exists():
                 continue
             try:
                 metadata = json.loads(platform_file.read_text(encoding="utf-8"))
                 display_name = metadata.get("metadata", {}).get("displayName", "")
                 if display_name:
-                    self._lakehouse_names.append(display_name)
+                    names.append(display_name)
             except Exception as e:
-                self._log_file_warning(platform_file, e, "lakehouse metadata")
+                self._log_file_warning(platform_file, e, f"{item_type} metadata")
+        return names
+
+    def _detect_lakehouse_names(self) -> None:
+        """Detect lakehouse names from .Lakehouse/.platform files."""
+        self._lakehouse_names = self._detect_item_names("Lakehouse")
 
     def _detect_sqldatabase_names(self) -> None:
         """Detect SQL Database names from .SQLDatabase/.platform files."""
-        sqldatabase_dirs = self.repo_dir.glob("*.SQLDatabase")
-        for sqldatabase_dir in sqldatabase_dirs:
-            platform_file = sqldatabase_dir / ".platform"
-            if not platform_file.exists():
-                continue
-            try:
-                metadata = json.loads(platform_file.read_text(encoding="utf-8"))
-                display_name = metadata.get("metadata", {}).get("displayName", "")
-                if display_name:
-                    self._sqldatabase_names.append(display_name)
-            except Exception as e:
-                self._log_file_warning(platform_file, e, "SQL Database metadata")
+        self._sqldatabase_names = self._detect_item_names("SQLDatabase")
 
     def _process_files(
         self, glob_pattern: str, extract_func, parse_json: bool = False
