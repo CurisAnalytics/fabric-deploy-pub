@@ -9,7 +9,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Key Features**:
 - **Workspace Resolution**: Combines workspace base name + git branch to resolve workspace ID via Fabric API
 - **Auto-Detect (Default)**: Scans workspace files to detect source IDs and generates dynamic parameter replacements
-- **Bootstrap Mode**: Two-phase deployment for blank workspaces (foundational items first)
 - **CLI Convenience**: Simple command-line interface wrapping Microsoft's fabric-cicd package
 
 ## Architecture
@@ -47,7 +46,6 @@ fabdep                        # Deploy workspace (auto-detects from fabdep.yml)
 fabdep -t Notebook Pipeline   # Deploy specific item types
 fabdep -x Report              # Exclude item types
 fabdep -N                     # Create new workspace
-fabdep -B                     # Two-phase bootstrap deployment
 fabdep -A                     # Disable auto-detect (use existing parameter.yml)
 fabdep -b feature-branch      # Override git branch
 fabdep -r 2                   # Retry up to 2 times on transient errors
@@ -145,14 +143,6 @@ manual_parameters:
 - If find_value wasn't auto-detected, a warning is logged
 - If `item_type` is specified, replacement is scoped to those item types only
 - Overridden parameters are marked with "(manual override: description)" in logs
-
-### Bootstrap Mode (`-B`)
-
-Optional two-phase deployment:
-- **Phase 1**: Lakehouse, SemanticModel, SQLDatabase, Warehouse, MirroredDatabase, Eventhouse
-- **Phase 2**: All remaining items
-
-Usually unnecessary - fabric-cicd handles item ordering internally. Use if you encounter dependency issues.
 
 ### Workspace Creation (`-N`)
 

@@ -207,12 +207,6 @@ def parse_args() -> argparse.Namespace:
         help="Override git branch for workspace resolution",
     )
     _ = deploy_parser.add_argument(
-        "--bootstrap",
-        "-B",
-        action="store_true",
-        help="Two-phase deployment (foundational items first)",
-    )
-    _ = deploy_parser.add_argument(
         "--new-workspace",
         "-N",
         action="store_true",
@@ -251,7 +245,6 @@ def parse_args() -> argparse.Namespace:
             args.auto_detect = True
             args.save_params = False
             args.branch = None
-            args.bootstrap = False
             args.new_workspace = False
             args.max_retries = 1
 
@@ -373,7 +366,6 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
             auto_detect=bool(args.auto_detect),
             save_detected_params=bool(args.save_params),
             branch_override=args.branch,
-            bootstrap=bool(args.bootstrap),
             new_workspace=bool(args.new_workspace),
             max_retries=int(args.max_retries),
         )

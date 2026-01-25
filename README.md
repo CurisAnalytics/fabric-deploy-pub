@@ -78,7 +78,6 @@ Options:
   -A, --no-auto-detect   Use existing parameter.yml instead of auto-detect
   -s, --save-params      Save auto-detected parameters to parameter.yml.detected
   -b, --branch           Override git branch for workspace resolution
-  -B, --bootstrap        Two-phase deployment (foundational items first)
   -N, --new-workspace    Create workspace if it doesn't exist
   -r, --max-retries      Max retries for transient errors (default: 1)
 ```

@@ -27,18 +27,6 @@ from .api import (
 from .detect import ParameterDetector
 from .log import get_logger, is_transient_error, print_header
 
-# Item types that create workspace objects (foundational)
-# These must be deployed first in bootstrap mode
-FOUNDATIONAL_ITEMS = [
-    "Lakehouse",
-    "SemanticModel",
-    "SQLDatabase",
-    "Warehouse",
-    "MirroredDatabase",
-    "Eventhouse",
-]
-
-
 @dataclass
 class WorkspaceDeployer:
     """
@@ -51,7 +39,6 @@ class WorkspaceDeployer:
             auto_detect: Enable auto-detection mode to generate parameter.yml dynamically
             save_detected_params: Save detected parameters to parameter.yml.detected file
             branch_override: Override git branch for workspace name resolution (defaults to current branch)
-            bootstrap: Two-phase deployment (foundational items first, then all)
             new_workspace: Create workspace if it doesn't exist
             max_retries: Max retries for transient errors (default: 1)
 
@@ -69,7 +56,6 @@ class WorkspaceDeployer:
     auto_detect: bool = True  # Enable auto-detection mode (default)
     save_detected_params: bool = False  # Save detected parameters to .detected file
     branch_override: str | None = None  # Override git branch for workspace resolution
-    bootstrap: bool = False  # Two-phase deployment (foundational items first)
     new_workspace: bool = False  # Create workspace if it doesn't exist
     max_retries: int = 1  # Max retries for transient errors
 
@@ -711,22 +697,11 @@ class WorkspaceDeployer:
             )
 
         try:
-            # Bootstrap mode: two-phase deployment
-            if self.bootstrap:
-                self._deploy_bootstrap(
-                    no_cleanup=no_cleanup,
-                    item_types=item_types,
-                    exclude_types=exclude_types,
-                    include_items=include_items,
-                )
-            else:
-                # Normal single-phase deployment
-                self._deploy_items(
-                    no_cleanup=no_cleanup,
-                    item_types=item_type_in_scope,
-                    include_items=include_items,
-                )
-
+            self._deploy_items(
+                no_cleanup=no_cleanup,
+                item_types=item_type_in_scope,
+                include_items=include_items,
+            )
             self.logger.info("Deployment complete!")
 
         except Exception:  # Re-raise exception to be handled by caller
@@ -781,77 +756,3 @@ class WorkspaceDeployer:
             unpublish_all_orphan_items(
                 target_workspace, item_name_exclude_regex=self.lakehouse_name
             )
-
-    def _deploy_bootstrap(
-        self,
-        no_cleanup: bool = False,
-        item_types: list[str] | None = None,
-        exclude_types: list[str] | None = None,
-        include_items: list[str] | None = None,
-    ) -> None:
-        """
-        Two-phase deployment: foundational items first, then all items.
-
-        Phase 1: Deploy Lakehouse, SemanticModel, SQLDatabase, etc.
-        Phase 2: Deploy everything (Notebook, DataPipeline, etc. can now reference Phase 1 items)
-
-        Args:
-            no_cleanup: Skip unpublishing orphaned items
-            item_types: User-specified item types filter (overrides bootstrap logic)
-            exclude_types: User-specified exclusion filter
-            include_items: Include only specific items
-        """
-        # Phase 1: Foundational items
-        self.logger.info("Bootstrap mode enabled - two-phase deployment")
-        self.logger.info("Phase 1: Deploying foundational items")
-
-        # Determine Phase 1 item types (respect user filters if provided)
-        if item_types:
-            # User provided explicit filter - deploy only matching foundational items
-            phase1_types = [t for t in item_types if t in FOUNDATIONAL_ITEMS]
-        elif exclude_types:
-            # User excluded types - deploy foundational items not in exclusion list
-            phase1_types = [t for t in FOUNDATIONAL_ITEMS if t not in exclude_types]
-        else:
-            # No filters - deploy all foundational items
-            phase1_types = FOUNDATIONAL_ITEMS
-
-        if phase1_types:
-            # Only show foundational types that are actually in the repo
-            types_in_repo = [t for t in phase1_types if t in self.repo_item_types]
-            if types_in_repo:
-                self.logger.info(
-                    f"Foundational item types: {', '.join(sorted(types_in_repo))}"
-                )
-            self._deploy_items(
-                no_cleanup=True,  # Don't cleanup in Phase 1
-                item_types=phase1_types,
-                include_items=include_items,
-            )
-            self.logger.info("✓ Phase 1 complete")
-        else:
-            self.logger.info("No foundational items to deploy")
-
-        # Phase 2: All items
-        self.logger.info("Phase 2: Deploying all items")
-
-        # Determine Phase 2 item types (respect user filters)
-        if item_types:
-            phase2_types = item_types
-        elif exclude_types:
-            phase2_types = [t for t in ACCEPTED_ITEM_TYPES if t not in exclude_types]
-        else:
-            phase2_types = None  # Deploy everything
-
-        if phase2_types:
-            # Only show types that are actually in the repo
-            types_in_repo = [t for t in phase2_types if t in self.repo_item_types]
-            if types_in_repo:
-                self.logger.info(f"Item types: {', '.join(sorted(types_in_repo))}")
-
-        self._deploy_items(
-            no_cleanup=no_cleanup,
-            item_types=phase2_types,
-            include_items=include_items,
-        )
-        self.logger.info("✓ Phase 2 complete")
