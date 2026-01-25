@@ -65,9 +65,9 @@ class TestCLI:
         # Verify it contains expected parameters
         content = detected_file.read_text()
         assert "00c6eeb8-5d09-4ab8-96f6-3cc4b9956d18" in content  # Workspace ID
-        assert "3c221705-5338-478c-9e22-23b3fb2da279" in content  # Lakehouse ID
+        assert "a99c446d-5ada-4c3f-b207-a9cd7d5725a2" in content  # Lakehouse ID
         assert "$workspace.$id" in content
-        assert "$items.Lakehouse.Lakehouse.$id" in content
+        assert "$items.Lakehouse.fabdep_lakehouse.$id" in content
 
         # Clean up
         detected_file.unlink()
