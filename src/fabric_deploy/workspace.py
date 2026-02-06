@@ -41,6 +41,7 @@ class WorkspaceDeployer:
             branch_override: Override git branch for workspace name resolution (defaults to current branch)
             new_workspace: Create workspace if it doesn't exist
             max_retries: Max retries for transient errors (default: 1)
+            skip_lakehouse: Skip lakehouse parameter replacement (for feature branches sharing dev lakehouse)
 
     IMPORTANT: Initialization has side effects!
     - Reads fabdep.yml from disk
@@ -58,6 +59,7 @@ class WorkspaceDeployer:
     branch_override: str | None = None  # Override git branch for workspace resolution
     new_workspace: bool = False  # Create workspace if it doesn't exist
     max_retries: int = 1  # Max retries for transient errors
+    skip_lakehouse: bool = False  # Skip lakehouse parameter replacement (feature branch mode)
 
     # Configuration fields - auto-loaded in __post_init__
     workspace_id: str = field(init=False, repr=False)
@@ -350,6 +352,12 @@ class WorkspaceDeployer:
         )
         detector.detect_all()
 
+        # Filter out lakehouse parameters if skip_lakehouse is enabled (feature branch mode)
+        skipped_lakehouse_count = 0
+        if self.skip_lakehouse:
+            removed = detector.filter_lakehouse_params()
+            skipped_lakehouse_count = len(removed)
+
         # Load manual parameters from fabdep.yml if specified
         manual_count = self._load_manual_parameters(detector)
 
@@ -358,8 +366,11 @@ class WorkspaceDeployer:
         if item_types:
             filtered_params = {}
             for find_value, param in detector.parameters.items():
+                # Always include Workspace ID - it applies to all item types
+                if param.description == "Workspace ID":
+                    filtered_params[find_value] = param
                 # Include parameter if its item_types overlap with filtered types
-                if param.item_types.intersection(set(item_types)):
+                elif param.item_types.intersection(set(item_types)):
                     filtered_params[find_value] = param
             detector.parameters = filtered_params
 
@@ -400,10 +411,16 @@ class WorkspaceDeployer:
             param_file = self._repo_dir_resolved / "parameter.yml"
             if param_file.exists():
                 param_file.unlink()
-            self._auto_detect_summary = [
-                "No parameters detected for replacement",
-                "Deploying without parameter.yml file",
-            ]
+            if skipped_lakehouse_count > 0:
+                self._auto_detect_summary = [
+                    f"Skipped {skipped_lakehouse_count} lakehouse parameter{'s' if skipped_lakehouse_count != 1 else ''} (--skip-lakehouse)",
+                    "Deploying without parameter.yml file",
+                ]
+            else:
+                self._auto_detect_summary = [
+                    "No parameters detected for replacement",
+                    "Deploying without parameter.yml file",
+                ]
             return
 
         # Backup existing parameter.yml if it exists (but don't overwrite existing backup)
@@ -449,6 +466,10 @@ class WorkspaceDeployer:
         summary.append(
             f"Found {dyns} dynamic parameter{'s' if dyns != 1 else ''}{external_part}{manual_part}"
         )
+        if skipped_lakehouse_count > 0:
+            summary.append(
+                f"Skipped {skipped_lakehouse_count} lakehouse parameter{'s' if skipped_lakehouse_count != 1 else ''} (--skip-lakehouse)"
+            )
 
         self._auto_detect_summary = summary
 
@@ -621,6 +642,9 @@ class WorkspaceDeployer:
                 "Name-based item filtering is experimental. "
                 "Selective deployment may cause dependency issues. Use at your own risk."
             )
+            self.logger.warning(
+                "Orphan cleanup disabled when using --include-items for safety."
+            )
 
         # Validate item type filters
         if item_types:
@@ -752,7 +776,9 @@ class WorkspaceDeployer:
                 )
             raise  # Re-raise if not retryable or max retries exceeded
 
-        if not no_cleanup:
+        # Skip unpublish when using include_items - it's too dangerous
+        # If item names don't match, nothing gets published, and unpublish would delete everything
+        if not no_cleanup and not include_items:
             unpublish_all_orphan_items(
                 target_workspace, item_name_exclude_regex=self.lakehouse_name
             )

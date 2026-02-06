@@ -265,7 +265,7 @@ wheels = [
 
 [[package]]
 name = "fabric-cicd"
-version = "0.1.32"
+version = "0.1.34"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "azure-identity" },
@@ -276,14 +276,13 @@ dependencies = [
     { name = "pyyaml" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/43/28/3c4c6760f9ab3b0e81f203720bd774f487071b9002b518d93833d776063a/fabric_cicd-0.1.32.tar.gz", hash = "sha256:574c0a9c1c6dd5941eca17cf2f116996982df1a27e822123c1d6ce4f10f60d4b", size = 136184, upload-time = "2025-12-03T22:29:47.697Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/17/ce/e5f2eb470693b87b77c4b676ba3acc53e11d9e1ed63fb0fe0254c118bc7c/fabric_cicd-0.1.32-py3-none-any.whl", hash = "sha256:971ecc456aa09fa0f228dccab7785a5effe91b18cb493b00131e39120354bb49", size = 95122, upload-time = "2025-12-03T22:29:49.172Z" },
+    { url = "https://files.pythonhosted.org/packages/1f/b4/7100ce167c9e1a6ed7f2e276ece39efc2f6686c6e178c62bc23f5d20b4ff/fabric_cicd-0.1.34-py3-none-any.whl", hash = "sha256:0b632b793cb48fdc1b53525f71466128c394d204145fa2836177555a54429eb3", size = 98072, upload-time = "2026-01-21T08:21:23.887Z" },
 ]
 
 [[package]]
 name = "fabric-deploy"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "fabric-cicd" },
@@ -293,7 +292,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fabric-cicd", specifier = ">=0.1.29" },
+    { name = "fabric-cicd", specifier = ">=0.1.34" },
     { name = "pytest", specifier = ">=7.0.0" },
     { name = "pyyaml" },
 ]

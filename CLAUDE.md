@@ -9,6 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Key Features**:
 - **Workspace Resolution**: Combines workspace base name + git branch to resolve workspace ID via Fabric API
 - **Auto-Detect (Default)**: Scans workspace files to detect source IDs and generates dynamic parameter replacements
+- **Feature Branch Support**: Skip lakehouse replacement with `--skip-lakehouse` to use dev lakehouse data
 - **CLI Convenience**: Simple command-line interface wrapping Microsoft's fabric-cicd package
 
 ## Architecture
@@ -49,6 +50,7 @@ fabdep -N                     # Create new workspace
 fabdep -A                     # Disable auto-detect (use existing parameter.yml)
 fabdep -b feature-branch      # Override git branch
 fabdep -r 2                   # Retry up to 2 times on transient errors
+fabdep -L                     # Skip lakehouse replacement (feature branch mode)
 fabdep auth list              # Show Azure accounts
 fabdep rename -e              # Rename directories to match display names
 ```
@@ -117,6 +119,26 @@ Auto-detect is **enabled by default** since version 0.2.0. Users can opt-out wit
 
 **Parameter Filtering**:
 When using `--item-types` or `--exclude-types`, parameters are regenerated to include only those used by targeted item types (prevents warnings about unused parameters).
+
+### Feature Branch Support (`--skip-lakehouse` / `-L`)
+
+For feature branches that should share the dev workspace's lakehouse data instead of getting their own:
+
+```bash
+fabdep -L  # Skip lakehouse parameter replacement
+```
+
+**What Gets Skipped**:
+- Lakehouse ID → `$items.Lakehouse.<name>.$id`
+- SQL Analytics Endpoint Connection String → `$items.Lakehouse.<name>.$sqlendpoint`
+- Lakehouse SQL Analytics Endpoint Item ID → `$items.Lakehouse.<name>.$sqlendpointid`
+
+**What Gets Kept**:
+- Workspace ID → `$workspace.$id` (still needs replacement for feature branch workspace)
+- SQL Database parameters
+- External connection IDs
+
+**Use Case**: When working on a feature branch, notebooks and semantic models keep their references to the dev lakehouse data. This avoids creating empty lakehouses in feature branch workspaces and eliminates GUID conflicts when merging back to dev.
 
 ### Manual Parameter Overrides
 
@@ -221,6 +243,13 @@ deployer = WorkspaceDeployer(
     repo_dir="/path/to/workspace",
     new_workspace=True,
     max_retries=2
+)
+deployer.deploy()
+
+# Feature branch mode (skip lakehouse replacement)
+deployer = WorkspaceDeployer(
+    repo_dir="/path/to/workspace",
+    skip_lakehouse=True
 )
 deployer.deploy()
 ```

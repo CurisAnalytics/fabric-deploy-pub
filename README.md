@@ -8,6 +8,7 @@ CLI wrapper around Microsoft's [fabric-cicd](https://github.com/microsoft/fabric
 - **Auto-Detect Parameters**: Scans workspace files, generates dynamic parameter.yml
 - **Workspace Creation**: Create new workspaces with `-N`
 - **Item Filtering**: Deploy/exclude specific item types
+- **Feature Branch Support**: Skip lakehouse replacement with `-L` (use dev lakehouse)
 - **Auth Management**: Switch Azure subscriptions
 - **Configurable Retries**: Auto-retry transient errors (customizable with `-r`)
 
@@ -80,6 +81,7 @@ Options:
   -b, --branch           Override git branch for workspace resolution
   -N, --new-workspace    Create workspace if it doesn't exist
   -r, --max-retries      Max retries for transient errors (default: 1)
+  -L, --skip-lakehouse   Skip lakehouse parameter replacement (for feature branches)
 ```
 
 **Examples**:
@@ -91,6 +93,7 @@ fabdep -b prod            # Deploy to "base_name [prod]"
 fabdep -N                 # Create workspace and deploy
 fabdep -r 2               # Retry up to 2 times on errors
 fabdep -s                 # Save detected params to .detected file
+fabdep -L                 # Feature branch: use dev lakehouse references
 ```
 
 ---
