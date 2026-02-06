@@ -13,6 +13,16 @@ def _format_path(path: Path) -> str:
     return f"{path.parent.name}/{path.name}"
 
 
+def _rmtree(path: Path) -> None:
+    """Remove directory tree using pathlib."""
+    for child in path.iterdir():
+        if child.is_dir():
+            _rmtree(child)
+        else:
+            child.unlink()
+    path.rmdir()
+
+
 def rename_items_by_display_name(
     repo_dir: Path | str, dry_run: bool = True, clean: bool = False
 ) -> None:
@@ -53,6 +63,8 @@ def rename_items_by_display_name(
             if dry_run:
                 logger.info(f"{_format_path(parent)} -> {_format_path(new_path)}")
             else:
+                if new_path.exists():
+                    _rmtree(new_path)
                 _ = parent.rename(new_path)
                 logger.info(
                     f"Renamed: {_format_path(parent)} -> {_format_path(new_path)}"
