@@ -219,6 +219,12 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help="Max retries for transient errors (default: 1)",
     )
+    _ = deploy_parser.add_argument(
+        "--skip-lakehouse",
+        "-L",
+        action="store_true",
+        help="Skip lakehouse parameter replacement (for feature branches sharing dev lakehouse)",
+    )
 
     # Check if we should inject 'deploy' as default subcommand
     # This happens when no subcommand is specified
@@ -247,6 +253,7 @@ def parse_args() -> argparse.Namespace:
             args.branch = None
             args.new_workspace = False
             args.max_retries = 1
+            args.skip_lakehouse = False
 
     return args
 
@@ -368,6 +375,7 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
             branch_override=args.branch,
             new_workspace=bool(args.new_workspace),
             max_retries=int(args.max_retries),
+            skip_lakehouse=bool(args.skip_lakehouse),
         )
     except FileNotFoundError as e:
         print_error(f"\n{e}\n")

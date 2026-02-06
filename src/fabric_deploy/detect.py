@@ -63,6 +63,13 @@ class DetectedParameter:
 class ParameterDetector:
     """Detects source IDs from workspace repository files."""
 
+    # Lakehouse-related parameter descriptions (used for feature branch filtering)
+    LAKEHOUSE_DESCRIPTIONS: set[str] = {
+        "Lakehouse ID",
+        "SQL Analytics Endpoint Connection String",
+        "Lakehouse SQL Analytics Endpoint Item ID",
+    }
+
     # Regex patterns for ID detection
     UUID_PATTERN: regex = re.compile(
         r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE
@@ -552,6 +559,32 @@ class ParameterDetector:
 
         # Only skip if ALL detected workspace IDs match the target
         return all(wid == target_workspace_id for wid in detected_workspace_ids)
+
+    def filter_lakehouse_params(self) -> list[str]:
+        """
+        Remove lakehouse-related parameters from detected parameters.
+
+        Used for feature branch deployments where lakehouse references should
+        remain pointing to the dev workspace's lakehouse instead of being replaced.
+
+        Parameters with these descriptions are removed:
+        - "Lakehouse ID"
+        - "SQL Analytics Endpoint Connection String"
+        - "Lakehouse SQL Analytics Endpoint Item ID"
+
+        Returns:
+            List of find_values that were removed
+        """
+        if not self.parameters:
+            self.detect_all()
+
+        removed = []
+        for find_value, param in list(self.parameters.items()):
+            if param.description in self.LAKEHOUSE_DESCRIPTIONS:
+                del self.parameters[find_value]
+                removed.append(find_value)
+
+        return removed
 
     def print_detection_summary(self) -> None:
         """Print a summary of detected parameters."""
