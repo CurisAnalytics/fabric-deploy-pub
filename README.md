@@ -76,8 +76,6 @@ Options:
   -t, --item-types       Item types to deploy (e.g., Notebook DataPipeline)
   -x, --exclude-types    Item types to exclude (e.g., Report SemanticModel)
   -i, --include-items    Specific items only (format: "Name.Type")
-  -A, --no-auto-detect   Use existing parameter.yml instead of auto-detect
-  -s, --save-params      Save auto-detected parameters to parameter.yml.detected
   -b, --branch           Override git branch for workspace resolution
   -N, --new-workspace    Create workspace if it doesn't exist
   -r, --max-retries      Max retries for transient errors (default: 1)
@@ -92,7 +90,6 @@ fabdep -x Report          # Deploy excluding reports
 fabdep -b prod            # Deploy to "base_name [prod]"
 fabdep -N                 # Create workspace and deploy
 fabdep -r 2               # Retry up to 2 times on errors
-fabdep -s                 # Save detected params to .detected file
 fabdep -L                 # Feature branch: use dev lakehouse references
 ```
 

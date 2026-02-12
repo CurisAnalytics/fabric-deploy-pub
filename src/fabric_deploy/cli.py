@@ -72,10 +72,15 @@ def handle_command_error(error: Exception, context: str) -> None:
 
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
+    from . import __version__
+
     parser = argparse.ArgumentParser(
         prog="fabdep",
         description="Deploy Fabric workspace items - auto-detects configuration from parameter.yml",
         epilog="Run from your Fabric workspace directory.",
+    )
+    parser.add_argument(
+        "--version", "-V", action="version", version=f"%(prog)s {__version__}"
     )
 
     # Create subparsers for commands
@@ -185,21 +190,7 @@ def parse_args() -> argparse.Namespace:
         "--include-items",
         "-i",
         nargs="+",
-        help='Specific items only (format: "Name.Type")',
-    )
-    _ = deploy_parser.add_argument(
-        "--no-auto-detect",
-        "-A",
-        dest="auto_detect",
-        action="store_false",
-        default=True,
-        help="Disable auto-detect (use existing parameter.yml)",
-    )
-    _ = deploy_parser.add_argument(
-        "--save-params",
-        "-s",
-        action="store_true",
-        help="Save auto-detected parameters to parameter.yml.detected",
+        help='Specific items only (format: "display_name.ItemType")',
     )
     _ = deploy_parser.add_argument(
         "--branch",
@@ -233,7 +224,7 @@ def parse_args() -> argparse.Namespace:
 
     # Inject 'deploy' if no subcommand and not just asking for help
     if argv and not any(cmd in argv for cmd in known_commands):
-        if argv not in (["-h"], ["--help"]):
+        if argv not in (["-h"], ["--help"], ["-V"], ["--version"]):
             sys.argv.insert(1, "deploy")
 
     args = parser.parse_args()
@@ -248,8 +239,6 @@ def parse_args() -> argparse.Namespace:
             args.item_types = None
             args.exclude_types = None
             args.include_items = None
-            args.auto_detect = True
-            args.save_params = False
             args.branch = None
             args.new_workspace = False
             args.max_retries = 1
@@ -370,8 +359,6 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
         deployer = WorkspaceDeployer(
             repo_dir=args.directory,
             logger_name="fabric_deploy.cli",
-            auto_detect=bool(args.auto_detect),
-            save_detected_params=bool(args.save_params),
             branch_override=args.branch,
             new_workspace=bool(args.new_workspace),
             max_retries=int(args.max_retries),
