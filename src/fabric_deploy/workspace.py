@@ -37,8 +37,6 @@ class WorkspaceDeployer:
     Attributes:
             repo_dir: Path to the repository directory containing Fabric workspace items
             logger_name: Optional custom logger name (defaults to module name)
-            auto_detect: Enable auto-detection mode to generate parameter.yml dynamically
-            save_detected_params: Save detected parameters to parameter.yml.detected file
             branch_override: Override git branch for workspace name resolution (defaults to current branch)
             new_workspace: Create workspace if it doesn't exist
             max_retries: Max retries for transient errors (default: 1)
@@ -47,7 +45,7 @@ class WorkspaceDeployer:
     IMPORTANT: Initialization has side effects!
     - Reads fabdep.yml from disk
     - Makes network calls to Fabric API (for workspace ID resolution)
-    - Generates parameter files (if auto_detect=True)
+    - Generates parameter files
     - Auto-detects lakehouse metadata
 
     All configuration is loaded from fabdep.yml in __post_init__.
@@ -55,8 +53,6 @@ class WorkspaceDeployer:
 
     repo_dir: Path | str
     logger_name: str | None = None
-    auto_detect: bool = True  # Enable auto-detection mode (default)
-    save_detected_params: bool = False  # Save detected parameters to .detected file
     branch_override: str | None = None  # Override git branch for workspace resolution
     new_workspace: bool = False  # Create workspace if it doesn't exist
     max_retries: int = 1  # Max retries for transient errors
@@ -91,10 +87,7 @@ class WorkspaceDeployer:
         2. Initializes logger
         3. Reads fabdep.yml from disk
         4. Makes network call to Fabric REST API to resolve workspace ID
-        5. If auto_detect=True:
-           - Scans workspace files to detect source IDs
-           - Generates parameter.yml with dynamic variables
-           - Optionally saves parameter.yml.detected
+        5. Scans workspace files to detect source IDs and generates parameter.yml
         6. Scans for .Lakehouse directories and reads .platform metadata
 
         These operations happen automatically during object construction,
@@ -106,9 +99,8 @@ class WorkspaceDeployer:
         # Always load workspace ID from fabdep.yml
         self._load_config()
 
-        # Auto-detect parameters if requested
-        if self.auto_detect:
-            self._generate_dynamic_params()
+        # Auto-detect and generate parameters
+        self._generate_dynamic_params()
 
         # Detect item types and lakehouse
         self.repo_item_types = self._get_repo_item_types()
@@ -340,8 +332,6 @@ class WorkspaceDeployer:
 
         Checks if source and target workspaces are the same - if so, skips generation.
         Creates parameter.yml and backs up existing parameter.yml if present.
-        Optionally saves a copy to parameter.yml.detected if save_detected_params is True.
-
         Also merges manual_parameters from fabdep.yml if specified.
 
         Args:
@@ -381,23 +371,6 @@ class WorkspaceDeployer:
                 "Source and target workspace are the same -- deploying directly without replacements",
             ]
             return
-
-        # Save detected parameters if requested
-        if self.save_detected_params:
-            detected_file = self._repo_dir_resolved / "parameter.yml.detected"
-            detector.save_parameter_yml(
-                output_path=detected_file,
-                use_dynamic=True,
-                environment="fabdep",
-                skip_empty=True,
-            )
-            # Count what was saved
-            with_dynamic = sum(
-                1 for p in detector.parameters.values() if p.dynamic_variable
-            )
-            self.logger.info(
-                f"Saved {with_dynamic} detected parameter(s) to {detected_file.name}"
-            )
 
         # Count what was detected (after filtering)
         dyns = sum(1 for p in detector.parameters.values() if p.dynamic_variable)
@@ -634,7 +607,10 @@ class WorkspaceDeployer:
             include_items: Include only specific items (format: "ItemName.ItemType")
         """
 
+        from . import __version__
+
         print_header("Fabric CI/CD")
+        self.logger.info(f"fabric-deploy v{__version__}")
 
         # Enable experimental feature flags if name-based filtering is requested
         if include_items:
@@ -689,10 +665,10 @@ class WorkspaceDeployer:
             if derived_types:
                 item_type_in_scope = sorted(derived_types)
 
-        # Regenerate parameters with filtering if auto-detect is enabled and item filtering is active
+        # Regenerate parameters with filtering if item filtering is active
         # This ensures only parameters relevant to the filtered item types are included,
         # preventing warnings from fabric-cicd about unused find_replace entries
-        if self.auto_detect and item_type_in_scope:
+        if item_type_in_scope:
             self._generate_dynamic_params(item_types=item_type_in_scope)
 
         # Print header with repo info
