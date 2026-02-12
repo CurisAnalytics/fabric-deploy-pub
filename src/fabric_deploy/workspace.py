@@ -27,6 +27,7 @@ from .api import (
 from .detect import ParameterDetector
 from .log import get_logger, is_transient_error, print_header
 
+
 @dataclass
 class WorkspaceDeployer:
     """
@@ -59,7 +60,7 @@ class WorkspaceDeployer:
     branch_override: str | None = None  # Override git branch for workspace resolution
     new_workspace: bool = False  # Create workspace if it doesn't exist
     max_retries: int = 1  # Max retries for transient errors
-    skip_lakehouse: bool = False  # Skip lakehouse parameter replacement (feature branch mode)
+    skip_lakehouse: bool = False  # Skip its parameter replacement (feature branch mode)
 
     # Configuration fields - auto-loaded in __post_init__
     workspace_id: str = field(init=False, repr=False)
@@ -377,8 +378,7 @@ class WorkspaceDeployer:
         # Check if source and target workspaces are the same
         if detector.should_skip_replacement(self.workspace_id):
             self._auto_detect_summary = [
-                f"Source and target workspace are the same ({self.workspace_id})",
-                "No parameter file will be used -- deploying directly without replacements",
+                "Source and target workspace are the same -- deploying directly without replacements",
             ]
             return
 
@@ -433,7 +433,9 @@ class WorkspaceDeployer:
             # First call: backup existing parameter.yml if present
             if param_file.exists():
                 _ = param_file.rename(backup_file)
-                summary.append(f"Backed up existing parameter.yml to {backup_file.name}")
+                summary.append(
+                    f"Backed up existing parameter.yml to {backup_file.name}"
+                )
             self._backed_up_original = True
         elif param_file.exists():
             # Subsequent calls: remove auto-generated file before recreating
@@ -676,6 +678,17 @@ class WorkspaceDeployer:
                 t for t in ACCEPTED_ITEM_TYPES if t not in exclude_types
             ]
 
+        # Auto-derive type filter from include_items (Name.Type format)
+        if include_items and not item_type_in_scope:
+            derived_types = set()
+            for item in include_items:
+                if "." in item:
+                    item_type = item.rsplit(".", 1)[1]
+                    if item_type in ACCEPTED_ITEM_TYPES:
+                        derived_types.add(item_type)
+            if derived_types:
+                item_type_in_scope = sorted(derived_types)
+
         # Regenerate parameters with filtering if auto-detect is enabled and item filtering is active
         # This ensures only parameters relevant to the filtered item types are included,
         # preventing warnings from fabric-cicd about unused find_replace entries
@@ -692,13 +705,9 @@ class WorkspaceDeployer:
 
         if item_type_in_scope:
             # Show item types in scope, filtered by what exists in repo
-            types_to_deploy = sorted(
-                set(item_type_in_scope) & self.repo_item_types
-            )
+            types_to_deploy = sorted(set(item_type_in_scope) & self.repo_item_types)
             if types_to_deploy:
-                self.logger.info(
-                    f"Item types in scope: {', '.join(types_to_deploy)}"
-                )
+                self.logger.info(f"Item types in scope: {', '.join(types_to_deploy)}")
             else:
                 self.logger.warning("No matching item types found in repository")
         if include_items:
