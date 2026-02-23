@@ -219,7 +219,7 @@ Creates workspace if it doesn't exist: `{workspace_base_name} [{branch}]`
 ```toml
 [project]
 dependencies = [
-    "fabric-cicd>=0.1.29",    # Microsoft's official deployment package
+    "fabric-cicd>=0.2.0",     # Microsoft's official deployment package
     "pyyaml",                 # fabdep.yml parsing
 ]
 ```

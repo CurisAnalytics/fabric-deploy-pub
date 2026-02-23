@@ -11,13 +11,12 @@ from collections.abc import Sequence
 from typing import ClassVar
 
 from fabric_cicd._common._color import Fore, Style
-from fabric_cicd._common._logging import print_header
 
 from .auth import AzureAccount
 
 __all__ = [
     "get_logger",
-    "print_header",
+    "patch_fabric_cicd_logger",
     "print_error",
     "format_auth_error_message",
     "format_account_list",
@@ -53,11 +52,85 @@ class CustomFormatter(logging.Formatter):
         ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
         # Get visual length of level_name without ANSI codes
         visual_level_length = len(ansi_escape.sub("", level_name))
-        # Pad to 8 visual characters
+        # INFO: no prefix; other levels: show colored prefix
+        if record.levelname == "INFO":
+            return message
         padding = " " * max(0, 8 - visual_level_length)
-        full_message = f"{level_name}{padding} {message}"
+        return f"{level_name}{padding} {message}"
 
-        return full_message
+
+class FabricCicdFormatter(logging.Formatter):
+    """Formatter for the fabric_cicd logger that omits timestamps on header/blank lines.
+
+    Header lines (containing '####') and blank separator lines are formatted
+    without timestamps to reduce visual noise. All other lines keep timestamps
+    for operational timing information.
+    """
+
+    LEVEL_COLORS: ClassVar[dict[str, str]] = CustomFormatter.LEVEL_COLORS
+
+    # ANSI escape code pattern for calculating visual length
+    _ANSI_RE: ClassVar[re.Pattern[str]] = re.compile(
+        r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])"
+    )
+
+    def _format_level(self, record: logging.LogRecord) -> tuple[str, str]:
+        """Return (colored_level_name, padding) for a log record."""
+        if record.levelname == "INFO":
+            return "", ""
+        level_color = self.LEVEL_COLORS.get(record.levelname, "")
+        level_name = {
+            "WARNING": "warn",
+            "DEBUG": "debug",
+            "INFO": "info",
+            "ERROR": "error",
+            "CRITICAL": "crit",
+        }.get(record.levelname, "unknown")
+        level_name = f"{level_color}[{level_name}]"
+        visual_length = len(self._ANSI_RE.sub("", level_name))
+        padding = " " * max(0, 8 - visual_length)
+        return level_name, padding
+
+    def format(self, record: logging.LogRecord) -> str:  # pyright: ignore[reportImplicitOverride]
+        raw_message = record.getMessage()
+        message = f"{raw_message}{Style.RESET_ALL}"
+        stripped = self._ANSI_RE.sub("", raw_message).strip()
+
+        level_name, padding = self._format_level(record)
+        prefix = f"{level_name}{padding} " if level_name else ""
+
+        # Header lines (####) and blank separators: no timestamp
+        if "####" in stripped or stripped == "":
+            return f"{prefix}{message}"
+
+        timestamp = self.formatTime(record, self.datefmt)
+
+        # Indented lines (fabric_cicd uses "->" as indent marker)
+        if "->" in raw_message:
+            message = message.replace("->", "")
+
+        return f"{prefix}{timestamp} - {message}"
+
+
+def patch_fabric_cicd_logger() -> None:
+    """Replace the fabric_cicd logger's formatter to omit timestamps on header lines.
+
+    Should be called after fabric_cicd has been imported (which runs configure_logger()
+    at import time). Finds the StreamHandler on the 'fabric_cicd' logger and swaps in
+    FabricCicdFormatter.
+    """
+    fc_logger = logging.getLogger("fabric_cicd")
+    for handler in fc_logger.handlers:
+        if isinstance(handler, logging.StreamHandler):
+            handler.setFormatter(FabricCicdFormatter(datefmt="%H:%M:%S"))
+            break
+
+    # Also patch console_only logger (used by fabric_cicd for exception messages)
+    console_logger = logging.getLogger("console_only")
+    for handler in console_logger.handlers:
+        if isinstance(handler, logging.StreamHandler):
+            handler.setFormatter(FabricCicdFormatter(datefmt="%H:%M:%S"))
+            break
 
 
 def get_logger(name: str) -> logging.Logger:
