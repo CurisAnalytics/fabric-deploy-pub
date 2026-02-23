@@ -17,6 +17,7 @@ from fabric_cicd import (
     publish_all_items,
     unpublish_all_orphan_items,
 )
+from fabric_cicd._common._logging import log_header
 from fabric_cicd.constants import ACCEPTED_ITEM_TYPES
 
 from .api import (
@@ -25,7 +26,7 @@ from .api import (
     get_workspace_id_by_name,
 )
 from .detect import ParameterDetector
-from .log import get_logger, is_transient_error, print_header
+from .log import get_logger, is_transient_error, patch_fabric_cicd_logger
 
 
 @dataclass
@@ -45,10 +46,10 @@ class WorkspaceDeployer:
     IMPORTANT: Initialization has side effects!
     - Reads fabdep.yml from disk
     - Makes network calls to Fabric API (for workspace ID resolution)
-    - Generates parameter files
+    - Scans workspace files to detect source IDs (stored, not written to disk)
     - Auto-detects lakehouse metadata
 
-    All configuration is loaded from fabdep.yml in __post_init__.
+    Parameter file (parameter.yml) is written during deploy(), not during init.
     """
 
     repo_dir: Path | str
@@ -75,7 +76,9 @@ class WorkspaceDeployer:
         default_factory=set, init=False, repr=False
     )
     _created_param_file: bool = field(default=False, init=False, repr=False)
-    _backed_up_original: bool = field(default=False, init=False, repr=False)
+    _detector: ParameterDetector | None = field(default=None, init=False, repr=False)
+    _skipped_lakehouse_count: int = field(default=0, init=False, repr=False)
+    _manual_count: int = field(default=0, init=False, repr=False)
     logger: logging.Logger = field(init=False, repr=False)
 
     def __post_init__(self):
@@ -87,11 +90,10 @@ class WorkspaceDeployer:
         2. Initializes logger
         3. Reads fabdep.yml from disk
         4. Makes network call to Fabric REST API to resolve workspace ID
-        5. Scans workspace files to detect source IDs and generates parameter.yml
+        5. Scans workspace files to detect source IDs (stored in memory, not written to disk)
         6. Scans for .Lakehouse directories and reads .platform metadata
 
-        These operations happen automatically during object construction,
-        not during the deploy() call.
+        Parameter file writing is deferred to deploy() when the item scope is known.
         """
         self._repo_dir_resolved = Path(self.repo_dir).resolve()
         self.logger = get_logger(self.logger_name or __name__)
@@ -99,8 +101,8 @@ class WorkspaceDeployer:
         # Always load workspace ID from fabdep.yml
         self._load_config()
 
-        # Auto-detect and generate parameters
-        self._generate_dynamic_params()
+        # Detect parameters (file written later in deploy() when item scope is known)
+        self._detect_parameters()
 
         # Detect item types and lakehouse
         self.repo_item_types = self._get_repo_item_types()
@@ -326,42 +328,56 @@ class WorkspaceDeployer:
             self.logger.error(f"Failed to create workspace: {e}")
             raise
 
-    def _generate_dynamic_params(self, item_types: list[str] | None = None) -> None:
+    def _detect_parameters(self) -> None:
         """
-        Generate parameter file dynamically using auto-detection.
+        Detect parameters from workspace files and store for later use.
 
-        Checks if source and target workspaces are the same - if so, skips generation.
-        Creates parameter.yml and backs up existing parameter.yml if present.
-        Also merges manual_parameters from fabdep.yml if specified.
-
-        Args:
-            item_types: Filter parameters to only those used by specified item types
+        Runs during __post_init__. Detection and storage only — no file I/O.
+        The parameter file is written later in _write_parameter_file() during deploy().
         """
-        # Detect parameters (suppress logs, we'll show summary later)
         detector = ParameterDetector(
             repo_dir=self._repo_dir_resolved, logger_name=self.logger.name
         )
         detector.detect_all()
 
         # Filter out lakehouse parameters if skip_lakehouse is enabled (feature branch mode)
-        skipped_lakehouse_count = 0
+        self._skipped_lakehouse_count = 0
         if self.skip_lakehouse:
             removed = detector.filter_lakehouse_params()
-            skipped_lakehouse_count = len(removed)
+            self._skipped_lakehouse_count = len(removed)
 
         # Load manual parameters from fabdep.yml if specified
-        manual_count = self._load_manual_parameters(detector)
+        self._manual_count = self._load_manual_parameters(detector)
+
+        self._detector = detector
+
+    def _write_parameter_file(self, item_types: list[str] | None = None) -> None:
+        """
+        Filter detected parameters and write parameter.yml for deployment.
+
+        Called once from deploy() when the item scope is known.
+
+        Args:
+            item_types: Filter parameters to only those used by specified item types
+        """
+        detector = self._detector
+        if detector is None:
+            return
 
         # Filter parameters based on item_types if specified
         # This prevents warnings about unused parameters when deploying only specific item types
         if item_types:
+            scope = set(item_types)
             filtered_params = {}
             for find_value, param in detector.parameters.items():
                 # Always include Workspace ID - it applies to all item types
                 if param.description == "Workspace ID":
                     filtered_params[find_value] = param
                 # Include parameter if its item_types overlap with filtered types
-                elif param.item_types.intersection(set(item_types)):
+                elif param.item_types & scope:
+                    # Narrow item_types to only those in scope so fabric-cicd
+                    # doesn't warn about out-of-scope types in the parameter file
+                    param.item_types = param.item_types & scope
                     filtered_params[find_value] = param
             detector.parameters = filtered_params
 
@@ -379,14 +395,9 @@ class WorkspaceDeployer:
         # Check if we have any parameters that will actually be written to the file
         # When skip_empty=True, only parameters with dynamic variables are written
         if dyns == 0:
-            # No parameters to replace - skip parameter.yml creation
-            # Also clean up any existing param file from initial detection
-            param_file = self._repo_dir_resolved / "parameter.yml"
-            if param_file.exists():
-                param_file.unlink()
-            if skipped_lakehouse_count > 0:
+            if self._skipped_lakehouse_count > 0:
                 self._auto_detect_summary = [
-                    f"Skipped {skipped_lakehouse_count} lakehouse parameter{'s' if skipped_lakehouse_count != 1 else ''} (--skip-lakehouse)",
+                    f"Skipped {self._skipped_lakehouse_count} lakehouse parameter{'s' if self._skipped_lakehouse_count != 1 else ''} (--skip-lakehouse)",
                     "Deploying without parameter.yml file",
                 ]
             else:
@@ -396,23 +407,14 @@ class WorkspaceDeployer:
                 ]
             return
 
-        # Backup existing parameter.yml if it exists (but don't overwrite existing backup)
+        # Backup existing parameter.yml if present
         param_file = self._repo_dir_resolved / "parameter.yml"
         backup_file = self._repo_dir_resolved / "parameter.yml.backup"
         summary = []
 
-        # Only backup on first call to this method
-        if not self._backed_up_original:
-            # First call: backup existing parameter.yml if present
-            if param_file.exists():
-                _ = param_file.rename(backup_file)
-                summary.append(
-                    f"Backed up existing parameter.yml to {backup_file.name}"
-                )
-            self._backed_up_original = True
-        elif param_file.exists():
-            # Subsequent calls: remove auto-generated file before recreating
-            param_file.unlink()
+        if param_file.exists():
+            _ = param_file.rename(backup_file)
+            summary.append(f"Backed up existing parameter.yml to {backup_file.name}")
 
         # Generate parameter file for deployment (using dynamic variables)
         detector.save_parameter_yml(
@@ -434,16 +436,16 @@ class WorkspaceDeployer:
             else ""
         )
         manual_part = (
-            f" + {manual_count} manual parameter{'s' if manual_count != 1 else ''}"
-            if manual_count
+            f" + {self._manual_count} manual parameter{'s' if self._manual_count != 1 else ''}"
+            if self._manual_count
             else ""
         )
         summary.append(
             f"Found {dyns} dynamic parameter{'s' if dyns != 1 else ''}{external_part}{manual_part}"
         )
-        if skipped_lakehouse_count > 0:
+        if self._skipped_lakehouse_count > 0:
             summary.append(
-                f"Skipped {skipped_lakehouse_count} lakehouse parameter{'s' if skipped_lakehouse_count != 1 else ''} (--skip-lakehouse)"
+                f"Skipped {self._skipped_lakehouse_count} lakehouse parameter{'s' if self._skipped_lakehouse_count != 1 else ''} (--skip-lakehouse)"
             )
 
         self._auto_detect_summary = summary
@@ -609,8 +611,7 @@ class WorkspaceDeployer:
 
         from . import __version__
 
-        print_header("Fabric CI/CD")
-        self.logger.info(f"fabric-deploy v{__version__}")
+        log_header(self.logger, f"Fabric CI/CD v{__version__}")
 
         # Enable experimental feature flags if name-based filtering is requested
         if include_items:
@@ -665,11 +666,8 @@ class WorkspaceDeployer:
             if derived_types:
                 item_type_in_scope = sorted(derived_types)
 
-        # Regenerate parameters with filtering if item filtering is active
-        # This ensures only parameters relevant to the filtered item types are included,
-        # preventing warnings from fabric-cicd about unused find_replace entries
-        if item_type_in_scope:
-            self._generate_dynamic_params(item_types=item_type_in_scope)
+        # Write parameter file (with item-type filtering if applicable)
+        self._write_parameter_file(item_types=item_type_in_scope)
 
         # Print header with repo info
         self.logger.info(f"Workspace Name: '{self.workspace_name}'")
@@ -704,6 +702,9 @@ class WorkspaceDeployer:
             self.logger.info(
                 f"Parameter file modified: {mtime.strftime('%d/%m/%Y %H:%M:%S')}"
             )
+
+        # Replace fabric_cicd's log formatter to omit timestamps on header lines
+        patch_fabric_cicd_logger()
 
         try:
             self._deploy_items(
