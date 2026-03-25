@@ -50,7 +50,7 @@ fabdep -N                     # Create new workspace
 fabdep -b feature-branch      # Override git branch
 fabdep -r 2                   # Retry up to 2 times on transient errors
 fabdep -L                     # Skip lakehouse replacement (feature branch mode)
-fabdep auth list              # Show Azure accounts
+fabdep auth list              # Show Azure accounts (User or Service Principal)
 fabdep rename -e              # Rename directories to match display names
 ```
 
@@ -205,6 +205,8 @@ Creates workspace if it doesn't exist: `{workspace_base_name} [{branch}]`
 
 **`auth.py`** - Azure authentication utilities
 - Account management: `list_accounts()`, `switch_account()`, `rename_subscription()`
+- `fabdep auth list` shows `(User)` or `(Service Principal)` for each account
+- To authenticate as a service principal: `az login --service-principal -u <CLIENT_ID> -p <CLIENT_SECRET> --tenant <TENANT_ID>`
 
 **`log.py`** - Logging and console formatting
 - Custom logger with styled output

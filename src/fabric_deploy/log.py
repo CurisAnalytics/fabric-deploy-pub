@@ -164,7 +164,9 @@ def format_account_list(
         is_current = acct.get("isDefault") or acct.get("id") == current_id
         marker = " [CURRENT]" if is_current else ""
         lines.append(f"  • {acct['name']}{marker}")
-        lines.append(f"    User: {acct['user']['name']}")
+        user_type = acct['user'].get('type', '')
+        type_label = "Service Principal" if user_type.lower() == "serviceprincipal" else "User"
+        lines.append(f"    User: {acct['user']['name']} ({type_label})")
         lines.append(f"    Subscription: {acct['id']}")
     return "\n".join(lines)
 

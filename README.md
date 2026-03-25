@@ -109,7 +109,7 @@ Commands:
 
 **Examples**:
 ```bash
-# List accounts
+# List accounts (shows whether authenticated as User or Service Principal)
 fabdep auth list
 
 # Switch to different account
@@ -118,6 +118,16 @@ fabdep auth switch xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 # Rename subscription (auto-switches if needed)
 fabdep auth rename xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx "Production"
 ```
+
+**Authenticating as a Service Principal** (e.g. for client tenants):
+```bash
+az login --service-principal \
+  -u <CLIENT_ID> \
+  -p <CLIENT_SECRET> \
+  --tenant <TENANT_ID>
+```
+
+`fabdep auth list` will show `(Service Principal)` to confirm the active identity.
 
 
 ---
