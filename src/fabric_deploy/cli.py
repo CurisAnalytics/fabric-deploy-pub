@@ -273,17 +273,9 @@ def handle_auth_command(args: argparse.Namespace) -> None:
             sys.exit(1)
 
     elif args.auth_command == "rename":
-        # Rename subscription (auto-switches if needed)
+        # Rename subscription locally (edits ~/.azure/azureProfile.json)
         try:
-            switched = rename_subscription(args.subscription_id, args.name)
-            if switched:
-                print(
-                    f"\n✓ Switched to and renamed subscription to: {args.name} ({args.subscription_id})\n"
-                )
-            else:
-                print(
-                    f"\n✓ Renamed subscription to: {args.name} ({args.subscription_id})\n"
-                )
+            rename_subscription(args.subscription_id, args.name)
         except Exception as e:
             print_error(f"\nFailed to rename subscription: {e}\n")
             sys.exit(1)

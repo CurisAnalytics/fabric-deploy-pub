@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+from pathlib import Path
 from typing import TypedDict
 
 
@@ -64,82 +65,44 @@ def switch_account(subscription_id: str) -> None:
     )
 
 
-def rename_subscription(subscription_id: str, new_name: str) -> bool:
+def rename_subscription(subscription_id: str, new_name: str) -> None:
     """
-    Rename an Azure subscription.
-    Automatically switches to the subscription if rename fails due to tenant context.
-    Requires Owner permissions on the subscription.
+    Rename an Azure subscription locally (edits ~/.azure/azureProfile.json).
+
+    This is a local-only change — it does NOT call the Azure API and will not
+    be visible to other users or tenant admins.
 
     Args:
         subscription_id: Subscription ID to rename
         new_name: New name for the subscription
 
-    Returns: True if account was switched during the operation, False otherwise
+    Raises:
+        FileNotFoundError: If Azure CLI profile not found
+        ValueError: If subscription ID not found in local profile
     """
-    result = subprocess.run(
-        [
-            *"az account subscription rename --subscription-id".split(),
-            subscription_id,
-            "--name",
-            new_name,
-        ],
-        capture_output=True,
-        text=True,
-    )
+    profile_path = Path.home() / ".azure" / "azureProfile.json"
+    if not profile_path.exists():
+        raise FileNotFoundError(
+            f"Azure CLI profile not found at {profile_path}\n"
+            "Make sure you're logged in with 'az login'"
+        )
 
-    if result.returncode == 0:
-        # Force refresh account list to show updated name
-        _ = list_accounts(refresh=True)
-        return False  # No account switch was needed
+    # Azure CLI profile uses UTF-8-BOM encoding
+    raw = profile_path.read_bytes()
+    text = raw.decode("utf-8-sig")
+    profile = json.loads(text)
 
-    error_msg = result.stderr.strip() if result.stderr else "Unknown error"
+    found = False
+    for sub in profile.get("subscriptions", []):
+        if sub.get("id") == subscription_id:
+            sub["name"] = new_name
+            found = True
+            break
 
-    # Check if error is due to wrong tenant context
-    if (
-        "not found" in error_msg.lower()
-        or "could not find" in error_msg.lower()
-        or "invalidauthenticationtokentenant" in error_msg.lower()
-        or "wrong issuer" in error_msg.lower()
-    ):
-        # Attempt to switch to the subscription first
-        try:
-            print(
-                f"Subscription not accessible in current context. Switching to {subscription_id}..."
-            )
-            switch_account(subscription_id)
+    if not found:
+        raise ValueError(
+            f"Subscription '{subscription_id}' not found in local Azure CLI profile.\n"
+            "Run 'fabdep auth list' to see available subscriptions."
+        )
 
-            # Retry rename after switching
-            retry_result = subprocess.run(
-                [
-                    *"az account subscription rename --subscription-id".split(),
-                    subscription_id,
-                    "--name",
-                    new_name,
-                ],
-                capture_output=True,
-                text=True,
-            )
-
-        except subprocess.CalledProcessError as switch_error:
-            raise RuntimeError(
-                f"Failed to switch to subscription {subscription_id}.\n"
-                f"Original error: {error_msg}\n"
-                f"Switch error: {switch_error}"
-            ) from switch_error
-
-        if retry_result.returncode != 0:
-            retry_error = (
-                retry_result.stderr.strip() if retry_result.stderr else "Unknown error"
-            )
-            raise RuntimeError(
-                f"Failed to rename subscription after switching context.\n{retry_error}\n\n"
-                f"Common issues:\n"
-                f"  • Requires Owner permissions (Microsoft.Subscription/rename/action)\n"
-                f"  • Cannot rename tenant-level accounts\n"
-                f"  • Check your permissions on this subscription"
-            )
-
-        # Force refresh account list to show updated name
-        _ = list_accounts(refresh=True)
-        return True  # Indicate that we switched accounts
-    return False
+    profile_path.write_text(json.dumps(profile, indent=2), encoding="utf-8")
