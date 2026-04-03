@@ -154,7 +154,7 @@ class WorkspaceDeployer:
             # Try using directory name as workspace_base_name (silent fallback)
             dir_name = self._repo_dir_resolved.name
             branch = self.branch_override or self._get_git_branch()
-            test_workspace_name = f"{dir_name} [{branch}]"
+            test_workspace_name = f"{dir_name} [{branch.upper()}]"
 
             try:
                 # Attempt to resolve workspace - if it works, use directory name
@@ -196,7 +196,7 @@ class WorkspaceDeployer:
             branch = self.branch_override
         else:
             branch = self._get_git_branch()
-        self.workspace_name = f"{workspace_base_name} [{branch}]"
+        self.workspace_name = f"{workspace_base_name} [{branch.upper()}]"
 
         # Create workspace if requested
         if self.new_workspace:
@@ -624,6 +624,13 @@ class WorkspaceDeployer:
             self.logger.warning(
                 "Orphan cleanup disabled when using --include-items for safety."
             )
+
+        # Normalize item type casing (case-insensitive match against canonical names)
+        canonical_map = {t.lower(): t for t in ACCEPTED_ITEM_TYPES}
+        if item_types:
+            item_types = [canonical_map.get(t.lower(), t) for t in item_types]
+        if exclude_types:
+            exclude_types = [canonical_map.get(t.lower(), t) for t in exclude_types]
 
         # Validate item type filters
         if item_types:

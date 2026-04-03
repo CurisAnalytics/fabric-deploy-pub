@@ -159,14 +159,15 @@ def format_account_list(
         current_id: Subscription ID of current account (for marking)
     Returns: Formatted string with account information
     """
+    sorted_accounts = sorted(accounts, key=lambda a: a.get("name", "").lower())
     lines: list[str] = []
-    for acct in accounts:
+    for acct in sorted_accounts:
         is_current = acct.get("isDefault") or acct.get("id") == current_id
         marker = " [CURRENT]" if is_current else ""
         lines.append(f"  • {acct['name']}{marker}")
         user_type = acct['user'].get('type', '')
-        type_label = "Service Principal" if user_type.lower() == "serviceprincipal" else "User"
-        lines.append(f"    User: {acct['user']['name']} ({type_label})")
+        qualifier = "SPN" if user_type.lower() == "serviceprincipal" else "User"
+        lines.append(f"    {qualifier}: {acct['user']['name']}")
         lines.append(f"    Subscription: {acct['id']}")
     return "\n".join(lines)
 
