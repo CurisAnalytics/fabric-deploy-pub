@@ -9,7 +9,7 @@ CLI wrapper around Microsoft's [fabric-cicd](https://github.com/microsoft/fabric
 - **Workspace Creation**: Create new workspaces with `-N`
 - **Item Filtering**: Deploy/exclude specific item types
 - **Feature Branch Support**: Skip lakehouse replacement with `-L` (use dev lakehouse)
-- **Auth Management**: Switch Azure subscriptions
+- **Auth Management**: Switch accounts, persistent SPN logins & aliases
 - **Configurable Retries**: Auto-retry transient errors (customizable with `-r`)
 
 
@@ -115,7 +115,7 @@ fabdep auth list
 # Switch to different account
 fabdep auth switch xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 
-# Rename subscription (auto-switches if needed)
+# Rename account (persists across az login/refresh)
 fabdep auth rename xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx "Production"
 ```
 
@@ -124,10 +124,11 @@ fabdep auth rename xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx "Production"
 az login --service-principal \
   -u <CLIENT_ID> \
   -p <CLIENT_SECRET> \
-  --tenant <TENANT_ID>
+  --tenant <TENANT_ID> \
+  --allow-no-subscriptions
 ```
 
-`fabdep auth list` will show `(Service Principal)` to confirm the active identity.
+SPNs are auto-persisted to `~/.azure/azureProfile.fabdep.json` on first `fabdep auth list`, so they survive `az account list --refresh` and re-logins. Renames are also stored there as aliases.
 
 
 ---
