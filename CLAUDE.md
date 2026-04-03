@@ -205,8 +205,10 @@ Creates workspace if it doesn't exist: `{workspace_base_name} [{branch}]`
 
 **`auth.py`** - Azure authentication utilities
 - Account management: `list_accounts()`, `switch_account()`, `rename_subscription()`
-- `fabdep auth list` shows `(User)` or `(Service Principal)` for each account
-- To authenticate as a service principal: `az login --service-principal -u <CLIENT_ID> -p <CLIENT_SECRET> --tenant <TENANT_ID>`
+- `fabdep auth list` shows `User`/`SPN` qualifier for each account
+- SPN accounts are auto-persisted to `~/.azure/azureProfile.fabdep.json` so they survive `az account list --refresh`
+- Renames are stored as aliases in the same fabdep profile (not in Azure's `azureProfile.json`)
+- To authenticate as a service principal: `az login --service-principal -u <CLIENT_ID> -p <CLIENT_SECRET> --tenant <TENANT_ID> --allow-no-subscriptions`
 
 **`log.py`** - Logging and console formatting
 - Custom logger with styled output

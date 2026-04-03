@@ -149,21 +149,17 @@ def print_error(message: str) -> None:
     print(f"{Fore.RED}{message}{Style.RESET_ALL}")
 
 
-def format_account_list(
-    accounts: Sequence[AzureAccount], current_id: str | None = None
-) -> str:
+def format_account_list(accounts: Sequence[AzureAccount]) -> str:
     """
     Format list of Azure accounts with current marker.
     Args:
         accounts: List of Azure account dictionaries
-        current_id: Subscription ID of current account (for marking)
     Returns: Formatted string with account information
     """
     sorted_accounts = sorted(accounts, key=lambda a: a.get("name", "").lower())
     lines: list[str] = []
     for acct in sorted_accounts:
-        is_current = acct.get("isDefault") or acct.get("id") == current_id
-        marker = " [CURRENT]" if is_current else ""
+        marker = " [CURRENT]" if acct.get("isDefault") else ""
         lines.append(f"  • {acct['name']}{marker}")
         user_type = acct['user'].get('type', '')
         qualifier = "SPN" if user_type.lower() == "serviceprincipal" else "User"

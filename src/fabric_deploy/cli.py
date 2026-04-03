@@ -6,7 +6,6 @@ from pathlib import Path
 from textwrap import dedent
 
 from .auth import (
-    get_current_account,
     list_accounts,
     rename_subscription,
     switch_account,
@@ -251,12 +250,8 @@ def handle_auth_command(args: argparse.Namespace) -> None:
     if args.auth_command == "list":
         # List current and all available accounts
         try:
-            current_account = get_current_account()
             all_accounts = list_accounts()
-
-            output = format_account_list(
-                all_accounts, current_account["id"] if current_account else None
-            )
+            output = format_account_list(all_accounts)
             print(output)
         except Exception as e:
             print_error(f"Failed to list accounts: {e}")
@@ -271,7 +266,7 @@ def handle_auth_command(args: argparse.Namespace) -> None:
             sys.exit(1)
 
     elif args.auth_command == "rename":
-        # Rename subscription locally (edits ~/.azure/azureProfile.json)
+        # Rename account (stores alias in fabdep profile)
         try:
             rename_subscription(args.subscription_id, args.name)
         except Exception as e:
