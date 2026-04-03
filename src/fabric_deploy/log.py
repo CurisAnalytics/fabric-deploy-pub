@@ -173,44 +173,27 @@ def format_account_list(
 
 
 def format_auth_error_message(
-    current_account: AzureAccount | None = None,
     all_accounts: Sequence[AzureAccount] | None = None,
 ) -> str:
     """
     Format helpful authentication error message with account info.
     Args:
-        current_account: Current Azure account dict (optional)
         all_accounts: List of all available Azure accounts (optional)
     Returns:  Formatted error message string with troubleshooting tips
     """
-    lines = [
-        SEP,
-        "Authentication/Authorization Error Detected",
-        SEP,
-    ]
-
-    if current_account:
-        lines.extend(
-            [
-                "",
-                f"Current: {current_account['name']} ({current_account['user']['name']})",
-                "",
-                "(This may not be the correct account for this repository!)",
-            ]
-        )
+    lines: list[str] = []
 
     if all_accounts and len(all_accounts) > 1:
-        lines.extend(["", "Available accounts:"])
+        lines.extend(["Available accounts:"])
         lines.append(format_account_list(all_accounts))
 
         lines.extend(
             [
                 "",
                 "To switch accounts: fabdep auth switch <subscription-id>",
+                "",
             ]
         )
-
-    lines.append(f"\n{SEP}\n")
 
     return "\n".join(lines)
 

@@ -62,9 +62,8 @@ def handle_command_error(error: Exception, context: str) -> None:
         print_error(connection_help)
     # Show friendly auth error message if this is an auth issue
     elif is_auth_error(error_msg):
-        current = get_current_account()
         all_accounts = list_accounts()
-        auth_help = format_auth_error_message(current, all_accounts)
+        auth_help = format_auth_error_message(all_accounts)
         print_error(auth_help)
 
     sys.exit(1)
@@ -267,7 +266,6 @@ def handle_auth_command(args: argparse.Namespace) -> None:
         # Switch to different subscription
         try:
             switch_account(args.subscription_id)
-            print(f"\n✓ Switched to subscription: {args.subscription_id}\n")
         except Exception as e:
             print_error(f"\nFailed to switch account: {e}\n")
             sys.exit(1)
