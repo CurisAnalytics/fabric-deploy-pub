@@ -6,7 +6,6 @@ import urllib.error
 import urllib.request
 from typing import TypedDict
 
-from .auth import get_current_account
 
 # pyright: reportMissingTypeArgument=false
 # pyright: reportUnknownMemberType=false
@@ -214,24 +213,11 @@ def get_workspace_id_by_name(workspace_name: str) -> str:
     ]
 
     if len(matches) == 0:
-        # Get current account info
-        current_account = get_current_account()
-        account_info = ""
-        if current_account:
-            account_info = (
-                "Using Azure account:\n"
-                f"  Account name: {current_account['name']}\n"
-                f"  Account ID: {current_account['id']}\n"
-                f"  User: {current_account['user']['name']}\n\n"
-            )
-
         available = [ws["displayName"] for ws in workspaces]
         raise ValueError(
             f"Workspace not found: '{workspace_name}'\n\n"
-            f"{account_info}"
             f"Available workspaces ({len(available)}):\n"
             + "\n".join(f"  - {name}" for name in sorted(available))
-            + "\n"
         )
     elif len(matches) > 1:
         raise ValueError(
