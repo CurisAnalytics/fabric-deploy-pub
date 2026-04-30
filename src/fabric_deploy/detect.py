@@ -386,6 +386,9 @@ class ParameterDetector:
         source_file = str(file_path.relative_to(self.repo_dir))
         self._extract_connections_recursive(data, source_file)
 
+    # Null UUID placeholder used in TridentNotebook activities (handled by fabric-cicd directly)
+    NULL_UUID = "00000000-0000-0000-0000-000000000000"
+
     def _extract_connections_recursive(self, obj, source_file: str) -> None:
         """Recursively extract connection IDs from nested JSON structures."""
         if isinstance(obj, dict):
@@ -399,6 +402,16 @@ class ParameterDetector:
                         source_file=source_file,
                         description="External connection ID",
                     )
+
+            # Extract workspaceId from activity typeProperties (TridentNotebook, InvokePipeline)
+            # Skip null UUID placeholder — fabric-cicd handles those directly via _replace_workspace_ids
+            if "workspaceId" in obj and obj.get("workspaceId") != self.NULL_UUID:
+                self._add_uuid_parameter(
+                    value=obj["workspaceId"],
+                    item_type="DataPipeline",
+                    source_file=source_file,
+                    description="Workspace ID",
+                )
 
             # Recurse into nested dictionaries
             for value in obj.values():

@@ -448,6 +448,21 @@ class WorkspaceDeployer:
                 f"Skipped {self._skipped_lakehouse_count} lakehouse parameter{'s' if self._skipped_lakehouse_count != 1 else ''} (--skip-lakehouse)"
             )
 
+        # Warn if any SemanticModel connection parameters couldn't be resolved
+        unresolved_sem_model = [
+            p for p in detector.parameters.values()
+            if "SemanticModel" in p.item_types and not p.dynamic_variable and p.description != "External connection ID"
+        ]
+        if unresolved_sem_model:
+            self.logger.warning(
+                f"{len(unresolved_sem_model)} SemanticModel parameter(s) could not be auto-resolved and will be skipped:"
+            )
+            for p in unresolved_sem_model:
+                self.logger.warning(f"  {p.description}: {p.find_value[:60]}...")
+            self.logger.warning(
+                "Add a manual_parameters entry in fabdep.yml to supply the replacement value."
+            )
+
         self._auto_detect_summary = summary
 
     def _add_domain_substitutions(
