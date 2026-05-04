@@ -26,6 +26,7 @@ from .api import (
     get_default_capacity_id,
     get_workspace_id_by_name,
 )
+from .config import FabdepConfig
 from .detect import ParameterDetector
 from .git import current_branch
 from .log import get_logger, is_transient_error, patch_fabric_cicd_logger
@@ -73,7 +74,7 @@ class WorkspaceDeployer:
 
     # Private fields
     _repo_dir_resolved: Path = field(init=False, repr=False)
-    _config: dict | None = field(default=None, init=False, repr=False)  # parsed fabdep.yml; None if file absent
+    config: FabdepConfig = field(init=False, repr=False)  # parsed fabdep.yml + resolved branch
     _auto_detect_summary: list[str] | None = field(default=None, init=False, repr=False)
     _logged_manual_warnings: set[str] = field(
         default_factory=set, init=False, repr=False
@@ -101,17 +102,15 @@ class WorkspaceDeployer:
         self._repo_dir_resolved = Path(self.repo_dir).resolve()
         self.logger = get_logger(self.logger_name or __name__)
 
-        # Read fabdep.yml once; downstream methods consume `self._config`.
-        # `None` signals the file doesn't exist (triggers directory-name fallback).
-        config_file = self._repo_dir_resolved / "fabdep.yml"
-        if config_file.exists():
-            with open(config_file) as f:
-                self._config = yaml.safe_load(f) or {}
-        else:
-            self._config = None
+        # Parse fabdep.yml + resolve branch up front. Network calls (workspace
+        # lookup, capacity lookup, workspace creation) happen below in
+        # _resolve_workspace_id; FabdepConfig itself is I/O-light.
+        self.config = FabdepConfig.from_path(
+            self._repo_dir_resolved, branch_override=self.branch_override
+        )
+        self.workspace_name = self.config.workspace_name
 
-        # Always load workspace ID from fabdep.yml (or fall back to dirname)
-        self._load_config()
+        self._resolve_workspace_id()
 
         # Detect parameters (file written later in deploy() when item scope is known)
         self._detect_parameters()
@@ -124,28 +123,30 @@ class WorkspaceDeployer:
         """Thin wrapper around `git.current_branch` for testing/mockability."""
         return current_branch(self._repo_dir_resolved)
 
-    def _load_config(self) -> None:
-        """Resolve workspace identity from `self._config` (set in __post_init__)."""
-        if not self._repo_dir_resolved.exists():
-            raise FileNotFoundError(
-                f"Directory does not exist: {self._repo_dir_resolved}"
-            )
+    def _resolve_workspace_id(self) -> None:
+        """Look up (or create) the Fabric workspace and store its ID.
 
-        # No fabdep.yml at all → try the directory name as workspace_base_name
-        if self._config is None:
-            dir_name = self._repo_dir_resolved.name
-            branch = self.branch_override or self._get_git_branch()
-            test_workspace_name = f"{dir_name} [{branch.upper()}]"
+        - With `new_workspace=True`, creates the workspace first using the
+          configured (or default) capacity.
+        - With `from_yaml=False` (no fabdep.yml), the directory-name fallback
+          is in play: if the lookup fails we raise FileNotFoundError with
+          the same actionable message the prior implementation produced.
+        """
+        if self.new_workspace:
+            capacity_id = self.config.capacity_id
+            if not capacity_id:
+                print()
+                self.logger.info("No capacity_id specified, using default capacity")
+                capacity_id = get_default_capacity_id()
+                self.logger.info(f"Using capacity: {capacity_id}")
+            self._create_workspace_if_needed(capacity_id)
 
-            try:
-                test_workspace_id = get_workspace_id_by_name(test_workspace_name)
-                self.workspace_name = test_workspace_name
-                self.workspace_id = test_workspace_id
-                self.logger.debug(
-                    f"Using directory name '{dir_name}' as workspace_base_name"
-                )
-                return
-            except ValueError:
+        try:
+            self.workspace_id = get_workspace_id_by_name(self.workspace_name)
+        except ValueError:
+            if not self.config.from_yaml:
+                # No fabdep.yml AND the dirname-derived workspace doesn't exist:
+                # surface the "create a fabdep.yml" message.
                 raise FileNotFoundError(
                     f"fabdep.yml not found in {self._repo_dir_resolved}.\n\n"
                     "Create a fabdep.yml file with:\n"
@@ -154,39 +155,7 @@ class WorkspaceDeployer:
                     "The workspace will be resolved from: {base_name} [{branch}]\n\n"
                     "Note: This is separate from parameter.yml which is used by fabric-cicd."
                 ) from None
-
-        config = self._config
-        workspace_base_name = config.get("workspace_base_name")
-
-        if not workspace_base_name:
-            raise ValueError(
-                "No workspace_base_name found in fabdep.yml.\n\n"
-                "fabdep.yml must contain:\n"
-                '  workspace_base_name: "your_workspace"\n\n'
-                "The workspace will be resolved from: {base_name} [{branch}]"
-            )
-
-        # Resolve workspace ID from base name + branch
-        if self.branch_override:
-            branch = self.branch_override
-        else:
-            branch = self._get_git_branch()
-        self.workspace_name = f"{workspace_base_name} [{branch.upper()}]"
-
-        # Create workspace if requested
-        if self.new_workspace:
-            capacity_id = config.get("capacity_id")
-            if not capacity_id:
-                # Use default capacity (first active capacity)
-                print()
-                self.logger.info("No capacity_id specified, using default capacity")
-                capacity_id = get_default_capacity_id()
-                self.logger.info(f"Using capacity: {capacity_id}")
-
-            self._create_workspace_if_needed(capacity_id)
-
-        # Resolve workspace ID
-        self.workspace_id = get_workspace_id_by_name(self.workspace_name)
+            raise
 
     def _load_manual_parameters(self, detector: ParameterDetector) -> int:
         """
@@ -205,10 +174,7 @@ class WorkspaceDeployer:
         Returns:
             Number of manual parameter overrides applied
         """
-        if not self._config:
-            return 0
-
-        manual_params = self._config.get("manual_parameters", [])
+        manual_params = self.config.manual_parameters
         if not manual_params:
             return 0
 
