@@ -1,10 +1,12 @@
 """Microsoft Fabric REST API utilities."""
 
 import json
-import subprocess
 import urllib.error
 import urllib.request
 from typing import TypedDict
+
+from azure.core.exceptions import ClientAuthenticationError
+from azure.identity import AzureCliCredential
 
 
 # pyright: reportMissingTypeArgument=false
@@ -27,6 +29,7 @@ __all__ = [
     "FabricWorkspaceInfo",
     "get_access_token",
     "list_workspaces",
+    "find_workspace_id_by_name",
     "get_workspace_id_by_name",
     "create_workspace",
     "list_capacities",
@@ -34,41 +37,30 @@ __all__ = [
 ]
 
 
+_FABRIC_SCOPE = "https://api.fabric.microsoft.com/.default"
+
+
 def get_access_token() -> str:
     """
-    Get Azure access token for Fabric API.
+    Get Azure access token for Fabric API via the active `az` session.
+
+    Uses `AzureCliCredential` so the active subscription chosen by
+    `fabdep auth switch` / `az account set` is what gets used. No subprocess
+    shell-out — `azure-identity` handles caching and refresh internally.
 
     Returns:
         Access token string
 
     Raises:
-        RuntimeError: If token acquisition fails
+        RuntimeError: If token acquisition fails (e.g. `az login` required)
     """
     try:
-        result = subprocess.run(
-            [
-                "az",
-                "account",
-                "get-access-token",
-                "--resource",
-                "https://api.fabric.microsoft.com",
-                "--output",
-                "json",
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        token_data = json.loads(result.stdout)
-        return token_data["accessToken"]
-    except subprocess.CalledProcessError as e:
-        error_msg = e.stderr.strip() if e.stderr else "Unknown error"
+        return AzureCliCredential().get_token(_FABRIC_SCOPE).token
+    except ClientAuthenticationError as e:
         raise RuntimeError(
-            f"Failed to get Azure access token for Fabric API.\n{error_msg}\n\n"
+            f"Failed to get Azure access token for Fabric API.\n{e}\n\n"
             "Make sure you're logged in with 'az login'"
         ) from e
-    except (json.JSONDecodeError, KeyError) as e:
-        raise RuntimeError(f"Failed to parse access token response: {e}") from e
 
 
 def _fabric_api_request(
@@ -191,9 +183,39 @@ def get_default_capacity_id() -> str:
     return active_capacities[0]["id"]
 
 
+def find_workspace_id_by_name(workspace_name: str) -> str | None:
+    """
+    Find workspace ID by display name (case-insensitive). Non-raising lookup.
+
+    Args:
+        workspace_name: Workspace display name to search for
+
+    Returns:
+        Workspace ID (GUID) if a single match is found, else None
+
+    Raises:
+        ValueError: If multiple workspaces match the same name
+        RuntimeError: If API call fails
+    """
+    workspaces = list_workspaces()
+
+    matches = [
+        ws for ws in workspaces if ws["displayName"].lower() == workspace_name.lower()
+    ]
+
+    if len(matches) == 0:
+        return None
+    if len(matches) > 1:
+        raise ValueError(
+            f"Multiple workspaces found with name '{workspace_name}':\n"
+            + "\n".join(f"  - {ws['id']}: {ws['displayName']}" for ws in matches)
+        )
+    return matches[0]["id"]
+
+
 def get_workspace_id_by_name(workspace_name: str) -> str:
     """
-    Get workspace ID by display name (case-insensitive match).
+    Get workspace ID by display name (case-insensitive). Raises if not found.
 
     Args:
         workspace_name: Workspace display name to search for
@@ -205,27 +227,18 @@ def get_workspace_id_by_name(workspace_name: str) -> str:
         ValueError: If workspace not found or multiple matches found
         RuntimeError: If API call fails
     """
-    workspaces = list_workspaces()
+    found = find_workspace_id_by_name(workspace_name)
+    if found is not None:
+        return found
 
-    # Case-insensitive search
-    matches = [
-        ws for ws in workspaces if ws["displayName"].lower() == workspace_name.lower()
-    ]
-
-    if len(matches) == 0:
-        available = [ws["displayName"] for ws in workspaces]
-        raise ValueError(
-            f"Workspace not found: '{workspace_name}'\n\n"
-            f"Available workspaces ({len(available)}):\n"
-            + "\n".join(f"  - {name}" for name in sorted(available))
-        )
-    elif len(matches) > 1:
-        raise ValueError(
-            f"Multiple workspaces found with name '{workspace_name}':\n"
-            + "\n".join(f"  - {ws['id']}: {ws['displayName']}" for ws in matches)
-        )
-
-    return matches[0]["id"]
+    # Listing again to render a helpful error message — cheap relative to the
+    # cost of a failed deployment, and only happens on the unhappy path.
+    available = [ws["displayName"] for ws in list_workspaces()]
+    raise ValueError(
+        f"Workspace not found: '{workspace_name}'\n\n"
+        f"Available workspaces ({len(available)}):\n"
+        + "\n".join(f"  - {name}" for name in sorted(available))
+    )
 
 
 def create_workspace(
@@ -248,17 +261,8 @@ def create_workspace(
         RuntimeError: If API call fails
         ValueError: If workspace already exists
     """
-    # Check if workspace already exists
-    try:
-        _ = get_workspace_id_by_name(workspace_name)
-        # If we get here, workspace exists
+    if find_workspace_id_by_name(workspace_name) is not None:
         raise ValueError(f"Workspace already exists: '{workspace_name}'")
-    except ValueError as e:
-        # If it's our "already exists" error, re-raise it
-        if "already exists" in str(e):
-            raise
-        # Otherwise it's "not found" error, which means we can create it
-        pass
 
     payload = {
         "displayName": workspace_name,
