@@ -1,13 +1,25 @@
 """CLI integration tests using test-wkspc submodule."""
 
 import os
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from fabric_deploy.detect import ParameterDetector
 from fabric_deploy.workspace import WorkspaceDeployer
+
+
+# Resolve the fabdep binary once. Prefer PATH; fall back to the venv that
+# launched pytest (sys.executable's bin dir). Tests skip if neither exists.
+_FABDEP = shutil.which("fabdep") or str(Path(sys.executable).parent / "fabdep")
+_FABDEP_AVAILABLE = Path(_FABDEP).exists()
+_REQUIRES_FABDEP = pytest.mark.skipif(
+    not _FABDEP_AVAILABLE,
+    reason="fabdep binary not installed on PATH or in sys.executable's bin dir",
+)
 
 
 class TestCLI:
@@ -18,8 +30,13 @@ class TestCLI:
         """Path to test-wkspc submodule."""
         return Path(__file__).parent / "test-wkspc"
 
+    @pytest.mark.integration
     def test_workspace_deployer(self, test_workspace_dir):
-        """Test creating a WorkspaceDeployer instance for the test workspace."""
+        """End-to-end: deploy each item type against the live Fabric workspace.
+
+        This is the canonical integration smoke test. Requires `az login` (or SPN)
+        with access to the configured test workspace.
+        """
         # Change to test workspace directory
         original_cwd = os.getcwd()
         os.chdir(test_workspace_dir)
@@ -37,10 +54,15 @@ class TestCLI:
             # Restore original directory
             os.chdir(original_cwd)
 
+    @pytest.mark.integration
+    @_REQUIRES_FABDEP
     def test_fabdep_no_args(self, test_workspace_dir):
-        """Test running fabdep with no arguments exits without error."""
+        """Test running fabdep with no arguments exits without error.
+
+        Runs a real deployment against the live workspace; integration-only.
+        """
         result = subprocess.run(
-            ["fabdep"],
+            [_FABDEP],
             cwd=test_workspace_dir,
             capture_output=True,
             text=True,
@@ -48,10 +70,11 @@ class TestCLI:
 
         assert result.returncode == 0, f"Command failed: {result.stderr}"
 
+    @_REQUIRES_FABDEP
     def test_detect_command(self, test_workspace_dir):
         """Test fabdep detect --save command."""
         result = subprocess.run(
-            ["fabdep", "detect", "--save"],
+            [_FABDEP, "detect", "--save"],
             cwd=test_workspace_dir,
             capture_output=True,
             text=True,
@@ -73,10 +96,11 @@ class TestCLI:
         # Clean up
         detected_file.unlink()
 
+    @_REQUIRES_FABDEP
     def test_rename_dry_run(self, test_workspace_dir):
         """Test fabdep rename command in dry-run mode."""
         result = subprocess.run(
-            ["fabdep", "rename"],
+            [_FABDEP, "rename"],
             cwd=test_workspace_dir,
             capture_output=True,
             text=True,
@@ -124,10 +148,11 @@ class TestCLI:
         ]
         assert len(lakehouse_params_after) == 0
 
+    @_REQUIRES_FABDEP
     def test_skip_lakehouse_cli_flag(self, test_workspace_dir):
         """Test that --skip-lakehouse flag is accepted by CLI."""
         result = subprocess.run(
-            ["fabdep", "--skip-lakehouse", "--help"],
+            [_FABDEP, "--skip-lakehouse", "--help"],
             cwd=test_workspace_dir,
             capture_output=True,
             text=True,
