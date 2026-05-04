@@ -440,14 +440,35 @@ class WorkspaceDeployer:
         self, param_file: Path, detector: ParameterDetector
     ) -> None:
         """
-        Post-process parameter file to add domain substitution for non-default connections.
+        Post-process parameter.yml to add a second-pass rewrite for non-default
+        SemanticModel connection domains.
+
+        Why this is needed (verified against fabric-cicd 1.0):
+
+        fabric-cicd's `$items.Lakehouse.<name>.$sqlendpoint` always resolves to
+        the Lakehouse `connectionString`, which is in
+        `.datawarehouse.fabric.microsoft.com` form. SemanticModels in older
+        workspaces — or ones bound to SQL Database endpoints — reference the
+        same logical endpoint via `.database.fabric.microsoft.com` or
+        `.pbidedicated.windows.net`. fabric-cicd 1.0 has no built-in way to
+        emit a domain-converted form (no callbacks, no multi-pass templating,
+        and no `$items.SQLDatabase.<name>.$sqlendpoint` for the
+        `pbidedicated` case).
+
+        So we let fabric-cicd do the first pass (source FQDN → resolved
+        Lakehouse FQDN, in `.datawarehouse` form), then append a second
+        find_replace entry that rewrites the substituted FQDN's domain back
+        to the form the SemanticModel expects. Targeting includes the
+        database name to avoid hitting unrelated connections, and item_type
+        is scoped to SemanticModel.
+
+        TODO: revisit if fabric-cicd grows native multi-domain support, or
+        if `$items.Warehouse.<name>.$sqlendpoint` (`.database` form) becomes
+        a viable substitute.
 
         Handles two cases:
-        1. .database.fabric.microsoft.com: Changes .datawarehouse back to .database
-        2. .pbidedicated.windows.net: Changes .fabric.microsoft.com back to .pbidedicated.windows.net
-
-        All substitutions are targeted using database identifiers to avoid affecting
-        other connections.
+        1. .database.fabric.microsoft.com: rewrites .datawarehouse → .database
+        2. .pbidedicated.windows.net: rewrites .fabric.microsoft.com → .pbidedicated.windows.net
 
         Args:
             param_file: Path to parameter.yml file
