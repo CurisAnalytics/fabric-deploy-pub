@@ -73,6 +73,7 @@ class WorkspaceDeployer:
 
     # Private fields
     _repo_dir_resolved: Path = field(init=False, repr=False)
+    _config: dict | None = field(default=None, init=False, repr=False)  # parsed fabdep.yml; None if file absent
     _auto_detect_summary: list[str] | None = field(default=None, init=False, repr=False)
     _logged_manual_warnings: set[str] = field(
         default_factory=set, init=False, repr=False
@@ -100,7 +101,16 @@ class WorkspaceDeployer:
         self._repo_dir_resolved = Path(self.repo_dir).resolve()
         self.logger = get_logger(self.logger_name or __name__)
 
-        # Always load workspace ID from fabdep.yml
+        # Read fabdep.yml once; downstream methods consume `self._config`.
+        # `None` signals the file doesn't exist (triggers directory-name fallback).
+        config_file = self._repo_dir_resolved / "fabdep.yml"
+        if config_file.exists():
+            with open(config_file) as f:
+                self._config = yaml.safe_load(f) or {}
+        else:
+            self._config = None
+
+        # Always load workspace ID from fabdep.yml (or fall back to dirname)
         self._load_config()
 
         # Detect parameters (file written later in deploy() when item scope is known)
@@ -115,34 +125,27 @@ class WorkspaceDeployer:
         return current_branch(self._repo_dir_resolved)
 
     def _load_config(self) -> None:
-        """Load and validate workspace configuration from fabdep.yml."""
+        """Resolve workspace identity from `self._config` (set in __post_init__)."""
         if not self._repo_dir_resolved.exists():
             raise FileNotFoundError(
                 f"Directory does not exist: {self._repo_dir_resolved}"
             )
 
-        config_file = self._repo_dir_resolved / "fabdep.yml"
-        config: dict = {}  # pyright: ignore[reportMissingTypeArgument]
-
-        # Check for fabdep.yml - if missing, try directory name as workspace_base_name
-        if not config_file.exists():
-            # Try using directory name as workspace_base_name (silent fallback)
+        # No fabdep.yml at all → try the directory name as workspace_base_name
+        if self._config is None:
             dir_name = self._repo_dir_resolved.name
             branch = self.branch_override or self._get_git_branch()
             test_workspace_name = f"{dir_name} [{branch.upper()}]"
 
             try:
-                # Attempt to resolve workspace - if it works, use directory name
                 test_workspace_id = get_workspace_id_by_name(test_workspace_name)
-                # Success - use directory name as workspace_base_name
                 self.workspace_name = test_workspace_name
                 self.workspace_id = test_workspace_id
                 self.logger.debug(
                     f"Using directory name '{dir_name}' as workspace_base_name"
                 )
-                return  # Config loaded successfully via fallback
+                return
             except ValueError:
-                # Workspace not found with directory name - show helpful error
                 raise FileNotFoundError(
                     f"fabdep.yml not found in {self._repo_dir_resolved}.\n\n"
                     "Create a fabdep.yml file with:\n"
@@ -152,10 +155,7 @@ class WorkspaceDeployer:
                     "Note: This is separate from parameter.yml which is used by fabric-cicd."
                 ) from None
 
-        # Load workspace_base_name from fabdep.yml
-        with open(config_file) as f:
-            config = yaml.safe_load(f) or {}
-
+        config = self._config
         workspace_base_name = config.get("workspace_base_name")
 
         if not workspace_base_name:
@@ -205,14 +205,10 @@ class WorkspaceDeployer:
         Returns:
             Number of manual parameter overrides applied
         """
-        config_file = self._repo_dir_resolved / "fabdep.yml"
-        if not config_file.exists():
+        if not self._config:
             return 0
 
-        with open(config_file) as f:
-            config = yaml.safe_load(f)
-
-        manual_params = config.get("manual_parameters", [])
+        manual_params = self._config.get("manual_parameters", [])
         if not manual_params:
             return 0
 
@@ -582,6 +578,64 @@ class WorkspaceDeployer:
             raise RuntimeError(f"Failed to read lakehouse metadata: {e}") from e
         self.lakehouse_name = metadata["metadata"]["displayName"]
 
+    def _resolve_item_scope(
+        self,
+        item_types: list[str] | None,
+        exclude_types: list[str] | None,
+        include_items: list[str] | None,
+    ) -> list[str] | None:
+        """Normalize, validate, and combine item-type filters into a single scope.
+
+        Returns the list of item types that fabric-cicd should deploy, or None
+        if no scope filtering is requested. Logs warnings for unrecognized types.
+
+        Combines (in priority order):
+        1. Explicit `item_types` (after canonical-case normalization).
+        2. `exclude_types` → all ACCEPTED_ITEM_TYPES minus excludes.
+        3. `include_items` (e.g. "Foo.Notebook") → derive scope from suffixes
+           if no other scope was provided.
+        """
+        canonical = {t.lower(): t for t in ACCEPTED_ITEM_TYPES}
+
+        def _normalize(types: list[str] | None) -> list[str] | None:
+            if not types:
+                return types
+            return [canonical.get(t.lower(), t) for t in types]
+
+        def _warn_unknown(types: list[str] | None, label: str) -> None:
+            if not types:
+                return
+            invalid = [t for t in types if t not in ACCEPTED_ITEM_TYPES]
+            if invalid:
+                self.logger.warning(
+                    f"Unrecognized item types in {label}: {', '.join(invalid)}"
+                )
+                self.logger.warning(
+                    f"Supported types: {', '.join(ACCEPTED_ITEM_TYPES)}"
+                )
+
+        item_types = _normalize(item_types)
+        exclude_types = _normalize(exclude_types)
+        _warn_unknown(item_types, "filter")
+        _warn_unknown(exclude_types, "exclusion filter")
+
+        if item_types:
+            return item_types
+        if exclude_types:
+            return [t for t in ACCEPTED_ITEM_TYPES if t not in exclude_types]
+
+        # Derive scope from include_items (Name.Type format)
+        if include_items:
+            derived = {
+                item.rsplit(".", 1)[1]
+                for item in include_items
+                if "." in item and item.rsplit(".", 1)[1] in ACCEPTED_ITEM_TYPES
+            }
+            if derived:
+                return sorted(derived)
+
+        return None
+
     def deploy(
         self,
         no_cleanup: bool = False,
@@ -615,53 +669,11 @@ class WorkspaceDeployer:
                 "Orphan cleanup disabled when using --include-items for safety."
             )
 
-        # Normalize item type casing (case-insensitive match against canonical names)
-        canonical_map = {t.lower(): t for t in ACCEPTED_ITEM_TYPES}
-        if item_types:
-            item_types = [canonical_map.get(t.lower(), t) for t in item_types]
-        if exclude_types:
-            exclude_types = [canonical_map.get(t.lower(), t) for t in exclude_types]
-
-        # Validate item type filters
-        if item_types:
-            invalid_types = [t for t in item_types if t not in ACCEPTED_ITEM_TYPES]
-            if invalid_types:
-                self.logger.warning(
-                    f"Unrecognized item types in filter: {', '.join(invalid_types)}"
-                )
-                self.logger.warning(
-                    f"Supported types: {', '.join(ACCEPTED_ITEM_TYPES)}"
-                )
-
-        if exclude_types:
-            invalid_types = [t for t in exclude_types if t not in ACCEPTED_ITEM_TYPES]
-            if invalid_types:
-                self.logger.warning(
-                    f"Unrecognized item types in exclusion filter: {', '.join(invalid_types)}"
-                )
-                self.logger.warning(
-                    f"Supported types: {', '.join(ACCEPTED_ITEM_TYPES)}"
-                )
-
-        # Build item_type_in_scope based on include/exclude flags
-        item_type_in_scope = None
-        if item_types:
-            item_type_in_scope = item_types
-        elif exclude_types:
-            item_type_in_scope = [
-                t for t in ACCEPTED_ITEM_TYPES if t not in exclude_types
-            ]
-
-        # Auto-derive type filter from include_items (Name.Type format)
-        if include_items and not item_type_in_scope:
-            derived_types = set()
-            for item in include_items:
-                if "." in item:
-                    item_type = item.rsplit(".", 1)[1]
-                    if item_type in ACCEPTED_ITEM_TYPES:
-                        derived_types.add(item_type)
-            if derived_types:
-                item_type_in_scope = sorted(derived_types)
+        item_type_in_scope = self._resolve_item_scope(
+            item_types=item_types,
+            exclude_types=exclude_types,
+            include_items=include_items,
+        )
 
         # Write parameter file (with item-type filtering if applicable)
         self._write_parameter_file(item_types=item_type_in_scope)
