@@ -447,6 +447,17 @@ class ParameterDetector:
                 "Lakehouse ID",
             )
 
+    def _ensure_detected(self) -> None:
+        """Run detect_all() if no parameters have been detected yet.
+
+        Detection is idempotent within a session — once parameters are
+        populated, repeat calls are no-ops. Public methods that depend on
+        detected state call this so users can skip the explicit detect_all()
+        invocation.
+        """
+        if not self.parameters:
+            self.detect_all()
+
     def generate_parameter_yml(
         self,
         use_dynamic: bool = True,
@@ -468,8 +479,7 @@ class ParameterDetector:
         Returns:
             Dictionary with find_replace entries using dynamic variables
         """
-        if not self.parameters:
-            self.detect_all()
+        self._ensure_detected()
 
         find_replace = []
 
@@ -556,8 +566,7 @@ class ParameterDetector:
             True if ALL detected workspace IDs match target (skip replacement),
             False otherwise
         """
-        if not self.parameters:
-            self.detect_all()
+        self._ensure_detected()
 
         # Find all detected workspace IDs
         detected_workspace_ids = [
@@ -588,8 +597,7 @@ class ParameterDetector:
         Returns:
             List of find_values that were removed
         """
-        if not self.parameters:
-            self.detect_all()
+        self._ensure_detected()
 
         removed = []
         for find_value, param in list(self.parameters.items()):
@@ -600,41 +608,39 @@ class ParameterDetector:
         return removed
 
     def print_detection_summary(self) -> None:
-        """Print a summary of detected parameters."""
-        if not self.parameters:
-            self.detect_all()
+        """Log a summary of detected parameters."""
+        self._ensure_detected()
 
         # Count parameters with and without dynamic variables
         with_dynamic = sum(1 for p in self.parameters.values() if p.dynamic_variable)
         without_dynamic = len(self.parameters) - with_dynamic
 
-        print(
-            f"\nDetected {len(self.parameters)} parameters ({with_dynamic} with dynamic variables, {without_dynamic} require manual setup):\n"
+        self.logger.info(
+            f"Detected {len(self.parameters)} parameters "
+            f"({with_dynamic} with dynamic variables, {without_dynamic} require manual setup):"
         )
 
         for param in self.parameters.values():
-            print(f"  {param.description or 'Unknown'}")
-            print(f"    Source value: {param.find_value}")
+            self.logger.info(f"  {param.description or 'Unknown'}")
+            self.logger.info(f"    Source value: {param.find_value}")
             if param.dynamic_variable:
-                print(f"    Dynamic variable: {param.dynamic_variable}")
+                self.logger.info(f"    Dynamic variable: {param.dynamic_variable}")
             else:
-                print("    Dynamic variable: (skipped - requires manual setup)")
-            print(f"    Item Types: {', '.join(sorted(param.item_types))}")
-            print(f"    Found in: {len(param.source_files)} file(s)")
-            print()
+                self.logger.info("    Dynamic variable: (skipped - requires manual setup)")
+            self.logger.info(f"    Item Types: {', '.join(sorted(param.item_types))}")
+            self.logger.info(f"    Found in: {len(param.source_files)} file(s)")
 
         if without_dynamic > 0:
-            print(
+            self.logger.info(
                 f"Note: {without_dynamic} parameter(s) will be skipped in auto-generated parameter.yml"
             )
-            print(
-                "These typically require external setup (e.g., connection IDs) and don't change between deployments.\n"
+            self.logger.info(
+                "These typically require external setup (e.g., connection IDs) and don't change between deployments."
             )
 
     def count_connection_guids(self) -> int:
         "Returns the number of connection GUIDs detected"
-        if not self.parameters:
-            self.detect_all()
+        self._ensure_detected()
 
         connection_count = 0
         for param in self.parameters.values():
