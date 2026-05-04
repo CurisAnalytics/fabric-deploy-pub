@@ -36,8 +36,10 @@ Install it in editable mode so that you can pull changes directly from git:
 ```bash
 git clone <repo>
 cd fabric-deploy
-pip install -e .
+uv sync          # or: pip install -e .
 ```
+
+Requires `fabric-cicd >= 1.0` (declared in `pyproject.toml`). Authentication is delegated to the active `az` session via `azure.identity.AzureCliCredential`, so `fabdep auth switch ...` is the only auth surface you need.
 
 ## Quick Start
 

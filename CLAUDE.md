@@ -223,12 +223,34 @@ Creates workspace if it doesn't exist: `{workspace_base_name} [{branch}]`
 ```toml
 [project]
 dependencies = [
-    "fabric-cicd>=0.2.0",     # Microsoft's official deployment package
+    "azure-identity>=1.15",   # AzureCliCredential bridges fabdep auth → fabric-cicd 1.0
+    "fabric-cicd>=1.0",       # Microsoft's official deployment package
     "pyyaml",                 # fabdep.yml parsing
 ]
 ```
 
-**Key Dependency**: `fabric-cicd` provides `FabricWorkspace`, `publish_all_items()`, `unpublish_all_orphan_items()`
+**Key Dependencies**:
+- `fabric-cicd` provides `FabricWorkspace`, `publish_all_items()`, `unpublish_all_orphan_items()`.
+- `azure-identity` provides `AzureCliCredential`, which is what fabdep passes as `token_credential` so that fabric-cicd reuses the active `az` account chosen via `fabdep auth switch`.
+
+### fabric-cicd 1.0 Authentication Contract
+
+As of fabric-cicd 1.0, `FabricWorkspace` is **keyword-only** and requires an explicit `token_credential` (the implicit `DefaultAzureCredential` fallback was removed). fabdep constructs it like this in `workspace.py::_deploy_items`:
+
+```python
+from azure.identity import AzureCliCredential
+from fabric_cicd import FabricWorkspace
+
+target_workspace = FabricWorkspace(
+    workspace_id=self.workspace_id,
+    repository_directory=str(self._repo_dir_resolved),
+    environment="fabdep",
+    item_type_in_scope=item_types,
+    token_credential=AzureCliCredential(),
+)
+```
+
+`AzureCliCredential` shells out to `az account get-access-token` for each request, which means whatever account is active (`fabdep auth switch ...` / `az login`) is the one fabric-cicd will deploy as. No extra wiring needed in fabdep — the auth surface stays a single command.
 
 ## Programmatic Usage
 
@@ -261,12 +283,12 @@ deployer.deploy()
 
 **Documentation**: https://microsoft.github.io/fabric-cicd/
 
-This package wraps Microsoft's `fabric-cicd` which provides:
-- `FabricWorkspace(workspace_id, repository_directory, environment, item_type_in_scope)`
+This package wraps Microsoft's `fabric-cicd >= 1.0` which provides:
+- `FabricWorkspace(*, repository_directory, token_credential, workspace_id=..., item_type_in_scope=..., environment=..., ...)` — all keyword-only, explicit `token_credential` required
 - `publish_all_items(workspace)` - Deploys items to Fabric
 - `unpublish_all_orphan_items(workspace)` - Cleans up orphaned items
 
-**Supported Item Types**: DataPipeline, Environment, Notebook, Report, SemanticModel, Lakehouse, MirroredDatabase, Warehouse, SQLDatabase, Eventhouse, KQLDatabase, Dataflow, and more.
+**Supported Item Types**: DataPipeline, Environment, Notebook, Report, SemanticModel, Lakehouse, MirroredDatabase, Warehouse, SQLDatabase, Eventhouse, KQLDatabase, Dataflow, Ontology (1.0+), and more.
 
 ## Configuration Files
 

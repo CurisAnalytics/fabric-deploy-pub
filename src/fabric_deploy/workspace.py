@@ -11,6 +11,7 @@ from json import loads
 from pathlib import Path
 
 import yaml
+from azure.identity import AzureCliCredential
 from fabric_cicd import (
     FabricWorkspace,
     append_feature_flag,
@@ -759,11 +760,16 @@ class WorkspaceDeployer:
             include_items: Include only specific items (format: "ItemName.ItemType")
             _retry_attempt: Internal retry counter (do not set manually)
         """
+        # fabric-cicd 1.0 removed the implicit credential fallback: callers
+        # must pass an explicit `token_credential`. We delegate to the active
+        # `az` session (user or SPN) via AzureCliCredential, which keeps fabdep
+        # consistent with `fabdep auth` and `api.get_access_token()`.
         target_workspace = FabricWorkspace(
             workspace_id=self.workspace_id,
             repository_directory=str(self._repo_dir_resolved),
             environment="fabdep",
             item_type_in_scope=item_types,
+            token_credential=AzureCliCredential(),
         )
 
         try:

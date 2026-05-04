@@ -1,11 +1,12 @@
 [project]
 name = "fabric-deploy"
-version = "0.2.4"
+version = "0.3.0"
 description = "CLI tool for Microsoft Fabric workspace deployments"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "fabric-cicd>=0.2.0",
+    "azure-identity>=1.15",
+    "fabric-cicd>=1.0",
     "pytest>=7.0.0",
     "pyyaml",
 ]
