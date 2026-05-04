@@ -1,0 +1,386 @@
+"""Unit tests for ParameterDetector — pure regex/dict logic, no network."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from fabric_deploy.detect import DetectedParameter, ParameterDetector
+
+
+# --- helpers ---------------------------------------------------------------
+
+WORKSPACE_ID = "11111111-1111-1111-1111-111111111111"
+LAKEHOUSE_ID = "22222222-2222-2222-2222-222222222222"
+ENDPOINT_ID = "33333333-3333-3333-3333-333333333333"
+CONNECTION_ID = "44444444-4444-4444-4444-444444444444"
+OTHER_WORKSPACE_ID = "55555555-5555-5555-5555-555555555555"
+
+
+def _make_lakehouse(repo: Path, name: str) -> None:
+    item = repo / f"{name}.Lakehouse"
+    item.mkdir()
+    (item / ".platform").write_text(
+        json.dumps({"metadata": {"displayName": name, "type": "Lakehouse"}})
+    )
+
+
+def _make_sqldb(repo: Path, name: str) -> None:
+    item = repo / f"{name}.SQLDatabase"
+    item.mkdir()
+    (item / ".platform").write_text(
+        json.dumps({"metadata": {"displayName": name, "type": "SQLDatabase"}})
+    )
+
+
+def _make_notebook(repo: Path, name: str, body: str) -> None:
+    nb = repo / f"{name}.Notebook"
+    nb.mkdir()
+    (nb / "notebook-content.py").write_text(body)
+
+
+def _make_semantic_model(repo: Path, name: str, expressions_tmdl: str) -> None:
+    sm = repo / f"{name}.SemanticModel"
+    (sm / "definition").mkdir(parents=True)
+    (sm / "definition" / "expressions.tmdl").write_text(expressions_tmdl)
+
+
+def _make_pipeline(repo: Path, name: str, content: dict) -> None:
+    pl = repo / f"{name}.DataPipeline"
+    pl.mkdir()
+    (pl / "pipeline-content.json").write_text(json.dumps(content))
+
+
+def _make_copyjob(repo: Path, name: str, content: dict) -> None:
+    cj = repo / f"{name}.CopyJob"
+    cj.mkdir()
+    (cj / "copyjob-content.json").write_text(json.dumps(content))
+
+
+# --- notebook extraction ---------------------------------------------------
+
+
+class TestNotebookExtraction:
+    def test_extracts_workspace_and_lakehouse_ids(self, tmp_path: Path):
+        _make_lakehouse(tmp_path, "lh")
+        _make_notebook(
+            tmp_path,
+            "n1",
+            '# fmt:off\n'
+            '# META {\n'
+            f'# META   "default_lakehouse_workspace_id": "{WORKSPACE_ID}",\n'
+            f'# META   "default_lakehouse": "{LAKEHOUSE_ID}"\n'
+            '# META }\n',
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert WORKSPACE_ID in d.parameters
+        assert LAKEHOUSE_ID in d.parameters
+        assert d.parameters[WORKSPACE_ID].description == "Workspace ID"
+        assert d.parameters[LAKEHOUSE_ID].description == "Lakehouse ID"
+        assert "Notebook" in d.parameters[WORKSPACE_ID].item_types
+
+    def test_dynamic_variable_for_workspace_and_lakehouse(self, tmp_path: Path):
+        _make_lakehouse(tmp_path, "lh")
+        _make_notebook(
+            tmp_path,
+            "n1",
+            f'"default_lakehouse_workspace_id": "{WORKSPACE_ID}"\n'
+            f'"default_lakehouse": "{LAKEHOUSE_ID}"\n',
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert d.parameters[WORKSPACE_ID].dynamic_variable == "$workspace.$id"
+        assert (
+            d.parameters[LAKEHOUSE_ID].dynamic_variable
+            == "$items.Lakehouse.lh.$id"
+        )
+
+
+# --- semantic model extraction --------------------------------------------
+
+
+class TestSemanticModelExtraction:
+    def test_extracts_lakehouse_sql_endpoint(self, tmp_path: Path):
+        _make_lakehouse(tmp_path, "lh")
+        body = (
+            'expression Source = '
+            f'Sql.Database("HOST-XXXX.datawarehouse.fabric.microsoft.com", "lh-{ENDPOINT_ID}")'
+        )
+        _make_semantic_model(tmp_path, "sm", body)
+
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        # Hostname captured as a parameter with metadata
+        host = "HOST-XXXX.datawarehouse.fabric.microsoft.com"
+        assert host in d.parameters
+        host_param = d.parameters[host]
+        assert host_param.description == "SQL Analytics Endpoint Connection String"
+        assert host_param.metadata["domain_type"] == "datawarehouse"
+        assert host_param.metadata["db_name"] == "lh"
+
+        # UUID captured as the endpoint item ID
+        assert ENDPOINT_ID in d.parameters
+        assert (
+            d.parameters[ENDPOINT_ID].description
+            == "Lakehouse SQL Analytics Endpoint Item ID"
+        )
+
+    def test_extracts_sql_database(self, tmp_path: Path):
+        _make_sqldb(tmp_path, "mydb")
+        body = (
+            'Source = '
+            f'Sql.Database("HOST-YYYY.database.fabric.microsoft.com", "mydb-{ENDPOINT_ID}")'
+        )
+        _make_semantic_model(tmp_path, "sm", body)
+
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        host = "HOST-YYYY.database.fabric.microsoft.com"
+        assert host in d.parameters
+        assert (
+            d.parameters[host].description == "SQL Database Connection String"
+        )
+        assert d.parameters[host].metadata["domain_type"] == "database"
+
+        # SQL Database Item ID captured
+        assert ENDPOINT_ID in d.parameters
+        assert d.parameters[ENDPOINT_ID].description == "SQL Database Item ID"
+
+        # Full database name (db-uuid) also captured
+        full_name = f"mydb-{ENDPOINT_ID}"
+        assert full_name in d.parameters
+        assert d.parameters[full_name].description == "SQL Database Name"
+
+    def test_pbidedicated_domain_metadata(self, tmp_path: Path):
+        _make_lakehouse(tmp_path, "lh")
+        body = (
+            'Source = '
+            f'Sql.Database("HOST-AAAA.datawarehouse.pbidedicated.windows.net", "lh-{ENDPOINT_ID}")'
+        )
+        _make_semantic_model(tmp_path, "sm", body)
+
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        host = "HOST-AAAA.datawarehouse.pbidedicated.windows.net"
+        assert d.parameters[host].metadata["domain_suffix"] == "pbidedicated.windows.net"
+
+
+# --- pipeline extraction --------------------------------------------------
+
+
+class TestPipelineExtraction:
+    def test_extracts_external_connection(self, tmp_path: Path):
+        _make_lakehouse(tmp_path, "lh")
+        _make_pipeline(
+            tmp_path,
+            "pl",
+            {
+                "properties": {
+                    "activities": [
+                        {
+                            "externalReferences": {"connection": CONNECTION_ID},
+                        }
+                    ]
+                }
+            },
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert CONNECTION_ID in d.parameters
+        assert d.parameters[CONNECTION_ID].description == "External connection ID"
+        assert "DataPipeline" in d.parameters[CONNECTION_ID].item_types
+
+    def test_extracts_workspaceid_in_typeproperties(self, tmp_path: Path):
+        _make_lakehouse(tmp_path, "lh")
+        _make_pipeline(
+            tmp_path,
+            "pl",
+            {
+                "properties": {
+                    "activities": [
+                        {
+                            "typeProperties": {
+                                "workspaceId": OTHER_WORKSPACE_ID,
+                                "notebookId": "ignored",
+                            }
+                        }
+                    ]
+                }
+            },
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert OTHER_WORKSPACE_ID in d.parameters
+        assert d.parameters[OTHER_WORKSPACE_ID].description == "Workspace ID"
+
+    def test_skips_null_uuid_workspaceid(self, tmp_path: Path):
+        _make_lakehouse(tmp_path, "lh")
+        _make_pipeline(
+            tmp_path,
+            "pl",
+            {
+                "properties": {
+                    "activities": [
+                        {"typeProperties": {"workspaceId": ParameterDetector.NULL_UUID}}
+                    ]
+                }
+            },
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        # The null-uuid placeholder must not be added as a parameter
+        assert ParameterDetector.NULL_UUID not in d.parameters
+
+
+# --- copyjob extraction ---------------------------------------------------
+
+
+class TestCopyJobExtraction:
+    def test_extracts_workspace_and_artifact_ids(self, tmp_path: Path):
+        _make_lakehouse(tmp_path, "lh")
+        _make_copyjob(
+            tmp_path,
+            "cj",
+            {
+                "properties": {
+                    "source": {
+                        "connectionSettings": {
+                            "typeProperties": {
+                                "workspaceId": WORKSPACE_ID,
+                                "artifactId": LAKEHOUSE_ID,
+                            }
+                        }
+                    },
+                    "destination": {
+                        "connectionSettings": {
+                            "typeProperties": {
+                                "workspaceId": OTHER_WORKSPACE_ID,
+                                "artifactId": ENDPOINT_ID,
+                            }
+                        }
+                    },
+                }
+            },
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert WORKSPACE_ID in d.parameters
+        assert OTHER_WORKSPACE_ID in d.parameters
+        assert LAKEHOUSE_ID in d.parameters
+        assert ENDPOINT_ID in d.parameters
+        assert "CopyJob" in d.parameters[LAKEHOUSE_ID].item_types
+
+
+# --- should_skip_replacement ---------------------------------------------
+
+
+class TestShouldSkipReplacement:
+    def test_returns_false_when_no_workspace_ids_detected(self, tmp_path: Path):
+        _make_lakehouse(tmp_path, "lh")
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+        assert d.should_skip_replacement(WORKSPACE_ID) is False
+
+    def test_returns_true_when_all_workspace_ids_match_target(self, tmp_path: Path):
+        _make_lakehouse(tmp_path, "lh")
+        _make_notebook(
+            tmp_path, "n1", f'"default_lakehouse_workspace_id": "{WORKSPACE_ID}"'
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+        assert d.should_skip_replacement(WORKSPACE_ID) is True
+
+    def test_returns_false_when_target_differs_from_detected(self, tmp_path: Path):
+        _make_lakehouse(tmp_path, "lh")
+        _make_notebook(
+            tmp_path, "n1", f'"default_lakehouse_workspace_id": "{WORKSPACE_ID}"'
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+        assert d.should_skip_replacement(OTHER_WORKSPACE_ID) is False
+
+
+# --- filter_lakehouse_params ---------------------------------------------
+
+
+class TestFilterLakehouseParams:
+    def test_removes_lakehouse_descriptions_only(self, tmp_path: Path):
+        d = ParameterDetector(tmp_path)
+        # Manually populate parameters with a mix of types
+        d.parameters = {
+            WORKSPACE_ID: DetectedParameter(
+                find_value=WORKSPACE_ID, description="Workspace ID"
+            ),
+            LAKEHOUSE_ID: DetectedParameter(
+                find_value=LAKEHOUSE_ID, description="Lakehouse ID"
+            ),
+            "host": DetectedParameter(
+                find_value="host",
+                description="SQL Analytics Endpoint Connection String",
+            ),
+            ENDPOINT_ID: DetectedParameter(
+                find_value=ENDPOINT_ID,
+                description="Lakehouse SQL Analytics Endpoint Item ID",
+            ),
+            CONNECTION_ID: DetectedParameter(
+                find_value=CONNECTION_ID, description="External connection ID"
+            ),
+        }
+
+        removed = d.filter_lakehouse_params()
+
+        assert set(removed) == {LAKEHOUSE_ID, "host", ENDPOINT_ID}
+        assert WORKSPACE_ID in d.parameters
+        assert CONNECTION_ID in d.parameters
+        assert LAKEHOUSE_ID not in d.parameters
+
+
+# --- _generate_dynamic_variable -------------------------------------------
+
+
+class TestGenerateDynamicVariable:
+    @pytest.mark.parametrize(
+        "description,expected",
+        [
+            ("Workspace ID", "$workspace.$id"),
+            ("Lakehouse ID", "$items.Lakehouse.lh.$id"),
+            (
+                "SQL Analytics Endpoint Connection String",
+                "$items.Lakehouse.lh.$sqlendpoint",
+            ),
+            (
+                "Lakehouse SQL Analytics Endpoint Item ID",
+                "$items.Lakehouse.lh.$sqlendpointid",
+            ),
+            ("External connection ID", ""),
+            ("Random other description", ""),
+        ],
+    )
+    def test_dynamic_variable_lookup_with_lakehouse(
+        self, tmp_path: Path, description: str, expected: str
+    ):
+        _make_lakehouse(tmp_path, "lh")
+        d = ParameterDetector(tmp_path)
+        d._detect_lakehouse_names()
+        assert d._generate_dynamic_variable(description) == expected
+
+    def test_sqldatabase_item_id_uses_db_name(self, tmp_path: Path):
+        _make_sqldb(tmp_path, "mydb")
+        d = ParameterDetector(tmp_path)
+        d._detect_sqldatabase_names()
+        assert (
+            d._generate_dynamic_variable("SQL Database Item ID")
+            == "$items.SQLDatabase.mydb.$id"
+        )

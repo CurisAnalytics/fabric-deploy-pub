@@ -21,6 +21,11 @@ addopts = [
     "-s",
     "--strict-markers",
     "--tb=short",
+    "-m",
+    "not integration",
+]
+markers = [
+    "integration: requires live Fabric API + az login (run with `pytest -m integration`)",
 ]
 
 [build-system]
