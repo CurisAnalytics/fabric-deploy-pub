@@ -215,34 +215,28 @@ def parse_args() -> argparse.Namespace:
         help="Skip lakehouse parameter replacement (for feature branches sharing dev lakehouse)",
     )
 
-    # Check if we should inject 'deploy' as default subcommand
-    # This happens when no subcommand is specified
-    argv = sys.argv[1:]
-    known_commands = ["auth", "deploy", "rename", "detect"]
+    # Default subcommand handling: argparse doesn't natively support
+    # "use this subparser when no subcommand is given" or "treat unknown
+    # leading args as belonging to a default subcommand," so we resolve
+    # the command ourselves and feed argparse a normalized argv.
+    known_commands = {"auth", "deploy", "rename", "detect"}
+    help_flags = {"-h", "--help", "-V", "--version"}
 
-    # Inject 'deploy' if no subcommand and not just asking for help
-    if argv and not any(cmd in argv for cmd in known_commands):
-        if argv not in (["-h"], ["--help"], ["-V"], ["--version"]):
-            sys.argv.insert(1, "deploy")
+    raw = sys.argv[1:]
+    head = raw[0] if raw else None
 
-    args = parser.parse_args()
+    if head is None:
+        # `fabdep` with no args → deploy with all defaults
+        argv = ["deploy"]
+    elif head in known_commands or head in help_flags:
+        # Explicit subcommand or top-level help/version — leave argv alone
+        argv = raw
+    else:
+        # Unknown leading token (e.g. `fabdep -t Notebook`, `fabdep .`) →
+        # treat as deploy options
+        argv = ["deploy", *raw]
 
-    # Default to deploy command if no command specified (e.g., running `fabdep` with no args)
-    if args.command is None:
-        args.command = "deploy"
-        # Set deploy defaults (deploy_parser won't have set these if no subcommand provided)
-        if not hasattr(args, "directory"):
-            args.directory = Path(".")
-            args.no_cleanup = False
-            args.item_types = None
-            args.exclude_types = None
-            args.include_items = None
-            args.branch = None
-            args.new_workspace = False
-            args.max_retries = 1
-            args.skip_lakehouse = False
-
-    return args
+    return parser.parse_args(argv)
 
 
 def handle_auth_command(args: argparse.Namespace) -> None:
