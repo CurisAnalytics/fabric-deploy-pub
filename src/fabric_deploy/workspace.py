@@ -27,6 +27,7 @@ from .api import (
     get_workspace_id_by_name,
 )
 from .detect import ParameterDetector
+from .git import current_branch
 from .log import get_logger, is_transient_error, patch_fabric_cicd_logger
 
 
@@ -110,35 +111,8 @@ class WorkspaceDeployer:
         self._detect_lakehouse()
 
     def _get_git_branch(self) -> str:
-        """
-        Get current git branch name.
-
-        Returns:
-            Branch name
-
-        Raises:
-            RuntimeError: If not in a git repository or git command fails
-        """
-        import subprocess
-
-        try:
-            result = subprocess.run(
-                ["git", "branch", "--show-current"],
-                cwd=self._repo_dir_resolved,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            branch = result.stdout.strip()
-            if not branch:
-                raise RuntimeError("Not on a git branch (detached HEAD state)")
-            return branch
-        except subprocess.CalledProcessError as e:
-            error_msg = e.stderr.strip() if e.stderr else "Unknown error"
-            raise RuntimeError(
-                f"Failed to get git branch.\n{error_msg}\n\n"
-                "Make sure you're in a git repository and git is installed."
-            ) from e
+        """Thin wrapper around `git.current_branch` for testing/mockability."""
+        return current_branch(self._repo_dir_resolved)
 
     def _load_config(self) -> None:
         """Load and validate workspace configuration from fabdep.yml."""
