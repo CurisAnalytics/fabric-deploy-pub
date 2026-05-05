@@ -148,6 +148,11 @@ class TestSemanticModelExtraction:
             d.parameters[host].description == "SQL Database Connection String"
         )
         assert d.parameters[host].metadata["domain_type"] == "database"
+        # Connection string now auto-resolves via fabric-cicd's $sqlendpoint
+        assert (
+            d.parameters[host].dynamic_variable
+            == "$items.SQLDatabase.mydb.$sqlendpoint"
+        )
 
         # SQL Database Item ID captured
         assert ENDPOINT_ID in d.parameters
@@ -157,6 +162,8 @@ class TestSemanticModelExtraction:
         full_name = f"mydb-{ENDPOINT_ID}"
         assert full_name in d.parameters
         assert d.parameters[full_name].description == "SQL Database Name"
+        # Name has no native fabric-cicd attribute; still requires manual override
+        assert d.parameters[full_name].dynamic_variable == ""
 
     def test_pbidedicated_domain_metadata(self, tmp_path: Path):
         _make_lakehouse(tmp_path, "lh")
@@ -384,3 +391,26 @@ class TestGenerateDynamicVariable:
             d._generate_dynamic_variable("SQL Database Item ID")
             == "$items.SQLDatabase.mydb.$id"
         )
+
+    def test_sqldatabase_connection_string_resolves_to_sqlendpoint(
+        self, tmp_path: Path
+    ):
+        """SQL Database Connection String should map to $sqlendpoint, not empty.
+
+        fabric-cicd 1.0's PROPERTY_PATH_ATTR_MAPPING for SQLDatabase resolves
+        $sqlendpoint to body/properties/serverFqdn (.database.fabric.microsoft.com).
+        """
+        _make_sqldb(tmp_path, "mydb")
+        d = ParameterDetector(tmp_path)
+        d._detect_sqldatabase_names()
+        assert (
+            d._generate_dynamic_variable("SQL Database Connection String")
+            == "$items.SQLDatabase.mydb.$sqlendpoint"
+        )
+
+    def test_sqldatabase_name_remains_unresolved(self, tmp_path: Path):
+        """SQL Database Name has no native fabric-cicd attribute → still empty."""
+        _make_sqldb(tmp_path, "mydb")
+        d = ParameterDetector(tmp_path)
+        d._detect_sqldatabase_names()
+        assert d._generate_dynamic_variable("SQL Database Name") == ""
