@@ -25,10 +25,8 @@ class DetectedParameter:
     item_types: set[str] = field(default_factory=set)
     source_files: set[str] = field(default_factory=set)
     description: str = ""
-    dynamic_variable: str = ""  # Smart replace dynamic variable
-    metadata: dict = field(
-        default_factory=dict
-    )  # Additional context (e.g., domain_type)
+    dynamic_variable: str = ""
+    metadata: dict = field(default_factory=dict)  # e.g. domain_type, db_name
 
     def to_dict(self, use_dynamic: bool = True, environment: str = "prod") -> dict:
         """
@@ -46,15 +44,13 @@ class DetectedParameter:
             "item_type": sorted(list(self.item_types)),
         }
 
-        # Dynamic variables must still be in dictionary format with environment keys
+        # fabric-cicd requires replace_value to be an env-keyed dict, even
+        # though we only emit one environment ("fabdep") in practice.
         if use_dynamic and self.dynamic_variable:
             entry["replace_value"] = {environment: self.dynamic_variable}  # pyright: ignore[reportArgumentType]
-
-            # Store domain metadata for post-processing
             if self.metadata.get("domain_type") == "database":
-                entry["_domain_type"] = "database"  # Custom field for post-processing
-
-        else:  # Empty value for manual entry
+                entry["_domain_type"] = "database"  # consumed by _add_domain_substitutions
+        else:
             entry["replace_value"] = {environment: ""}  # pyright: ignore[reportArgumentType]
 
         return entry
@@ -63,26 +59,24 @@ class DetectedParameter:
 class ParameterDetector:
     """Detects source IDs from workspace repository files."""
 
-    # Lakehouse-related parameter descriptions (used for feature branch filtering)
+    # Stripped during feature-branch deploys (`-L` / skip_lakehouse).
     LAKEHOUSE_DESCRIPTIONS: set[str] = {
         "Lakehouse ID",
         "SQL Analytics Endpoint Connection String",
         "Lakehouse SQL Analytics Endpoint Item ID",
     }
 
-    # Regex patterns for ID detection
     UUID_PATTERN: regex = re.compile(
         r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE
     )
 
-    # SQL Connection pattern: Sql.Database("HOST-SQLSTRING.datawarehouse|database.DOMAIN", "DB-NAME" or "DB-NAME-UUID")
-    # Captures: (1) host prefix, (2) SQL endpoint string, (3) domain type, (4) domain suffix, (5) db name, (6) optional UUID
+    # Sql.Database("HOST-SQLSTRING.{datawarehouse|database}.{fabric.microsoft.com|pbidedicated.windows.net}", "DB-NAME" or "DB-NAME-UUID")
+    # Groups: (1) host prefix, (2) sql endpoint string, (3) domain type, (4) domain suffix, (5) db name, (6) optional UUID suffix
     SQL_DATABASE_PATTERN: regex = re.compile(
         r'Sql\.Database\(\s*"([^"]+)-([A-Z0-9]+)\.(datawarehouse|database)\.(fabric\.microsoft\.com|pbidedicated\.windows\.net)"\s*,\s*"([^"]+?)(?:-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}))?"\s*\)',
         re.IGNORECASE,
     )
 
-    # Notebook metadata patterns
     WORKSPACE_ID_PATTERN: regex = re.compile(
         r'"default_lakehouse_workspace_id":\s*"([0-9a-f-]+)"', re.IGNORECASE
     )
@@ -122,11 +116,10 @@ class ParameterDetector:
         "Detect all parameters from workspace files."
         self.parameters = {}
 
-        # Detect item names first (needed for dynamic variables)
+        # Item names must be resolved before _generate_dynamic_variable runs.
         self._detect_lakehouse_names()
         self._detect_sqldatabase_names()
 
-        # Process all file types with their respective extractors
         self._process_files(
             "**/*.Notebook/notebook-content.py", self._extract_from_notebook
         )
@@ -203,13 +196,10 @@ class ParameterDetector:
     ) -> DetectedParameter:
         """Add or update a detected parameter with dynamic variable generation."""
         if find_value not in self.parameters:
-            # Generate dynamic variable based on description and context
-            dynamic_var = self._generate_dynamic_variable(description)
-
             self.parameters[find_value] = DetectedParameter(
                 find_value=find_value,
                 description=description,
-                dynamic_variable=dynamic_var,
+                dynamic_variable=self._generate_dynamic_variable(description),
             )
 
         param = self.parameters[find_value]
@@ -252,52 +242,35 @@ class ParameterDetector:
         """
         desc_lower = description.lower()
 
-        # Workspace ID
         if "workspace id" in desc_lower:
             return "$workspace.$id"
 
+        # Multi-item repos are rare; first match is the common case.
         if self._lakehouse_names:
-            # Use first lakehouse name (most common case is single lakehouse)
             lakehouse_name = self._lakehouse_names[0]
-            # Lakehouse ID
             if "lakehouse id" in desc_lower:
                 return f"$items.Lakehouse.{lakehouse_name}.$id"
-
-            # SQL Analytics Endpoint Connection String
             if "sql analytics endpoint connection string" in desc_lower:
-                # Use $sqlendpoint attribute (returns full .datawarehouse hostname)
                 return f"$items.Lakehouse.{lakehouse_name}.$sqlendpoint"
-
-            # Lakehouse SQL Analytics Endpoint Item ID (distinct from Lakehouse ID)
+            # Distinct from "Lakehouse ID" — this is the SQL endpoint's item ID.
             if "lakehouse sql analytics endpoint item id" in desc_lower:
                 return f"$items.Lakehouse.{lakehouse_name}.$sqlendpointid"
 
         if self._sqldatabase_names:
-            # Use first SQL Database name (most common case is single database)
             sqldatabase_name = self._sqldatabase_names[0]
-
-            # SQL Database Connection String → SQLDatabase serverFqdn at deploy time.
-            # fabric-cicd 1.0 resolves this from PROPERTY_PATH_ATTR_MAPPING:
-            #   ItemType.SQL_DATABASE.value: {"sqlendpoint": "body/properties/serverFqdn"}
-            # which yields the .database.fabric.microsoft.com FQDN.
-            # Caveat: on a fresh `-N` deploy where the SQLDatabase hasn't been
-            # provisioned yet, fabric-cicd may not be able to resolve this on
-            # the first pass. Manual overrides via fabdep.yml still take
-            # precedence (see WorkspaceDeployer._load_manual_parameters).
+            # Resolves to body/properties/serverFqdn (.database.fabric.microsoft.com).
+            # Caveat: on a fresh `-N` deploy the SQLDatabase may not be
+            # provisioned yet — manual_parameters overrides take precedence.
             if "sql database connection string" in desc_lower:
                 return f"$items.SQLDatabase.{sqldatabase_name}.$sqlendpoint"
-
-            # SQL Database Item ID
             if "sql database item id" in desc_lower:
                 return f"$items.SQLDatabase.{sqldatabase_name}.$id"
-
-            # SQL Database Name (full "<display_name>-<uuid>" form)
-            # fabric-cicd has no $name attribute, so we can't auto-resolve this
-            # via dynamic variables. Users must add a manual_parameters entry.
+            # "<display_name>-<uuid>" form — no $name attribute in fabric-cicd,
+            # so this requires a manual_parameters entry.
             if "sql database name" in desc_lower:
                 return ""
 
-        # External connection IDs - leave empty for manual entry
+        # External connection IDs are tenant-wide; not resolvable from repo.
         if "connection id" in desc_lower:
             return ""
 
@@ -307,13 +280,11 @@ class ParameterDetector:
         """Extract workspace and lakehouse IDs from notebook metadata."""
         source_file = str(file_path.relative_to(self.repo_dir))
 
-        # Extract workspace ID
         for workspace_id in self.WORKSPACE_ID_PATTERN.findall(content):
             _ = self._add_parameter(
                 workspace_id, "Notebook", source_file, "Workspace ID"
             )
 
-        # Extract lakehouse ID
         for lakehouse_id in self.LAKEHOUSE_ID_PATTERN.findall(content):
             _ = self._add_parameter(
                 lakehouse_id, "Notebook", source_file, "Lakehouse ID"
@@ -323,8 +294,6 @@ class ParameterDetector:
         """Extract SQL connection strings and endpoint IDs from semantic models."""
         source_file = str(file_path.relative_to(self.repo_dir))
 
-        # Extract SQL connection string and endpoint ID
-        # Captures: (1) host prefix, (2) SQL endpoint string, (3) domain type, (4) domain suffix, (5) db name, (6) optional UUID
         for (
             host_prefix,
             sql_string,
@@ -333,55 +302,44 @@ class ParameterDetector:
             db_name,
             uuid,
         ) in self.SQL_DATABASE_PATTERN.findall(content):
-            # Store the full hostname with domain for replacement
             full_hostname = f"{host_prefix}-{sql_string}.{domain_type}.{domain_suffix}"
             is_sql_database = domain_type.lower() == "database"
 
-            # Add hostname parameter with domain metadata
-            hostname_description = (
-                "SQL Database Connection String"
-                if is_sql_database
-                else "SQL Analytics Endpoint Connection String"
-            )
             hostname_param = self._add_parameter(
                 full_hostname,
                 "SemanticModel",
                 source_file,
-                hostname_description,
+                "SQL Database Connection String"
+                if is_sql_database
+                else "SQL Analytics Endpoint Connection String",
             )
-
-            # Store domain type, domain suffix, and database name in metadata for later processing
             if hostname_param:
                 hostname_param.metadata["domain_type"] = domain_type.lower()
                 hostname_param.metadata["domain_suffix"] = domain_suffix.lower()
                 hostname_param.metadata["host_prefix"] = host_prefix
-                hostname_param.metadata["db_name"] = db_name  # Always store db_name
+                hostname_param.metadata["db_name"] = db_name
 
-            # Add UUID parameter if present (either as explicit suffix or as the db_name itself)
-            uuid_to_add = uuid  # Check explicit UUID suffix first
+            # The UUID may appear as an explicit "-<uuid>" suffix OR as the
+            # db_name itself when there's no human prefix.
+            uuid_to_add = uuid
             if not uuid_to_add and db_name and self.UUID_PATTERN.fullmatch(db_name):
-                # db_name is itself a UUID (no prefix)
                 uuid_to_add = db_name
 
             if uuid_to_add:
-                uuid_description = (
-                    "SQL Database Item ID"
-                    if is_sql_database
-                    else "Lakehouse SQL Analytics Endpoint Item ID"
-                )
                 _ = self._add_parameter(
                     uuid_to_add,
                     "SemanticModel",
                     source_file,
-                    uuid_description,
+                    "SQL Database Item ID"
+                    if is_sql_database
+                    else "Lakehouse SQL Analytics Endpoint Item ID",
                 )
 
-            # Add full database name parameter if it includes a UUID
-            # This is needed for SQL Database connections where the database name is "{displayName}-{itemId}"
+            # SQL Database connections store the full "<display_name>-<itemId>"
+            # form in TMDL — capture it so users can override via manual_parameters.
             if uuid and db_name:
-                full_db_name = f"{db_name}-{uuid}"
                 _ = self._add_parameter(
-                    full_db_name,
+                    f"{db_name}-{uuid}",
                     "SemanticModel",
                     source_file,
                     "SQL Database Name",
@@ -392,13 +350,13 @@ class ParameterDetector:
         source_file = str(file_path.relative_to(self.repo_dir))
         self._extract_connections_recursive(data, source_file)
 
-    # Null UUID placeholder used in TridentNotebook activities (handled by fabric-cicd directly)
+    # TridentNotebook activities use this placeholder; fabric-cicd's
+    # _replace_workspace_ids handles them directly, so don't double-substitute.
     NULL_UUID = "00000000-0000-0000-0000-000000000000"
 
     def _extract_connections_recursive(self, obj, source_file: str) -> None:
         """Recursively extract connection IDs from nested JSON structures."""
         if isinstance(obj, dict):
-            # Check for externalReferences.connection pattern
             if "externalReferences" in obj:
                 ext_refs = obj["externalReferences"]
                 if isinstance(ext_refs, dict) and "connection" in ext_refs:
@@ -409,8 +367,7 @@ class ParameterDetector:
                         description="External connection ID",
                     )
 
-            # Extract workspaceId from activity typeProperties (TridentNotebook, InvokePipeline)
-            # Skip null UUID placeholder — fabric-cicd handles those directly via _replace_workspace_ids
+            # workspaceId appears in TridentNotebook / InvokePipeline activities.
             if "workspaceId" in obj and obj.get("workspaceId") != self.NULL_UUID:
                 self._add_uuid_parameter(
                     value=obj["workspaceId"],
@@ -419,12 +376,10 @@ class ParameterDetector:
                     description="Workspace ID",
                 )
 
-            # Recurse into nested dictionaries
             for value in obj.values():
                 self._extract_connections_recursive(value, source_file)
 
         elif isinstance(obj, list):
-            # Recurse into lists
             for item in obj:
                 self._extract_connections_recursive(item, source_file)
 
@@ -432,14 +387,12 @@ class ParameterDetector:
         """Extract workspace and lakehouse IDs from CopyJob JSON."""
         source_file = str(file_path.relative_to(self.repo_dir))
 
-        # Extract workspace and lakehouse IDs from source and destination
         for section_name in ["source", "destination"]:
             section = data.get("properties", {}).get(section_name, {})
             type_properties = section.get("connectionSettings", {}).get(
                 "typeProperties", {}
             )
 
-            # Extract workspace ID and lakehouse ID (artifactId)
             self._add_uuid_parameter(
                 type_properties.get("workspaceId"),
                 "CopyJob",
@@ -489,9 +442,7 @@ class ParameterDetector:
 
         find_replace = []
 
-        # Sort parameters by description for better organization
         def _get_sort_key(param: DetectedParameter) -> tuple[int, str]:
-            """Return sort key tuple for parameter ordering."""
             if "Workspace ID" in param.description:
                 priority = 0
             elif "Lakehouse ID" in param.description:
@@ -502,14 +453,9 @@ class ParameterDetector:
                 priority = 3
             return (priority, param.description)
 
-        sorted_params = sorted(self.parameters.values(), key=_get_sort_key)
-
-        # Add parameters with dynamic variables
-        for param in sorted_params:
-            # Skip parameters without dynamic variables if requested
+        for param in sorted(self.parameters.values(), key=_get_sort_key):
             if skip_empty and use_dynamic and not param.dynamic_variable:
                 continue
-
             entry = param.to_dict(use_dynamic=use_dynamic, environment=environment)
             if include_descriptions and param.description:
                 entry["_comment"] = param.description
@@ -537,25 +483,19 @@ class ParameterDetector:
             use_dynamic=use_dynamic, environment=environment, skip_empty=skip_empty
         )
 
+        # Hand-rolled YAML emit so we can interleave description comments
+        # above each entry — yaml.dump can't.
         output_path = Path(output_path)
         with open(output_path, "w", encoding="utf-8") as f:
-            # Custom YAML dump with comments
             _ = f.write("find_replace:\n")
-
             for entry in param_dict["find_replace"]:
                 comment = entry.pop("_comment", None)
                 if comment:
                     _ = f.write(f"  # {comment}\n")
-
-                # Write the entry
                 _ = f.write(f'  - find_value: "{entry["find_value"]}"\n')
-
-                # Replace value is always a dict with environment keys
-                replace_value = entry["replace_value"]
                 _ = f.write("    replace_value:\n")
-                for env, val in replace_value.items():
+                for env, val in entry["replace_value"].items():
                     _ = f.write(f'      {env}: "{val}"\n')
-
                 _ = f.write(f"    item_type: {entry['item_type']}\n")
 
     def should_skip_replacement(self, target_workspace_id: str) -> bool:
@@ -574,18 +514,13 @@ class ParameterDetector:
         """
         self._ensure_detected()
 
-        # Find all detected workspace IDs
         detected_workspace_ids = [
             param.find_value
             for param in self.parameters.values()
             if param.description == "Workspace ID"
         ]
-
-        # If no workspace IDs detected, don't skip replacement
         if not detected_workspace_ids:
             return False
-
-        # Only skip if ALL detected workspace IDs match the target
         return all(wid == target_workspace_id for wid in detected_workspace_ids)
 
     def filter_lakehouse_params(self) -> list[str]:
@@ -617,7 +552,6 @@ class ParameterDetector:
         """Log a summary of detected parameters."""
         self._ensure_detected()
 
-        # Count parameters with and without dynamic variables
         with_dynamic = sum(1 for p in self.parameters.values() if p.dynamic_variable)
         without_dynamic = len(self.parameters) - with_dynamic
 

@@ -33,7 +33,7 @@ def handle_command_error(error: Exception, context: str) -> None:
     error_msg = str(error)
     print_error(f"\n{context} failed: {error_msg}\n")
 
-    # Check for connection errors first (before auth errors, as they can contain auth keywords)
+    # Connection errors first — their messages often contain auth keywords too.
     if is_connection_error(error_msg):
         connection_help = dedent(
             f"""
@@ -59,7 +59,6 @@ def handle_command_error(error: Exception, context: str) -> None:
             """
         )
         print_error(connection_help)
-    # Show friendly auth error message if this is an auth issue
     elif is_auth_error(error_msg):
         all_accounts = list_accounts()
         auth_help = format_auth_error_message(all_accounts)
@@ -81,12 +80,10 @@ def parse_args() -> argparse.Namespace:
         "--version", "-V", action="version", version=f"%(prog)s {__version__}"
     )
 
-    # Create subparsers for commands
     subparsers = parser.add_subparsers(
         dest="command", help="Available commands (defaults to 'deploy')"
     )
 
-    # Auth subcommand
     auth_parser = subparsers.add_parser("auth", help="Manage Azure authentication")
     auth_subparsers = auth_parser.add_subparsers(
         dest="auth_command", required=True, help="Auth actions"
@@ -107,7 +104,6 @@ def parse_args() -> argparse.Namespace:
     _ = rename_parser.add_argument("subscription_id", help="Subscription ID to rename")
     _ = rename_parser.add_argument("name", help="New subscription name")
 
-    # Rename subcommand
     rename_items_parser = subparsers.add_parser(
         "rename",
         help="Rename workspace item directories to match display names",
@@ -133,7 +129,6 @@ def parse_args() -> argparse.Namespace:
         help="Apply .lower().replace(' ', '_') to directory names",
     )
 
-    # Detect subcommand
     detect_parser = subparsers.add_parser(
         "detect",
         help="Detect source IDs from workspace files",
@@ -153,7 +148,6 @@ def parse_args() -> argparse.Namespace:
         help="Save detected parameters to parameter.yml.detected (uses smart replace format)",
     )
 
-    # Deploy subcommand (default)
     deploy_parser = subparsers.add_parser(
         "deploy",
         help="Deploy Fabric workspace items (default command)",
@@ -215,10 +209,9 @@ def parse_args() -> argparse.Namespace:
         help="Skip lakehouse parameter replacement (for feature branches sharing dev lakehouse)",
     )
 
-    # Default subcommand handling: argparse doesn't natively support
-    # "use this subparser when no subcommand is given" or "treat unknown
-    # leading args as belonging to a default subcommand," so we resolve
-    # the command ourselves and feed argparse a normalized argv.
+    # argparse can't natively pick a default subparser or treat unknown
+    # leading args as a subcommand's options — so resolve it ourselves
+    # and feed argparse a normalized argv.
     known_commands = {"auth", "deploy", "rename", "detect"}
     help_flags = {"-h", "--help", "-V", "--version"}
 
@@ -226,14 +219,11 @@ def parse_args() -> argparse.Namespace:
     head = raw[0] if raw else None
 
     if head is None:
-        # `fabdep` with no args → deploy with all defaults
         argv = ["deploy"]
     elif head in known_commands or head in help_flags:
-        # Explicit subcommand or top-level help/version — leave argv alone
         argv = raw
     else:
-        # Unknown leading token (e.g. `fabdep -t Notebook`, `fabdep .`) →
-        # treat as deploy options
+        # `fabdep -t Notebook`, `fabdep .`, etc. — treat as deploy options.
         argv = ["deploy", *raw]
 
     return parser.parse_args(argv)
@@ -242,17 +232,14 @@ def parse_args() -> argparse.Namespace:
 def handle_auth_command(args: argparse.Namespace) -> None:
     """Handle auth subcommand execution."""
     if args.auth_command == "list":
-        # List current and all available accounts
         try:
             all_accounts = list_accounts()
-            output = format_account_list(all_accounts)
-            print(output)
+            print(format_account_list(all_accounts))
         except Exception as e:
             print_error(f"Failed to list accounts: {e}")
             sys.exit(1)
 
     elif args.auth_command == "switch":
-        # Switch to different subscription
         try:
             switch_account(args.subscription_id)
         except Exception as e:
@@ -260,7 +247,6 @@ def handle_auth_command(args: argparse.Namespace) -> None:
             sys.exit(1)
 
     elif args.auth_command == "rename":
-        # Rename account (stores alias in fabdep profile)
         try:
             rename_subscription(args.subscription_id, args.name)
         except Exception as e:
@@ -291,11 +277,8 @@ def handle_detect_command(args: argparse.Namespace) -> None:
     try:
         detector = ParameterDetector(repo_dir=args.directory)
         detector.detect_all()
-
-        # Print summary
         detector.print_detection_summary()
 
-        # Save if requested
         if args.save:
             output_file = Path(args.directory) / "parameter.yml.detected"
             detector.save_parameter_yml(
@@ -305,7 +288,6 @@ def handle_detect_command(args: argparse.Namespace) -> None:
                 skip_empty=True,
             )
 
-            # Count what was saved
             with_dynamic = sum(
                 1 for p in detector.parameters.values() if p.dynamic_variable
             )
@@ -349,7 +331,7 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
         print("Run 'fabdep -h' for more information.\n")
         sys.exit(1)
     except Exception as e:
-        handle_command_error(e, "Workspace initialization")  # Runs sys.exit
+        handle_command_error(e, "Workspace initialization")  # exits
 
     try:
         deployer.deploy(  # pyright: ignore[reportPossiblyUnboundVariable]
@@ -366,7 +348,6 @@ def main() -> None:
     """CLI entry point - routes to appropriate command handler."""
     args = parse_args()
 
-    # Route to appropriate handler
     if args.command == "auth":
         handle_auth_command(args)
     elif args.command == "rename":

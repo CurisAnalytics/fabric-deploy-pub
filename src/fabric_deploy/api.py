@@ -157,8 +157,6 @@ def get_default_capacity_id() -> str:
         RuntimeError: If API call fails
     """
     capacities = list_capacities()
-
-    # Filter for active capacities
     active_capacities = [c for c in capacities if c.get("state") == "Active"]
 
     if not active_capacities:
@@ -172,14 +170,12 @@ def get_default_capacity_id() -> str:
                 + "\n".join(f"  - {name}" for name in available)
                 + "\n\nPlease activate a capacity or specify capacity_id in fabdep.yml"
             )
-        else:
-            raise ValueError(
-                "No capacities found.\n\n"
-                "You don't have access to any Fabric capacities.\n"
-                "Please create a capacity or request access, then specify capacity_id in fabdep.yml"
-            )
+        raise ValueError(
+            "No capacities found.\n\n"
+            "You don't have access to any Fabric capacities.\n"
+            "Please create a capacity or request access, then specify capacity_id in fabdep.yml"
+        )
 
-    # Return first active capacity
     return active_capacities[0]["id"]
 
 

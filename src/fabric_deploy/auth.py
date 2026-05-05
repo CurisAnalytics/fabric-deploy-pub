@@ -52,7 +52,6 @@ def _persist_spn(account: AzureAccount) -> None:
     profile = _read_fabdep_profile()
     accounts: list[dict] = profile.setdefault("accounts", [])
 
-    # Update existing or append
     for i, existing in enumerate(accounts):
         if existing.get("id") == account["id"]:
             accounts[i] = dict(account)
@@ -81,22 +80,18 @@ def list_accounts() -> list[AzureAccount]:
     fabdep_profile = _read_fabdep_profile()
     aliases: dict[str, str] = fabdep_profile.get("aliases", {})
     spn_accounts: list[AzureAccount] = fabdep_profile.get("accounts", [])
-
-    # Index az accounts by subscription ID
     az_ids = {a["id"] for a in az_accounts}
 
-    # Auto-persist any SPNs from az account list (before alias override)
+    # SPNs disappear from `az account list` after a refresh; persist them so
+    # they survive across `az login` cycles.
     for acct in az_accounts:
         if acct.get("user", {}).get("type", "").lower() == "serviceprincipal":
             _persist_spn(acct)
-
-    # Add persisted SPNs that aren't in az account list
     for spn in spn_accounts:
         if spn["id"] not in az_ids:
             spn["isDefault"] = False
             az_accounts.append(spn)
 
-    # Apply aliases
     for acct in az_accounts:
         alias = aliases.get(acct["id"])
         if alias:
@@ -139,7 +134,6 @@ def rename_subscription(subscription_id: str, new_name: str) -> None:
     Raises:
         ValueError: If subscription ID not found in any account list
     """
-    # Verify the account exists
     accounts = list_accounts()
     if not any(a["id"] == subscription_id for a in accounts):
         raise ValueError(

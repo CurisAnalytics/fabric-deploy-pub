@@ -72,9 +72,8 @@ class WorkspaceDeployer:
         init=False, repr=False
     )  # Item types present in repo
 
-    # Private fields
     _repo_dir_resolved: Path = field(init=False, repr=False)
-    config: FabdepConfig = field(init=False, repr=False)  # parsed fabdep.yml + resolved branch
+    config: FabdepConfig = field(init=False, repr=False)
     _auto_detect_summary: list[str] | None = field(default=None, init=False, repr=False)
     _logged_manual_warnings: set[str] = field(
         default_factory=set, init=False, repr=False
@@ -102,20 +101,12 @@ class WorkspaceDeployer:
         self._repo_dir_resolved = Path(self.repo_dir).resolve()
         self.logger = get_logger(self.logger_name or __name__)
 
-        # Parse fabdep.yml + resolve branch up front. Network calls (workspace
-        # lookup, capacity lookup, workspace creation) happen below in
-        # _resolve_workspace_id; FabdepConfig itself is I/O-light.
         self.config = FabdepConfig.from_path(
             self._repo_dir_resolved, branch_override=self.branch_override
         )
         self.workspace_name = self.config.workspace_name
-
         self._resolve_workspace_id()
-
-        # Detect parameters (file written later in deploy() when item scope is known)
         self._detect_parameters()
-
-        # Detect item types and lakehouse
         self.repo_item_types = self._get_repo_item_types()
         self._detect_lakehouse()
 
@@ -144,9 +135,9 @@ class WorkspaceDeployer:
         try:
             self.workspace_id = get_workspace_id_by_name(self.workspace_name)
         except ValueError:
+            # No fabdep.yml AND the dirname-derived workspace doesn't exist —
+            # surface the actionable "create a fabdep.yml" message.
             if not self.config.from_yaml:
-                # No fabdep.yml AND the dirname-derived workspace doesn't exist:
-                # surface the "create a fabdep.yml" message.
                 raise FileNotFoundError(
                     f"fabdep.yml not found in {self._repo_dir_resolved}.\n\n"
                     "Create a fabdep.yml file with:\n"
@@ -191,25 +182,18 @@ class WorkspaceDeployer:
                 )
                 continue
 
-            # Check if this parameter was auto-detected
             if find_value in detector.parameters:
-                # Override the dynamic variable with the manual replace_value
                 param_obj = detector.parameters[find_value]
 
-                # Handle both dict (with environment key) and string formats
+                # replace_value may be a string or an env-keyed dict ({env: "value"}).
                 if isinstance(replace_value, dict):
-                    # Extract the value from the environment-keyed dict
-                    # (e.g., {env: "value"} -> "value")
                     replace_value = next(iter(replace_value.values()))
-
                 param_obj.dynamic_variable = replace_value
 
-                # Override item_types if specified in manual parameter
                 if item_type:
-                    if isinstance(item_type, list):
-                        param_obj.item_types = set(item_type)
-                    else:
-                        param_obj.item_types = {item_type}
+                    param_obj.item_types = (
+                        set(item_type) if isinstance(item_type, list) else {item_type}
+                    )
                     self.logger.debug(
                         f"Manual item_type override for {find_value}: {item_type}"
                     )
@@ -222,14 +206,12 @@ class WorkspaceDeployer:
                 count += 1
                 self.logger.debug(f"Manual override for {find_value}: {replace_value}")
 
-            else:
-                # Parameter wasn't auto-detected, log warning (only once)
-                if find_value not in self._logged_manual_warnings:
-                    self.logger.warning(
-                        f"Manual parameter '{find_value}' was not auto-detected. "
-                        "Make sure the find_value matches exactly what's in the source files."
-                    )
-                    self._logged_manual_warnings.add(find_value)
+            elif find_value not in self._logged_manual_warnings:
+                self.logger.warning(
+                    f"Manual parameter '{find_value}' was not auto-detected. "
+                    "Make sure the find_value matches exactly what's in the source files."
+                )
+                self._logged_manual_warnings.add(find_value)
 
         return count
 
@@ -252,15 +234,14 @@ class WorkspaceDeployer:
             )
             self.logger.info(f"✓ Workspace created: {workspace_id}")
         except ValueError as e:
-            # Workspace already exists - fail fast to prevent accidental reuse
+            # Refuse `-N` against existing workspaces — protects against silent reuse.
             if "already exists" in str(e):
                 raise ValueError(
                     f"Workspace '{self.workspace_name}' already exists.\n\n"
                     "The -N/--new-workspace flag is only for creating new workspaces.\n"
                     "To deploy to an existing workspace, remove the -N flag."
                 ) from None
-            else:
-                raise
+            raise
         except Exception as e:
             self.logger.error(f"Failed to create workspace: {e}")
             raise
@@ -277,15 +258,11 @@ class WorkspaceDeployer:
         )
         detector.detect_all()
 
-        # Filter out lakehouse parameters if skip_lakehouse is enabled (feature branch mode)
         self._skipped_lakehouse_count = 0
         if self.skip_lakehouse:
-            removed = detector.filter_lakehouse_params()
-            self._skipped_lakehouse_count = len(removed)
+            self._skipped_lakehouse_count = len(detector.filter_lakehouse_params())
 
-        # Load manual parameters from fabdep.yml if specified
         self._manual_count = self._load_manual_parameters(detector)
-
         self._detector = detector
 
     def _write_parameter_file(self, item_types: list[str] | None = None) -> None:
@@ -301,36 +278,30 @@ class WorkspaceDeployer:
         if detector is None:
             return
 
-        # Filter parameters based on item_types if specified
-        # This prevents warnings about unused parameters when deploying only specific item types
+        # Drop parameters that aren't used by any item in scope; narrow the
+        # item_types of the survivors. Otherwise fabric-cicd warns about
+        # out-of-scope types in the parameter file.
         if item_types:
             scope = set(item_types)
             filtered_params = {}
             for find_value, param in detector.parameters.items():
-                # Always include Workspace ID - it applies to all item types
+                # Workspace ID applies regardless of item type.
                 if param.description == "Workspace ID":
                     filtered_params[find_value] = param
-                # Include parameter if its item_types overlap with filtered types
                 elif param.item_types & scope:
-                    # Narrow item_types to only those in scope so fabric-cicd
-                    # doesn't warn about out-of-scope types in the parameter file
                     param.item_types = param.item_types & scope
                     filtered_params[find_value] = param
             detector.parameters = filtered_params
 
-        # Check if source and target workspaces are the same
         if detector.should_skip_replacement(self.workspace_id):
             self._auto_detect_summary = [
                 "Source and target workspace are the same -- deploying directly without replacements",
             ]
             return
 
-        # Count what was detected (after filtering)
         dyns = sum(1 for p in detector.parameters.values() if p.dynamic_variable)
         total = len(detector.parameters)
 
-        # Check if we have any parameters that will actually be written to the file
-        # When skip_empty=True, only parameters with dynamic variables are written
         if dyns == 0:
             if self._skipped_lakehouse_count > 0:
                 self._auto_detect_summary = [
@@ -344,7 +315,6 @@ class WorkspaceDeployer:
                 ]
             return
 
-        # Backup existing parameter.yml if present
         param_file = self._repo_dir_resolved / "parameter.yml"
         backup_file = self._repo_dir_resolved / "parameter.yml.backup"
         summary = []
@@ -353,7 +323,6 @@ class WorkspaceDeployer:
             _ = param_file.rename(backup_file)
             summary.append(f"Backed up existing parameter.yml to {backup_file.name}")
 
-        # Generate parameter file for deployment (using dynamic variables)
         detector.save_parameter_yml(
             output_path=param_file,
             use_dynamic=True,
@@ -361,11 +330,8 @@ class WorkspaceDeployer:
             skip_empty=True,
         )
         self._created_param_file = True
-
-        # Post-process parameter file to add domain substitution for .database connections
         self._add_domain_substitutions(param_file, detector)
 
-        # Store summary to display after header
         external_count = max(total - dyns, 0)
         external_part = (
             f" + {external_count} external connection{'s' if external_count != 1 else ''}"
@@ -385,7 +351,6 @@ class WorkspaceDeployer:
                 f"Skipped {self._skipped_lakehouse_count} lakehouse parameter{'s' if self._skipped_lakehouse_count != 1 else ''} (--skip-lakehouse)"
             )
 
-        # Warn if any SemanticModel connection parameters couldn't be resolved
         unresolved_sem_model = [
             p for p in detector.parameters.values()
             if "SemanticModel" in p.item_types and not p.dynamic_variable and p.description != "External connection ID"
@@ -405,152 +370,87 @@ class WorkspaceDeployer:
     def _add_domain_substitutions(
         self, param_file: Path, detector: ParameterDetector
     ) -> None:
+        """Append a second-pass domain rewrite for non-default SemanticModel connections.
+
+        fabric-cicd 1.0's `$items.Lakehouse.<name>.$sqlendpoint` always returns
+        `.datawarehouse.fabric.microsoft.com` form, but SemanticModels can
+        reference `.database.fabric.microsoft.com` (SQL Database endpoints) or
+        `.pbidedicated.windows.net` (older workspaces). fabric-cicd has no
+        callback, no multi-pass templating, and no equivalent dynamic for
+        those forms — so we let fabric-cicd do the first pass and append a
+        second find_replace that rewrites the resulting FQDN. Targeting
+        includes the database name and is scoped to SemanticModel.
+
+        TODO: revisit if fabric-cicd grows native multi-domain support.
         """
-        Post-process parameter.yml to add a second-pass rewrite for non-default
-        SemanticModel connection domains.
-
-        Why this is needed (verified against fabric-cicd 1.0):
-
-        fabric-cicd's `$items.Lakehouse.<name>.$sqlendpoint` always resolves to
-        the Lakehouse `connectionString`, which is in
-        `.datawarehouse.fabric.microsoft.com` form. SemanticModels in older
-        workspaces — or ones bound to SQL Database endpoints — reference the
-        same logical endpoint via `.database.fabric.microsoft.com` or
-        `.pbidedicated.windows.net`. fabric-cicd 1.0 has no built-in way to
-        emit a domain-converted form (no callbacks, no multi-pass templating,
-        and no `$items.SQLDatabase.<name>.$sqlendpoint` for the
-        `pbidedicated` case).
-
-        So we let fabric-cicd do the first pass (source FQDN → resolved
-        Lakehouse FQDN, in `.datawarehouse` form), then append a second
-        find_replace entry that rewrites the substituted FQDN's domain back
-        to the form the SemanticModel expects. Targeting includes the
-        database name to avoid hitting unrelated connections, and item_type
-        is scoped to SemanticModel.
-
-        TODO: revisit if fabric-cicd grows native multi-domain support, or
-        if `$items.Warehouse.<name>.$sqlendpoint` (`.database` form) becomes
-        a viable substitute.
-
-        Handles two cases:
-        1. .database.fabric.microsoft.com: rewrites .datawarehouse → .database
-        2. .pbidedicated.windows.net: rewrites .fabric.microsoft.com → .pbidedicated.windows.net
-
-        Args:
-            param_file: Path to parameter.yml file
-            detector: ParameterDetector with detected parameters
-        """
-        # Find parameters that need domain substitution
         connections_needing_substitution = []
-
         for param in detector.parameters.values():
             domain_suffix = param.metadata.get("domain_suffix", "").lower()
             domain_type = param.metadata.get("domain_type", "").lower()
-            db_name = param.metadata.get("db_name")
-
-            # Skip parameters without database name (can't create targeted replacement)
-            if not db_name:
+            if not param.metadata.get("db_name"):
                 continue
-
-            # .database connections that need domain type change
             if domain_type == "database":
                 connections_needing_substitution.append(("database_type", param))
-            # .pbidedicated.windows.net connections that need domain suffix change
             elif domain_suffix == "pbidedicated.windows.net":
                 connections_needing_substitution.append(("pbidedicated_suffix", param))
 
         if not connections_needing_substitution:
-            return  # No connections need domain substitution
+            return
 
-        # Read the existing parameter.yml
         with open(param_file) as f:
             param_data = yaml.safe_load(f)
 
         if not param_data or "find_replace" not in param_data:
             return
 
-        # Add targeted domain substitution entries
         for substitution_type, param in connections_needing_substitution:
             db_name = param.metadata.get("db_name")
             if not db_name:
-                continue  # Can't create targeted replacement without database name
+                continue
 
             if substitution_type == "database_type":
-                # For .database connections, change .datawarehouse back to .database
                 targeted_find = f'.datawarehouse.fabric.microsoft.com","{db_name}'
                 targeted_replace = f'.database.fabric.microsoft.com","{db_name}'
-
             elif substitution_type == "pbidedicated_suffix":
-                # For .pbidedicated.windows.net connections, change .fabric.microsoft.com back to .pbidedicated.windows.net
                 domain_type = param.metadata.get("domain_type", "datawarehouse")
                 targeted_find = f'.{domain_type}.fabric.microsoft.com","{db_name}'
-                targeted_replace = (
-                    f'.{domain_type}.pbidedicated.windows.net","{db_name}'
-                )
-
+                targeted_replace = f'.{domain_type}.pbidedicated.windows.net","{db_name}'
             else:
                 continue
 
-            domain_substitution = {
+            param_data["find_replace"].append({
                 "find_value": targeted_find,
                 "replace_value": {"fabdep": targeted_replace},
                 "item_type": ["SemanticModel"],
-            }
+            })
 
-            param_data["find_replace"].append(domain_substitution)
-
-        # Write back the modified parameter file
         with open(param_file, "w") as f:
             yaml.dump(param_data, f, default_flow_style=False, sort_keys=False)
 
     def _cleanup_dynamic_params(self) -> None:
-        """
-        Cleanup auto-generated parameter file and restore backup if present.
-        """
+        """Remove the auto-generated parameter.yml and restore the user's backup."""
         param_file = self._repo_dir_resolved / "parameter.yml"
         backup_file = self._repo_dir_resolved / "parameter.yml.backup"
 
-        # Remove auto-generated file
         if param_file.exists():
             param_file.unlink()
-
-        # Restore backup
         if backup_file.exists():
             _ = backup_file.rename(param_file)
             self.logger.info("Restored original parameter.yml")
 
     def _get_repo_item_types(self) -> set[str]:
-        """
-        Scan repository to detect which item types are present.
-
-        Scans recursively to find all .platform files and extracts item types
-        from their parent directory names.
-
-        Returns:
-            Set of item type names found in the repository
-        """
+        """Return the set of accepted Fabric item types found in the repo."""
         item_types = set()
-
-        # Recursively scan for .platform files
         for platform_file in self._repo_dir_resolved.rglob(".platform"):
-            item_dir = platform_file.parent
-
-            # Check if directory follows ItemName.ItemType pattern
-            if "." in item_dir.name:
-                parts = item_dir.name.rsplit(".", 1)
-                if len(parts) == 2:
-                    item_type = parts[1]
-                    if item_type in ACCEPTED_ITEM_TYPES:
-                        item_types.add(item_type)
-
+            # Items are stored as `<DisplayName>.<ItemType>/`.
+            if "." in platform_file.parent.name:
+                parts = platform_file.parent.name.rsplit(".", 1)
+                if len(parts) == 2 and parts[1] in ACCEPTED_ITEM_TYPES:
+                    item_types.add(parts[1])
         return item_types
 
     def _detect_lakehouse(self) -> None:
-        """
-        Detect lakehouse name from .Lakehouse directory.
-
-        Sets self.lakehouse_name from metadata.
-        """
+        """Set self.lakehouse_name from the first *.Lakehouse/.platform file."""
         lakehouses = list(self._repo_dir_resolved.glob("*.Lakehouse"))
         if len(lakehouses) == 0:
             raise ValueError("No lakehouse found in repository directory")
@@ -644,7 +544,6 @@ class WorkspaceDeployer:
 
         log_header(self.logger, f"Fabric CI/CD v{__version__}")
 
-        # Enable experimental feature flags if name-based filtering is requested
         if include_items:
             append_feature_flag("enable_experimental_features")
             append_feature_flag("enable_items_to_include")
@@ -661,20 +560,15 @@ class WorkspaceDeployer:
             exclude_types=exclude_types,
             include_items=include_items,
         )
-
-        # Write parameter file (with item-type filtering if applicable)
         self._write_parameter_file(item_types=item_type_in_scope)
 
-        # Print header with repo info
         self.logger.info(f"Workspace Name: '{self.workspace_name}'")
         self.logger.info(f"Workspace ID: {self.workspace_id}")
-        # Print auto-detect summary if available (on same line as workspace info)
         if self._auto_detect_summary:
             for line in self._auto_detect_summary:
                 self.logger.info(line)
 
         if item_type_in_scope:
-            # Show item types in scope, filtered by what exists in repo
             types_to_deploy = sorted(set(item_type_in_scope) & self.repo_item_types)
             if types_to_deploy:
                 self.logger.info(f"Item types in scope: {', '.join(types_to_deploy)}")
@@ -683,12 +577,9 @@ class WorkspaceDeployer:
         if include_items:
             self.logger.info(f"Including items: {', '.join(include_items)}")
 
-        # Display parameter.yml last modified time
         param_file = self._repo_dir_resolved / "parameter.yml"
         bak_file = param_file.with_suffix(".yml.bak")
-
         if bak_file.exists() and not param_file.exists():
-            # Using .bak file
             mtime = datetime.fromtimestamp(bak_file.stat().st_mtime)
             self.logger.info(
                 f"Parameter file (.bak) modified: {mtime.strftime('%d/%m/%Y %H:%M:%S')}"
@@ -699,7 +590,8 @@ class WorkspaceDeployer:
                 f"Parameter file modified: {mtime.strftime('%d/%m/%Y %H:%M:%S')}"
             )
 
-        # Replace fabric_cicd's log formatter to omit timestamps on header lines
+        # fabric-cicd configures its own logger at import time; swap in our
+        # formatter that omits timestamps on header lines.
         patch_fabric_cicd_logger()
 
         try:
@@ -709,10 +601,7 @@ class WorkspaceDeployer:
                 include_items=include_items,
             )
             self.logger.info("Deployment complete!")
-
-        except Exception:  # Re-raise exception to be handled by caller
-            raise  # CLI will handle error message formatting via handle_command_error()
-        finally:  # Cleanup auto-generated parameter file
+        finally:
             if self._created_param_file:
                 self._cleanup_dynamic_params()
             print()
@@ -733,10 +622,10 @@ class WorkspaceDeployer:
             include_items: Include only specific items (format: "ItemName.ItemType")
             _retry_attempt: Internal retry counter (do not set manually)
         """
-        # fabric-cicd 1.0 removed the implicit credential fallback: callers
-        # must pass an explicit `token_credential`. We delegate to the active
-        # `az` session (user or SPN) via AzureCliCredential, which keeps fabdep
-        # consistent with `fabdep auth` and `api.get_access_token()`.
+        # fabric-cicd 1.0 requires an explicit token_credential (no more
+        # implicit DefaultAzureCredential). AzureCliCredential keeps fabdep's
+        # auth surface a single command — the active `az` session is what
+        # gets used.
         target_workspace = FabricWorkspace(
             workspace_id=self.workspace_id,
             repository_directory=str(self._repo_dir_resolved),
@@ -749,7 +638,6 @@ class WorkspaceDeployer:
             _ = publish_all_items(target_workspace, items_to_include=include_items)
         except Exception as e:
             error_msg = str(e)
-            # Retry on transient errors (up to max_retries)
             if _retry_attempt < self.max_retries and is_transient_error(error_msg):
                 self.logger.warning(f"Transient error detected: {error_msg}")
                 self.logger.info(
@@ -761,10 +649,10 @@ class WorkspaceDeployer:
                     include_items=include_items,
                     _retry_attempt=_retry_attempt + 1,
                 )
-            raise  # Re-raise if not retryable or max retries exceeded
+            raise
 
-        # Skip unpublish when using include_items - it's too dangerous
-        # If item names don't match, nothing gets published, and unpublish would delete everything
+        # include_items + unpublish is a footgun: if names don't match, nothing
+        # publishes and orphan cleanup would wipe the workspace.
         if not no_cleanup and not include_items:
             unpublish_all_orphan_items(
                 target_workspace, item_name_exclude_regex=self.lakehouse_name
