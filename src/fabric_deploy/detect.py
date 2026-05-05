@@ -276,20 +276,26 @@ class ParameterDetector:
             # Use first SQL Database name (most common case is single database)
             sqldatabase_name = self._sqldatabase_names[0]
 
-            # SQL Database Connection String
-            # Attribute exists but value may not be available until endpoint is provisioned
-            # Requires manual configuration in fabdep.yml for now
+            # SQL Database Connection String → SQLDatabase serverFqdn at deploy time.
+            # fabric-cicd 1.0 resolves this from PROPERTY_PATH_ATTR_MAPPING:
+            #   ItemType.SQL_DATABASE.value: {"sqlendpoint": "body/properties/serverFqdn"}
+            # which yields the .database.fabric.microsoft.com FQDN.
+            # Caveat: on a fresh `-N` deploy where the SQLDatabase hasn't been
+            # provisioned yet, fabric-cicd may not be able to resolve this on
+            # the first pass. Manual overrides via fabdep.yml still take
+            # precedence (see WorkspaceDeployer._load_manual_parameters).
             if "sql database connection string" in desc_lower:
-                return ""  # External - endpoint may not be provisioned
+                return f"$items.SQLDatabase.{sqldatabase_name}.$sqlendpoint"
 
             # SQL Database Item ID
             if "sql database item id" in desc_lower:
                 return f"$items.SQLDatabase.{sqldatabase_name}.$id"
 
-            # SQL Database Name (full name with UUID suffix)
-            # Not supported - requires manual configuration (no $name attribute)
+            # SQL Database Name (full "<display_name>-<uuid>" form)
+            # fabric-cicd has no $name attribute, so we can't auto-resolve this
+            # via dynamic variables. Users must add a manual_parameters entry.
             if "sql database name" in desc_lower:
-                return ""  # External - mark for manual entry
+                return ""
 
         # External connection IDs - leave empty for manual entry
         if "connection id" in desc_lower:
