@@ -38,28 +38,27 @@ def rename_items_by_display_name(
     src = Path(repo_dir).resolve()
     if not src.exists():
         raise FileNotFoundError(f"Directory not found: {src}")
-    # Find all .platform files
+
     targets = list(src.glob("**/*.*/.platform"))
     if not targets:
         logger.info(f"No items found in {src}")
         return
     logger.info(f"Found {len(targets)} item(s) to process")
+
     renamed_count, skipped_count = 0, 0
     for target in targets:
         try:
-            # Read .platform metadata
             platform_data = json.loads(target.read_text())
             display_name = platform_data["metadata"]["displayName"]
-            # Convert display name to directory name format
             new_stem = display_name.lower().replace(" ", "_") if clean else display_name
             parent = target.parent
             new_path = parent.with_stem(new_stem)
-            # Skip if already matches
+
             if parent == new_path:
                 logger.info(f"Skipping {_format_path(parent)} (already matches)")
                 skipped_count += 1
                 continue
-            # Show what will be/was renamed
+
             if dry_run:
                 logger.info(f"{_format_path(parent)} -> {_format_path(new_path)}")
             else:
@@ -76,7 +75,7 @@ def rename_items_by_display_name(
         except Exception as e:
             logger.error(f"Error processing {target}: {e}")
             skipped_count += 1
-    # Summary
+
     if dry_run:
         logger.info(
             f"\nDry run complete: {renamed_count} item(s) would be renamed, "

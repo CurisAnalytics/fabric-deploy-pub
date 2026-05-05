@@ -48,13 +48,13 @@ class CustomFormatter(logging.Formatter):
         }.get(record.levelname, "unknown")
         level_name = f"{level_color}[{level_name}]"
         message = f"{record.getMessage()}{Style.RESET_ALL}"
-        # Calculate visual length by removing ANSI escape codes
-        ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
-        # Get visual length of level_name without ANSI codes
-        visual_level_length = len(ansi_escape.sub("", level_name))
-        # INFO: no prefix; other levels: show colored prefix
+
         if record.levelname == "INFO":
             return message
+
+        # Pad based on visual width (after stripping ANSI escapes).
+        ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+        visual_level_length = len(ansi_escape.sub("", level_name))
         padding = " " * max(0, 8 - visual_level_length)
         return f"{level_name}{padding} {message}"
 
@@ -99,13 +99,13 @@ class FabricCicdFormatter(logging.Formatter):
         level_name, padding = self._format_level(record)
         prefix = f"{level_name}{padding} " if level_name else ""
 
-        # Header lines (####) and blank separators: no timestamp
+        # Header lines (####) and blank separators get no timestamp.
         if "####" in stripped or stripped == "":
             return f"{prefix}{message}"
 
         timestamp = self.formatTime(record, self.datefmt)
 
-        # Indented lines (fabric_cicd uses "->" as indent marker)
+        # fabric_cicd marks indented lines with "->".
         if "->" in raw_message:
             message = message.replace("->", "")
 
@@ -113,24 +113,18 @@ class FabricCicdFormatter(logging.Formatter):
 
 
 def patch_fabric_cicd_logger() -> None:
-    """Replace the fabric_cicd logger's formatter to omit timestamps on header lines.
+    """Replace fabric_cicd's logger formatter to omit timestamps on header lines.
 
-    Should be called after fabric_cicd has been imported (which runs configure_logger()
-    at import time). Finds the StreamHandler on the 'fabric_cicd' logger and swaps in
-    FabricCicdFormatter.
+    Call this AFTER importing fabric_cicd (which runs configure_logger() at
+    import time). Patches both the 'fabric_cicd' logger and 'console_only'
+    (used for exception messages).
     """
-    fc_logger = logging.getLogger("fabric_cicd")
-    for handler in fc_logger.handlers:
-        if isinstance(handler, logging.StreamHandler):
-            handler.setFormatter(FabricCicdFormatter(datefmt="%H:%M:%S"))
-            break
-
-    # Also patch console_only logger (used by fabric_cicd for exception messages)
-    console_logger = logging.getLogger("console_only")
-    for handler in console_logger.handlers:
-        if isinstance(handler, logging.StreamHandler):
-            handler.setFormatter(FabricCicdFormatter(datefmt="%H:%M:%S"))
-            break
+    for name in ("fabric_cicd", "console_only"):
+        logger = logging.getLogger(name)
+        for handler in logger.handlers:
+            if isinstance(handler, logging.StreamHandler):
+                handler.setFormatter(FabricCicdFormatter(datefmt="%H:%M:%S"))
+                break
 
 
 def get_logger(name: str) -> logging.Logger:
