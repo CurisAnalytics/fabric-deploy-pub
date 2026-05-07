@@ -109,13 +109,34 @@ def get_current_account() -> AzureAccount | None:
     return next((a for a in accounts if a.get("isDefault")), None)
 
 
-def switch_account(subscription_id: str) -> None:
+def switch_account(account: str) -> None:
     """
     Switch to a different account.
-    subscription_id: Subscription ID to switch to
+
+    Accepts either a subscription ID or a display name (including fabdep
+    aliases). Names are resolved to IDs via the merged account list.
     """
+    accounts = list_accounts()
+
+    by_id = next((a for a in accounts if a["id"] == account), None)
+    if by_id is not None:
+        target_id = by_id["id"]
+    else:
+        by_name = [a for a in accounts if a["name"].lower() == account.lower()]
+        if not by_name:
+            raise ValueError(
+                f"Account '{account}' not found.\n"
+                "Run 'fabdep auth list' to see available accounts."
+            )
+        if len(by_name) > 1:
+            raise ValueError(
+                f"Multiple accounts match '{account}':\n"
+                + "\n".join(f"  - {a['id']}: {a['name']}" for a in by_name)
+            )
+        target_id = by_name[0]["id"]
+
     _ = subprocess.run(
-        ["az", "account", "set", "--subscription", subscription_id],
+        ["az", "account", "set", "--subscription", target_id],
         check=True,
         capture_output=True,
     )
