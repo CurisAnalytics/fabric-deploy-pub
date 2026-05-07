@@ -84,6 +84,15 @@ class ParameterDetector:
         r'"default_lakehouse":\s*"([0-9a-f-]+)"', re.IGNORECASE
     )
 
+    # DirectLake semantic models reference the lakehouse via OneLake DFS URL:
+    #   https://onelake.dfs.fabric.microsoft.com/<workspace_id>/<lakehouse_id>
+    ONELAKE_DFS_PATTERN: regex = re.compile(
+        r"onelake\.dfs\.fabric\.microsoft\.com/"
+        r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/"
+        r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+        re.IGNORECASE,
+    )
+
     def __init__(self, repo_dir: Path | str, logger_name: str | None = None):
         """
         Initialize parameter detector.
@@ -293,6 +302,14 @@ class ParameterDetector:
     def _extract_from_semantic_model(self, file_path: Path, content: str) -> None:
         """Extract SQL connection strings and endpoint IDs from semantic models."""
         source_file = str(file_path.relative_to(self.repo_dir))
+
+        for workspace_id, lakehouse_id in self.ONELAKE_DFS_PATTERN.findall(content):
+            self._add_uuid_parameter(
+                workspace_id, "SemanticModel", source_file, "Workspace ID"
+            )
+            self._add_uuid_parameter(
+                lakehouse_id, "SemanticModel", source_file, "Lakehouse ID"
+            )
 
         for (
             host_prefix,

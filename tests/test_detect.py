@@ -165,6 +165,55 @@ class TestSemanticModelExtraction:
         # Name has no native fabric-cicd attribute; still requires manual override
         assert d.parameters[full_name].dynamic_variable == ""
 
+    def test_extracts_onelake_dfs_url(self, tmp_path: Path):
+        """DirectLake semantic models reference OneLake via DFS URL."""
+        _make_lakehouse(tmp_path, "lh")
+        body = (
+            "expression 'DirectLake - lh' = let\n"
+            "  Source = AzureStorage.DataLake("
+            f'"https://onelake.dfs.fabric.microsoft.com/{WORKSPACE_ID}/{LAKEHOUSE_ID}",'
+            " [HierarchicalNavigation=true])\nin Source"
+        )
+        _make_semantic_model(tmp_path, "sm", body)
+
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert WORKSPACE_ID in d.parameters
+        assert d.parameters[WORKSPACE_ID].description == "Workspace ID"
+        assert "SemanticModel" in d.parameters[WORKSPACE_ID].item_types
+        assert d.parameters[WORKSPACE_ID].dynamic_variable == "$workspace.$id"
+
+        assert LAKEHOUSE_ID in d.parameters
+        assert d.parameters[LAKEHOUSE_ID].description == "Lakehouse ID"
+        assert "SemanticModel" in d.parameters[LAKEHOUSE_ID].item_types
+        assert (
+            d.parameters[LAKEHOUSE_ID].dynamic_variable
+            == "$items.Lakehouse.lh.$id"
+        )
+
+    def test_onelake_dfs_url_merges_with_notebook_detection(self, tmp_path: Path):
+        """When the same IDs appear in a Notebook AND a SemanticModel, item_types unions."""
+        _make_lakehouse(tmp_path, "lh")
+        _make_notebook(
+            tmp_path,
+            "nb",
+            f'# META  "default_lakehouse_workspace_id": "{WORKSPACE_ID}",\n'
+            f'# META  "default_lakehouse": "{LAKEHOUSE_ID}",\n',
+        )
+        body = (
+            "expression Source = AzureStorage.DataLake("
+            f'"https://onelake.dfs.fabric.microsoft.com/{WORKSPACE_ID}/{LAKEHOUSE_ID}",'
+            " [HierarchicalNavigation=true])"
+        )
+        _make_semantic_model(tmp_path, "sm", body)
+
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert d.parameters[WORKSPACE_ID].item_types == {"Notebook", "SemanticModel"}
+        assert d.parameters[LAKEHOUSE_ID].item_types == {"Notebook", "SemanticModel"}
+
     def test_pbidedicated_domain_metadata(self, tmp_path: Path):
         _make_lakehouse(tmp_path, "lh")
         body = (
