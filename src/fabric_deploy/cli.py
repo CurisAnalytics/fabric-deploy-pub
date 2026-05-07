@@ -97,7 +97,7 @@ def parse_args() -> argparse.Namespace:
         "switch", help="Switch to different account"
     )
     _ = switch_parser.add_argument(
-        "subscription_id", help="Subscription ID to switch to"
+        "account", help="Subscription ID or account name (alias supported)"
     )
 
     rename_parser = auth_subparsers.add_parser("rename", help="Rename a subscription")
@@ -241,7 +241,7 @@ def handle_auth_command(args: argparse.Namespace) -> None:
 
     elif args.auth_command == "switch":
         try:
-            switch_account(args.subscription_id)
+            switch_account(args.account)
         except Exception as e:
             print_error(f"\nFailed to switch account: {e}\n")
             sys.exit(1)
