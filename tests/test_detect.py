@@ -81,7 +81,6 @@ class TestNotebookExtraction:
         assert LAKEHOUSE_ID in d.parameters
         assert d.parameters[WORKSPACE_ID].description == "Workspace ID"
         assert d.parameters[LAKEHOUSE_ID].description == "Lakehouse ID"
-        assert "Notebook" in d.parameters[WORKSPACE_ID].item_types
 
     def test_dynamic_variable_for_workspace_and_lakehouse(self, tmp_path: Path):
         _make_lakehouse(tmp_path, "lh")
@@ -181,19 +180,18 @@ class TestSemanticModelExtraction:
 
         assert WORKSPACE_ID in d.parameters
         assert d.parameters[WORKSPACE_ID].description == "Workspace ID"
-        assert "SemanticModel" in d.parameters[WORKSPACE_ID].item_types
         assert d.parameters[WORKSPACE_ID].dynamic_variable == "$workspace.$id"
 
         assert LAKEHOUSE_ID in d.parameters
         assert d.parameters[LAKEHOUSE_ID].description == "Lakehouse ID"
-        assert "SemanticModel" in d.parameters[LAKEHOUSE_ID].item_types
         assert (
             d.parameters[LAKEHOUSE_ID].dynamic_variable
             == "$items.Lakehouse.lh.$id"
         )
 
     def test_onelake_dfs_url_merges_with_notebook_detection(self, tmp_path: Path):
-        """When the same IDs appear in a Notebook AND a SemanticModel, item_types unions."""
+        """When the same IDs appear in a Notebook AND a SemanticModel, both
+        source files are recorded against a single deduped parameter."""
         _make_lakehouse(tmp_path, "lh")
         _make_notebook(
             tmp_path,
@@ -211,8 +209,8 @@ class TestSemanticModelExtraction:
         d = ParameterDetector(tmp_path)
         d.detect_all()
 
-        assert d.parameters[WORKSPACE_ID].item_types == {"Notebook", "SemanticModel"}
-        assert d.parameters[LAKEHOUSE_ID].item_types == {"Notebook", "SemanticModel"}
+        assert len(d.parameters[WORKSPACE_ID].source_files) == 2
+        assert len(d.parameters[LAKEHOUSE_ID].source_files) == 2
 
     def test_pbidedicated_domain_metadata(self, tmp_path: Path):
         _make_lakehouse(tmp_path, "lh")
@@ -253,7 +251,6 @@ class TestPipelineExtraction:
 
         assert CONNECTION_ID in d.parameters
         assert d.parameters[CONNECTION_ID].description == "External connection ID"
-        assert "DataPipeline" in d.parameters[CONNECTION_ID].item_types
 
     def test_extracts_workspaceid_in_typeproperties(self, tmp_path: Path):
         _make_lakehouse(tmp_path, "lh")
@@ -336,7 +333,7 @@ class TestCopyJobExtraction:
         assert OTHER_WORKSPACE_ID in d.parameters
         assert LAKEHOUSE_ID in d.parameters
         assert ENDPOINT_ID in d.parameters
-        assert "CopyJob" in d.parameters[LAKEHOUSE_ID].item_types
+        assert d.parameters[LAKEHOUSE_ID].description == "Lakehouse ID"
 
 
 # --- should_skip_replacement ---------------------------------------------

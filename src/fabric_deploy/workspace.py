@@ -267,28 +267,22 @@ class WorkspaceDeployer:
 
     def _write_parameter_file(self, item_types: list[str] | None = None) -> None:
         """
-        Filter detected parameters and write parameter.yml for deployment.
+        Write parameter.yml for deployment.
 
-        Called once from deploy() when the item scope is known.
+        Called once from deploy(). All detected parameters are emitted; only
+        manual_parameters overrides carry per-type scoping (via the item_type
+        field on the entry). This keeps the find_replace surface simple — if a
+        parameter isn't used by any in-scope file, fabric-cicd will warn but
+        the deployment still succeeds.
 
         Args:
-            item_types: Filter parameters to only those used by specified item types
+            item_types: Currently unused; kept for signature stability with
+                callers that may pass it for future filtering decisions.
         """
+        del item_types  # No auto-detected scoping — see docstring.
         detector = self._detector
         if detector is None:
             return
-
-        # Drop parameters that aren't used by any item in scope; narrow the
-        # item_types of the survivors. Otherwise fabric-cicd warns about
-        # out-of-scope types in the parameter file.
-        if item_types:
-            scope = set(item_types)
-            filtered_params = {}
-            for find_value, param in detector.parameters.items():
-                if param.item_types & scope:
-                    param.item_types = param.item_types & scope
-                    filtered_params[find_value] = param
-            detector.parameters = filtered_params
 
         if detector.should_skip_replacement(self.workspace_id):
             self._auto_detect_summary = [
