@@ -125,7 +125,7 @@ class TestParameterFileWriter:
         }
         deployer._repo_dir_resolved = tmp_path
 
-        deployer._write_parameter_file(item_types=["SemanticModel"])
+        deployer._write_parameter_file()
 
         # Both detected entries survive — scope no longer filters auto-detected.
         assert set(deployer._detector.parameters) == {wsid, lhid}
@@ -147,7 +147,7 @@ class TestParameterFileWriter:
         }
         deployer._repo_dir_resolved = tmp_path
 
-        deployer._write_parameter_file(item_types=None)
+        deployer._write_parameter_file()
 
         param_file = tmp_path / "parameter.yml"
         assert param_file.exists()
@@ -171,7 +171,7 @@ class TestParameterFileWriter:
         }
         deployer._repo_dir_resolved = tmp_path
 
-        deployer._write_parameter_file(item_types=None)
+        deployer._write_parameter_file()
 
         param_file = tmp_path / "parameter.yml"
         data = yaml.safe_load(param_file.read_text())

@@ -265,21 +265,15 @@ class WorkspaceDeployer:
         self._manual_count = self._load_manual_parameters(detector)
         self._detector = detector
 
-    def _write_parameter_file(self, item_types: list[str] | None = None) -> None:
+    def _write_parameter_file(self) -> None:
         """
         Write parameter.yml for deployment.
 
         Called once from deploy(). All detected parameters are emitted; only
         manual_parameters overrides carry per-type scoping (via the item_type
-        field on the entry). This keeps the find_replace surface simple — if a
-        parameter isn't used by any in-scope file, fabric-cicd will warn but
-        the deployment still succeeds.
-
-        Args:
-            item_types: Currently unused; kept for signature stability with
-                callers that may pass it for future filtering decisions.
+        field on the entry). If a parameter isn't used by any in-scope file,
+        fabric-cicd will warn but the deployment still succeeds.
         """
-        del item_types  # No auto-detected scoping — see docstring.
         detector = self._detector
         if detector is None:
             return
@@ -551,7 +545,7 @@ class WorkspaceDeployer:
             exclude_types=exclude_types,
             include_items=include_items,
         )
-        self._write_parameter_file(item_types=item_type_in_scope)
+        self._write_parameter_file()
 
         self.logger.info(f"Workspace Name: '{self.workspace_name}'")
         self.logger.info(f"Workspace ID: {self.workspace_id}")
