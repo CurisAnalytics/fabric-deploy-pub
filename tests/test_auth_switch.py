@@ -57,7 +57,7 @@ def test_switch_by_name_resolves_to_id():
 
 
 def test_switch_by_name_is_case_insensitive():
-    cmd = _patched_switch("example personal")
+    cmd = _patched_switch("personal b")
     assert cmd[-1] == "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
 
 
