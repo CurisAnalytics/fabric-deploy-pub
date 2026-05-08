@@ -87,8 +87,8 @@ class TestCLI:
 
         # Verify it contains expected parameters
         content = detected_file.read_text()
-        assert "00c6eeb8-5d09-4ab8-96f6-3cc4b9956d18" in content  # Workspace ID
-        assert "a99c446d-5ada-4c3f-b207-a9cd7d5725a2" in content  # Lakehouse ID
+        assert "aaaaaaaa-1111-2222-3333-444444444444" in content  # Workspace ID
+        assert "bbbbbbbb-1111-2222-3333-444444444444" in content  # Lakehouse ID
         assert "$workspace.$id" in content
         assert "$items.Lakehouse.fabdep_lakehouse.$id" in content
 
