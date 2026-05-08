@@ -19,7 +19,12 @@ regex = re.Pattern[str]
 
 @dataclass
 class DetectedParameter:
-    """Represents a detected parameter with its context."""
+    """Represents a detected parameter with its context.
+
+    `item_types` is set ONLY by manual_parameters overrides in fabdep.yml.
+    Auto-detected parameters leave it empty so fabric-cicd's find_replace
+    applies to every file in scope (no per-type filtering).
+    """
 
     find_value: str
     item_types: set[str] = field(default_factory=set)
@@ -39,17 +44,14 @@ class DetectedParameter:
         Returns:
             Dictionary in parameter entry format with dynamic variables
         """
-        entry = {
-            "find_value": self.find_value,
-            "item_type": sorted(list(self.item_types)),
-        }
+        entry: dict = {"find_value": self.find_value}
+        if self.item_types:
+            entry["item_type"] = sorted(self.item_types)
 
         # fabric-cicd requires replace_value to be an env-keyed dict, even
         # though we only emit one environment ("fabdep") in practice.
         if use_dynamic and self.dynamic_variable:
             entry["replace_value"] = {environment: self.dynamic_variable}  # pyright: ignore[reportArgumentType]
-            if self.metadata.get("domain_type") == "database":
-                entry["_domain_type"] = "database"  # consumed by _add_domain_substitutions
         else:
             entry["replace_value"] = {environment: ""}  # pyright: ignore[reportArgumentType]
 
@@ -201,7 +203,7 @@ class ParameterDetector:
                 self._log_file_warning(file_path, e)
 
     def _add_parameter(
-        self, find_value: str, item_type: str, source_file: str, description: str = ""
+        self, find_value: str, source_file: str, description: str = ""
     ) -> DetectedParameter:
         """Add or update a detected parameter with dynamic variable generation."""
         if find_value not in self.parameters:
@@ -212,7 +214,6 @@ class ParameterDetector:
             )
 
         param = self.parameters[find_value]
-        param.item_types.add(item_type)
         param.source_files.add(source_file)
         if description and not param.description:
             param.description = description
@@ -220,21 +221,12 @@ class ParameterDetector:
         return param
 
     def _add_uuid_parameter(
-        self, value: str, item_type: str, source_file: str, description: str = ""
+        self, value: str, source_file: str, description: str = ""
     ):
-        """
-        Add parameter if value is a valid UUID.
-
-        Args:
-            value: Value to validate and add
-            item_type: Type of item where ID was found
-            source_file: Relative path to source file
-            description: Human-readable description
-        """
+        """Add parameter if value is a valid UUID."""
         if value and self.UUID_PATTERN.match(value):
             _ = self._add_parameter(
                 find_value=value,
-                item_type=item_type,
                 source_file=source_file,
                 description=description,
             )
@@ -290,26 +282,18 @@ class ParameterDetector:
         source_file = str(file_path.relative_to(self.repo_dir))
 
         for workspace_id in self.WORKSPACE_ID_PATTERN.findall(content):
-            _ = self._add_parameter(
-                workspace_id, "Notebook", source_file, "Workspace ID"
-            )
+            _ = self._add_parameter(workspace_id, source_file, "Workspace ID")
 
         for lakehouse_id in self.LAKEHOUSE_ID_PATTERN.findall(content):
-            _ = self._add_parameter(
-                lakehouse_id, "Notebook", source_file, "Lakehouse ID"
-            )
+            _ = self._add_parameter(lakehouse_id, source_file, "Lakehouse ID")
 
     def _extract_from_semantic_model(self, file_path: Path, content: str) -> None:
         """Extract SQL connection strings and endpoint IDs from semantic models."""
         source_file = str(file_path.relative_to(self.repo_dir))
 
         for workspace_id, lakehouse_id in self.ONELAKE_DFS_PATTERN.findall(content):
-            self._add_uuid_parameter(
-                workspace_id, "SemanticModel", source_file, "Workspace ID"
-            )
-            self._add_uuid_parameter(
-                lakehouse_id, "SemanticModel", source_file, "Lakehouse ID"
-            )
+            self._add_uuid_parameter(workspace_id, source_file, "Workspace ID")
+            self._add_uuid_parameter(lakehouse_id, source_file, "Lakehouse ID")
 
         for (
             host_prefix,
@@ -324,7 +308,6 @@ class ParameterDetector:
 
             hostname_param = self._add_parameter(
                 full_hostname,
-                "SemanticModel",
                 source_file,
                 "SQL Database Connection String"
                 if is_sql_database
@@ -345,7 +328,6 @@ class ParameterDetector:
             if uuid_to_add:
                 _ = self._add_parameter(
                     uuid_to_add,
-                    "SemanticModel",
                     source_file,
                     "SQL Database Item ID"
                     if is_sql_database
@@ -356,10 +338,7 @@ class ParameterDetector:
             # form in TMDL — capture it so users can override via manual_parameters.
             if uuid and db_name:
                 _ = self._add_parameter(
-                    f"{db_name}-{uuid}",
-                    "SemanticModel",
-                    source_file,
-                    "SQL Database Name",
+                    f"{db_name}-{uuid}", source_file, "SQL Database Name"
                 )
 
     def _extract_from_pipeline(self, file_path: Path, data: dict) -> None:
@@ -379,7 +358,6 @@ class ParameterDetector:
                 if isinstance(ext_refs, dict) and "connection" in ext_refs:
                     self._add_uuid_parameter(
                         value=ext_refs["connection"],
-                        item_type="DataPipeline",
                         source_file=source_file,
                         description="External connection ID",
                     )
@@ -388,7 +366,6 @@ class ParameterDetector:
             if "workspaceId" in obj and obj.get("workspaceId") != self.NULL_UUID:
                 self._add_uuid_parameter(
                     value=obj["workspaceId"],
-                    item_type="DataPipeline",
                     source_file=source_file,
                     description="Workspace ID",
                 )
@@ -412,13 +389,11 @@ class ParameterDetector:
 
             self._add_uuid_parameter(
                 type_properties.get("workspaceId"),
-                "CopyJob",
                 source_file,
                 "Workspace ID",
             )
             self._add_uuid_parameter(
                 type_properties.get("artifactId"),
-                "CopyJob",
                 source_file,
                 "Lakehouse ID",
             )
@@ -510,10 +485,11 @@ class ParameterDetector:
                 if comment:
                     _ = f.write(f"  # {comment}\n")
                 _ = f.write(f'  - find_value: "{entry["find_value"]}"\n')
+                if "item_type" in entry:
+                    _ = f.write(f"    item_type: {entry['item_type']}\n")
                 _ = f.write("    replace_value:\n")
                 for env, val in entry["replace_value"].items():
                     _ = f.write(f'      {env}: "{val}"\n')
-                _ = f.write(f"    item_type: {entry['item_type']}\n")
 
     def should_skip_replacement(self, target_workspace_id: str) -> bool:
         """
@@ -584,7 +560,10 @@ class ParameterDetector:
                 self.logger.info(f"    Dynamic variable: {param.dynamic_variable}")
             else:
                 self.logger.info("    Dynamic variable: (skipped - requires manual setup)")
-            self.logger.info(f"    Item Types: {', '.join(sorted(param.item_types))}")
+            if param.item_types:
+                self.logger.info(
+                    f"    Item Types: {', '.join(sorted(param.item_types))}"
+                )
             self.logger.info(f"    Found in: {len(param.source_files)} file(s)")
 
         if without_dynamic > 0:
