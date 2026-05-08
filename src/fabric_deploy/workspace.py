@@ -285,10 +285,7 @@ class WorkspaceDeployer:
             scope = set(item_types)
             filtered_params = {}
             for find_value, param in detector.parameters.items():
-                # Workspace ID applies regardless of item type.
-                if param.description == "Workspace ID":
-                    filtered_params[find_value] = param
-                elif param.item_types & scope:
+                if param.item_types & scope:
                     param.item_types = param.item_types & scope
                     filtered_params[find_value] = param
             detector.parameters = filtered_params
