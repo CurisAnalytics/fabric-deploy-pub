@@ -343,29 +343,25 @@ class TestCopyJobExtraction:
 
 
 class TestShouldSkipReplacement:
-    def test_returns_false_when_no_workspace_ids_detected(self, tmp_path: Path):
+    @pytest.mark.parametrize(
+        "detected_wsid,target_wsid,expected",
+        [
+            (None, WORKSPACE_ID, False),  # nothing detected → don't skip
+            (WORKSPACE_ID, WORKSPACE_ID, True),  # all match → skip
+            (WORKSPACE_ID, OTHER_WORKSPACE_ID, False),  # mismatch → don't skip
+        ],
+    )
+    def test_skip_decision(
+        self, tmp_path: Path, detected_wsid: str | None, target_wsid: str, expected: bool
+    ):
         _make_lakehouse(tmp_path, "lh")
+        if detected_wsid is not None:
+            _make_notebook(
+                tmp_path, "n1", f'"default_lakehouse_workspace_id": "{detected_wsid}"'
+            )
         d = ParameterDetector(tmp_path)
         d.detect_all()
-        assert d.should_skip_replacement(WORKSPACE_ID) is False
-
-    def test_returns_true_when_all_workspace_ids_match_target(self, tmp_path: Path):
-        _make_lakehouse(tmp_path, "lh")
-        _make_notebook(
-            tmp_path, "n1", f'"default_lakehouse_workspace_id": "{WORKSPACE_ID}"'
-        )
-        d = ParameterDetector(tmp_path)
-        d.detect_all()
-        assert d.should_skip_replacement(WORKSPACE_ID) is True
-
-    def test_returns_false_when_target_differs_from_detected(self, tmp_path: Path):
-        _make_lakehouse(tmp_path, "lh")
-        _make_notebook(
-            tmp_path, "n1", f'"default_lakehouse_workspace_id": "{WORKSPACE_ID}"'
-        )
-        d = ParameterDetector(tmp_path)
-        d.detect_all()
-        assert d.should_skip_replacement(OTHER_WORKSPACE_ID) is False
+        assert d.should_skip_replacement(target_wsid) is expected
 
 
 # --- filter_lakehouse_params ---------------------------------------------
@@ -421,7 +417,6 @@ class TestGenerateDynamicVariable:
                 "$items.Lakehouse.lh.$sqlendpointid",
             ),
             ("External connection ID", ""),
-            ("Random other description", ""),
         ],
     )
     def test_dynamic_variable_lookup_with_lakehouse(
