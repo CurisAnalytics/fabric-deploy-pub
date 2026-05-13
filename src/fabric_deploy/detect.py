@@ -17,6 +17,28 @@ from .log import get_logger
 regex = re.Pattern[str]
 
 
+def _iter_meta_blocks(content: str):
+    """Yield each contiguous run of `# META` / `-- META` lines as one string.
+
+    Fabric notebooks repeat `# META { ... }` (Python) or `-- META { ... }`
+    (T-SQL / Spark SQL) blocks: once for top-level dependencies, then once
+    per cell for language hints. Each contiguous run forms a self-contained
+    JSON object once the prefix is stripped.
+    """
+    current: list[str] = []
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# META"):
+            current.append(stripped.removeprefix("# META").lstrip())
+        elif stripped.startswith("-- META"):
+            current.append(stripped.removeprefix("-- META").lstrip())
+        elif current:
+            yield "\n".join(current)
+            current = []
+    if current:
+        yield "\n".join(current)
+
+
 @dataclass
 class DetectedParameter:
     """Represents a detected parameter with its context.
@@ -131,9 +153,13 @@ class ParameterDetector:
         self._detect_lakehouse_names()
         self._detect_sqldatabase_names()
 
-        self._process_files(
-            "**/*.Notebook/notebook-content.py", self._extract_from_notebook
-        )
+        # Notebook content is `.py` (Python/PySpark), `.sql` (T-SQL), etc.
+        # Metadata block is identical JSON-in-comments — the prefix differs
+        # (`# META` vs `-- META`) but the find_replace patterns don't anchor on it.
+        for ext in ("py", "sql"):
+            self._process_files(
+                f"**/*.Notebook/notebook-content.{ext}", self._extract_from_notebook
+            )
         self._process_files(
             "**/*.SemanticModel/definition/**/*.tmdl",
             self._extract_from_semantic_model,
@@ -286,6 +312,38 @@ class ParameterDetector:
 
         for lakehouse_id in self.LAKEHOUSE_ID_PATTERN.findall(content):
             _ = self._add_parameter(lakehouse_id, source_file, "Lakehouse ID")
+
+        self._warn_on_stale_lakehouse_attachments(source_file, content)
+
+    def _warn_on_stale_lakehouse_attachments(
+        self, source_file: str, content: str
+    ) -> None:
+        """Warn when a notebook has multiple lakehouses attached.
+
+        Fabric retains every lakehouse a notebook has ever been attached to
+        in `known_lakehouses`, so switching defaults (e.g. dev → prod) leaves
+        the prior attachment behind. Deploying that file rewrites IDs by
+        regex but doesn't drop the extra entry — the target workspace ends up
+        with a cross-workspace lakehouse reference.
+        """
+        for block in _iter_meta_blocks(content):
+            try:
+                data = json.loads(block)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(data, dict):
+                continue
+            lakehouse_meta = data.get("dependencies", {}).get("lakehouse", {})
+            known = lakehouse_meta.get("known_lakehouses", [])
+            if len(known) <= 1:
+                continue
+            default_lh = lakehouse_meta.get("default_lakehouse")
+            stale = [k.get("id") for k in known if k.get("id") != default_lh]
+            self.logger.warning(
+                f"{source_file}: {len(known)} lakehouses attached "
+                f"(default={default_lh}, stale={stale}). "
+                f"Detach extras in the Fabric UI and re-export before deploying."
+            )
 
     def _extract_from_semantic_model(self, file_path: Path, content: str) -> None:
         """Extract SQL connection strings and endpoint IDs from semantic models."""

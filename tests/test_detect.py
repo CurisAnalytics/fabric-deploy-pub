@@ -35,10 +35,10 @@ def _make_sqldb(repo: Path, name: str) -> None:
     )
 
 
-def _make_notebook(repo: Path, name: str, body: str) -> None:
+def _make_notebook(repo: Path, name: str, body: str, ext: str = "py") -> None:
     nb = repo / f"{name}.Notebook"
     nb.mkdir()
-    (nb / "notebook-content.py").write_text(body)
+    (nb / f"notebook-content.{ext}").write_text(body)
 
 
 def _make_semantic_model(repo: Path, name: str, expressions_tmdl: str) -> None:
@@ -81,6 +81,115 @@ class TestNotebookExtraction:
         assert LAKEHOUSE_ID in d.parameters
         assert d.parameters[WORKSPACE_ID].description == "Workspace ID"
         assert d.parameters[LAKEHOUSE_ID].description == "Lakehouse ID"
+
+    def test_extracts_from_tsql_notebook(self, tmp_path: Path):
+        """T-SQL notebooks (notebook-content.sql) use `-- META` comment prefix."""
+        _make_lakehouse(tmp_path, "lh")
+        _make_notebook(
+            tmp_path,
+            "n1",
+            '-- METADATA ********************\n'
+            '-- META {\n'
+            '-- META   "kernel_info": {"name": "sqldatawarehouse"},\n'
+            '-- META   "dependencies": {\n'
+            '-- META     "lakehouse": {\n'
+            f'-- META       "default_lakehouse_workspace_id": "{WORKSPACE_ID}",\n'
+            f'-- META       "default_lakehouse": "{LAKEHOUSE_ID}"\n'
+            '-- META     }\n'
+            '-- META   }\n'
+            '-- META }\n',
+            ext="sql",
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert WORKSPACE_ID in d.parameters
+        assert LAKEHOUSE_ID in d.parameters
+        assert d.parameters[WORKSPACE_ID].description == "Workspace ID"
+        assert d.parameters[LAKEHOUSE_ID].description == "Lakehouse ID"
+
+    def test_warns_on_multiple_attached_lakehouses(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        """A notebook with stale attachments (e.g. dev + prod) should warn."""
+        _make_lakehouse(tmp_path, "lh")
+        stale_id = "99999999-9999-9999-9999-999999999999"
+        _make_notebook(
+            tmp_path,
+            "n1",
+            '# META {\n'
+            '# META   "dependencies": {\n'
+            '# META     "lakehouse": {\n'
+            f'# META       "default_lakehouse": "{LAKEHOUSE_ID}",\n'
+            '# META       "known_lakehouses": [\n'
+            f'# META         {{"id": "{LAKEHOUSE_ID}"}},\n'
+            f'# META         {{"id": "{stale_id}"}}\n'
+            '# META       ]\n'
+            '# META     }\n'
+            '# META   }\n'
+            '# META }\n',
+        )
+        d = ParameterDetector(tmp_path)
+        with caplog.at_level("WARNING", logger="fabric_deploy.detect"):
+            d.detect_all()
+
+        assert any(
+            "2 lakehouses attached" in r.message and stale_id in r.message
+            for r in caplog.records
+        ), [r.message for r in caplog.records]
+
+    def test_no_warning_on_clean_single_attachment(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        _make_lakehouse(tmp_path, "lh")
+        _make_notebook(
+            tmp_path,
+            "n1",
+            '# META {\n'
+            '# META   "dependencies": {\n'
+            '# META     "lakehouse": {\n'
+            f'# META       "default_lakehouse": "{LAKEHOUSE_ID}",\n'
+            '# META       "known_lakehouses": [\n'
+            f'# META         {{"id": "{LAKEHOUSE_ID}"}}\n'
+            '# META       ]\n'
+            '# META     }\n'
+            '# META   }\n'
+            '# META }\n',
+        )
+        d = ParameterDetector(tmp_path)
+        with caplog.at_level("WARNING", logger="fabric_deploy.detect"):
+            d.detect_all()
+
+        assert not any(
+            "lakehouses attached" in r.message for r in caplog.records
+        )
+
+    def test_warns_in_tsql_notebook_too(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        _make_lakehouse(tmp_path, "lh")
+        stale_id = "99999999-9999-9999-9999-999999999999"
+        _make_notebook(
+            tmp_path,
+            "n1",
+            '-- META {\n'
+            '-- META   "dependencies": {\n'
+            '-- META     "lakehouse": {\n'
+            f'-- META       "default_lakehouse": "{LAKEHOUSE_ID}",\n'
+            '-- META       "known_lakehouses": [\n'
+            f'-- META         {{"id": "{LAKEHOUSE_ID}"}},\n'
+            f'-- META         {{"id": "{stale_id}"}}\n'
+            '-- META       ]\n'
+            '-- META     }\n'
+            '-- META   }\n'
+            '-- META }\n',
+            ext="sql",
+        )
+        d = ParameterDetector(tmp_path)
+        with caplog.at_level("WARNING", logger="fabric_deploy.detect"):
+            d.detect_all()
+
+        assert any("2 lakehouses attached" in r.message for r in caplog.records)
 
     def test_dynamic_variable_for_workspace_and_lakehouse(self, tmp_path: Path):
         _make_lakehouse(tmp_path, "lh")
