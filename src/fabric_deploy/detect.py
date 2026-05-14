@@ -129,6 +129,10 @@ class ParameterDetector:
         self.parameters: dict[str, DetectedParameter] = {}
         self._lakehouse_names: list[str] = []
         self._sqldatabase_names: list[str] = []
+        # (source_file, [stale_ids]) for each notebook with >1 known_lakehouse.
+        # Populated alongside the inline warning so the caller (e.g. deploy
+        # with --fail-on-stale) can promote it to a fatal error.
+        self.stale_attachments: list[tuple[str, list[str]]] = []
         self.logger: logging.Logger = get_logger(logger_name or __name__)
 
     def _log_file_warning(
@@ -148,6 +152,7 @@ class ParameterDetector:
     def detect_all(self):
         "Detect all parameters from workspace files."
         self.parameters = {}
+        self.stale_attachments = []
 
         # Item names must be resolved before _generate_dynamic_variable runs.
         self._detect_lakehouse_names()
@@ -339,6 +344,7 @@ class ParameterDetector:
                 continue
             default_lh = lakehouse_meta.get("default_lakehouse")
             stale = [k.get("id") for k in known if k.get("id") != default_lh]
+            self.stale_attachments.append((source_file, stale))
             self.logger.warning(
                 f"{source_file}: {len(known)} lakehouses attached "
                 f"(default={default_lh}, stale={stale}). "

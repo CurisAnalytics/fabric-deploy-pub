@@ -514,6 +514,7 @@ class WorkspaceDeployer:
         item_types: list[str] | None = None,
         exclude_types: list[str] | None = None,
         include_items: list[str] | None = None,
+        fail_on_stale: bool = False,
     ) -> None:
         """
         Deploy Fabric workspace items.
@@ -523,6 +524,9 @@ class WorkspaceDeployer:
             item_types: Specific item types to deploy
             exclude_types: Item types to exclude from deployment
             include_items: Include only specific items (format: "ItemName.ItemType")
+            fail_on_stale: Raise instead of warning when a notebook has multiple
+                lakehouses attached. Intended for CI / autonomous agent loops
+                where the inline warning would get buried in logs.
         """
 
         from . import __version__
@@ -545,6 +549,15 @@ class WorkspaceDeployer:
             exclude_types=exclude_types,
             include_items=include_items,
         )
+
+        if fail_on_stale and self._detector and self._detector.stale_attachments:
+            files = ", ".join(f for f, _ in self._detector.stale_attachments)
+            raise RuntimeError(
+                f"--fail-on-stale: {len(self._detector.stale_attachments)} "
+                f"notebook(s) have multiple lakehouses attached: {files}. "
+                f"See warnings above for stale IDs."
+            )
+
         self._write_parameter_file()
 
         self.logger.info(f"Workspace Name: '{self.workspace_name}'")

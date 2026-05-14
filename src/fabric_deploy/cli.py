@@ -208,6 +208,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip lakehouse parameter replacement (for feature branches sharing dev lakehouse)",
     )
+    _ = deploy_parser.add_argument(
+        "--fail-on-stale",
+        "-F",
+        action="store_true",
+        help="Exit non-zero if any notebook has multiple lakehouses attached "
+        "(for CI / autonomous agent loops where the warning would get buried)",
+    )
 
     # argparse can't natively pick a default subparser or treat unknown
     # leading args as a subcommand's options — so resolve it ourselves
@@ -339,6 +346,7 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
             item_types=args.item_types,
             exclude_types=args.exclude_types,
             include_items=args.include_items,
+            fail_on_stale=args.fail_on_stale,
         )
     except Exception as e:
         handle_command_error(e, "Deployment")

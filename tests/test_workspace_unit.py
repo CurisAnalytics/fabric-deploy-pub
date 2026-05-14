@@ -99,6 +99,59 @@ class TestFabricWorkspaceConstruction:
         assert fake_publish.call_args.args[0] is instance
 
 
+class TestFailOnStale:
+    """Pin the --fail-on-stale contract: deploy raises before publish_all_items
+    is called when the detector has recorded stale lakehouse attachments."""
+
+    def test_raises_before_publishing_when_stale_attachments_present(
+        self, deployer
+    ):
+        deployer._detector.stale_attachments = [
+            ("foo.Notebook/notebook-content.py", ["99999999-9999-9999-9999-999999999999"])
+        ]
+
+        with (
+            patch("fabric_deploy.workspace.FabricWorkspace") as fake_fw,
+            patch("fabric_deploy.workspace.publish_all_items") as fake_publish,
+            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
+            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
+        ):
+            with pytest.raises(RuntimeError, match="fail-on-stale"):
+                deployer.deploy(item_types=["Notebook"], fail_on_stale=True)
+
+        assert not fake_fw.called, "FabricWorkspace should not be constructed"
+        assert not fake_publish.called, "publish_all_items should not be called"
+
+    def test_deploy_proceeds_when_no_stale_attachments(self, deployer):
+        deployer._detector.stale_attachments = []
+
+        with (
+            patch("fabric_deploy.workspace.FabricWorkspace"),
+            patch("fabric_deploy.workspace.publish_all_items") as fake_publish,
+            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
+            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
+        ):
+            deployer.deploy(item_types=["Notebook"], fail_on_stale=True)
+
+        assert fake_publish.called
+
+    def test_warning_only_by_default(self, deployer):
+        """Without the flag, stale attachments don't block deploy."""
+        deployer._detector.stale_attachments = [
+            ("foo.Notebook/notebook-content.py", ["99999999-9999-9999-9999-999999999999"])
+        ]
+
+        with (
+            patch("fabric_deploy.workspace.FabricWorkspace"),
+            patch("fabric_deploy.workspace.publish_all_items") as fake_publish,
+            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
+            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
+        ):
+            deployer.deploy(item_types=["Notebook"])  # fail_on_stale defaults to False
+
+        assert fake_publish.called
+
+
 class TestParameterFileWriter:
     """Pin _write_parameter_file behavior under the no-auto-scoping model:
     every detected parameter flows through; only manual_parameters carry
