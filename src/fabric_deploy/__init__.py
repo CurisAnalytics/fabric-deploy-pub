@@ -7,5 +7,5 @@ Minimal programmatic API for Azure DevOps integration and testing.
 
 from .workspace import WorkspaceDeployer
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 __all__ = ["WorkspaceDeployer"]
