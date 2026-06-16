@@ -12,7 +12,6 @@ from json import loads
 from pathlib import Path
 
 import yaml
-from azure.identity import AzureCliCredential
 from fabric_cicd import (
     FabricWorkspace,
     append_feature_flag,
@@ -23,7 +22,9 @@ from fabric_cicd._common._logging import log_header
 from fabric_cicd.constants import ACCEPTED_ITEM_TYPES
 
 from .api import (
+    _env_bearer_token,
     create_workspace,
+    fabric_credential,
     get_default_capacity_id,
     get_workspace_id_by_name,
 )
@@ -149,8 +150,10 @@ class WorkspaceDeployer:
             os.environ["AZURE_CONFIG_DIR"] = target
 
         # A pre-injected bearer token owns auth and can't be introspected via
-        # `az` — nothing to assert in that mode.
-        if os.environ.get("FABRIC_BEARER_TOKEN"):
+        # `az` — nothing to assert in that mode. Use the same helper api.py
+        # gates on, so a malformed (whitespace) token is treated identically
+        # by both: skip-assert here and relay there must agree.
+        if _env_bearer_token():
             return
 
         account = assert_active_tenant(
@@ -667,16 +670,16 @@ class WorkspaceDeployer:
             include_items: Include only specific items (format: "ItemName.ItemType")
             _retry_attempt: Internal retry counter (do not set manually)
         """
-        # fabric-cicd 1.0 requires an explicit token_credential (no more
-        # implicit DefaultAzureCredential). AzureCliCredential keeps fabdep's
-        # auth surface a single command — the active `az` session is what
-        # gets used.
+        # fabric-cicd 1.0 requires an explicit token_credential. fabric_credential()
+        # returns AzureCliCredential by default, or a StaticTokenCredential wrapping
+        # FABRIC_BEARER_TOKEN for token-relay mode (used when `az login` is CA-blocked,
+        # e.g. Fabrikam tenant from a locked-down host).
         target_workspace = FabricWorkspace(
             workspace_id=self.workspace_id,
             repository_directory=str(self._repo_dir_resolved),
             environment="fabdep",
             item_type_in_scope=item_types,
-            token_credential=AzureCliCredential(),
+            token_credential=fabric_credential(),
         )
 
         try:

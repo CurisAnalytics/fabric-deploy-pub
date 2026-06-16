@@ -1,10 +1,14 @@
 """Microsoft Fabric REST API utilities."""
 
+import base64
 import json
+import os
+import time
 import urllib.error
 import urllib.request
 from typing import TypedDict
 
+from azure.core.credentials import AccessToken, TokenCredential
 from azure.core.exceptions import ClientAuthenticationError
 from azure.identity import AzureCliCredential
 
@@ -27,6 +31,8 @@ class FabricWorkspaceInfo(TypedDict):
 
 __all__ = [
     "FabricWorkspaceInfo",
+    "StaticTokenCredential",
+    "fabric_credential",
     "get_access_token",
     "list_workspaces",
     "find_workspace_id_by_name",
@@ -38,15 +44,83 @@ __all__ = [
 
 
 _FABRIC_SCOPE = "https://api.fabric.microsoft.com/.default"
+_BEARER_ENV = "FABRIC_BEARER_TOKEN"
+# Treat a token as expired this many seconds early, so a long-running deploy
+# doesn't begin with a token that dies mid-flight — we can't refresh a relayed
+# token, so failing fast with a clear message beats a confusing 401 partway in.
+_EXPIRY_SKEW_SECONDS = 60
+
+
+def _env_bearer_token() -> str | None:
+    """Return the relay bearer token from the environment, stripped, or None.
+
+    A stray newline (e.g. from `FABRIC_BEARER_TOKEN=$(cat file)` on some
+    shells) would corrupt the Authorization header, so strip defensively.
+    """
+    token = os.environ.get(_BEARER_ENV, "").strip()
+    return token or None
+
+
+def _jwt_exp(token: str) -> int:
+    """Decode `exp` (unix seconds) from a JWT payload without verifying signature."""
+    try:
+        payload_b64 = token.split(".")[1]
+        # base64url padding
+        padding = "=" * (-len(payload_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64 + padding))
+        return int(payload["exp"])
+    except (IndexError, KeyError, ValueError) as e:
+        raise RuntimeError(
+            f"{_BEARER_ENV} is not a decodable JWT: {e}"
+        ) from e
+
+
+def _token_expired(exp: int) -> bool:
+    """True if `exp` (unix seconds) is past, or within the skew margin."""
+    return time.time() >= exp - _EXPIRY_SKEW_SECONDS
+
+
+class StaticTokenCredential(TokenCredential):
+    """TokenCredential backed by a pre-fetched bearer token (env-supplied).
+
+    Used when token acquisition is blocked on the local box (e.g. Fabrikam CA
+    on a locked-down host) but a token relayed from another machine is available. Fails
+    loudly if the token is expired rather than silently issuing a 401-bound
+    request.
+    """
+
+    def __init__(self, token: str) -> None:
+        self._token = token
+        self._exp = _jwt_exp(token)
+
+    def get_token(self, *scopes: str, **_: object) -> AccessToken:  # noqa: ARG002
+        if _token_expired(self._exp):
+            raise ClientAuthenticationError(
+                f"{_BEARER_ENV} expired at unix {self._exp}; relay a fresh token."
+            )
+        return AccessToken(self._token, self._exp)
+
+
+def fabric_credential() -> TokenCredential:
+    """Return the credential fabdep should use for Fabric calls.
+
+    If `FABRIC_BEARER_TOKEN` is set, wrap it as a `StaticTokenCredential`
+    (token-relay mode). Otherwise return `AzureCliCredential()` (default).
+    """
+    token = _env_bearer_token()
+    if token:
+        return StaticTokenCredential(token)
+    return AzureCliCredential()
 
 
 def get_access_token() -> str:
     """
-    Get Azure access token for Fabric API via the active `az` session.
+    Get Azure access token for Fabric API.
 
-    Uses `AzureCliCredential` so the active subscription chosen by
-    `fabdep auth switch` / `az account set` is what gets used. No subprocess
-    shell-out — `azure-identity` handles caching and refresh internally.
+    If `FABRIC_BEARER_TOKEN` is set, use it directly (token-relay mode for
+    boxes where `az login` is CA-blocked). Otherwise use `AzureCliCredential`
+    so the active subscription chosen by `fabdep auth switch` is what gets
+    used.
 
     Returns:
         Access token string
@@ -54,6 +128,15 @@ def get_access_token() -> str:
     Raises:
         RuntimeError: If token acquisition fails (e.g. `az login` required)
     """
+    env_token = _env_bearer_token()
+    if env_token:
+        if _token_expired(_jwt_exp(env_token)):
+            raise RuntimeError(
+                f"{_BEARER_ENV} is expired; relay a fresh token from a box "
+                "that can `az account get-access-token --resource "
+                "https://api.fabric.microsoft.com`."
+            )
+        return env_token
     try:
         return AzureCliCredential().get_token(_FABRIC_SCOPE).token
     except ClientAuthenticationError as e:
