@@ -107,6 +107,7 @@ Commands:
   list                   List current and all available Azure accounts
   switch <sub-id>        Switch to different subscription
   rename <sub-id> <name> Rename a subscription
+  login <alias>          Log a tenant in to an isolated config dir + register it
 ```
 
 **Examples**:
@@ -131,6 +132,25 @@ az login --service-principal \
 ```
 
 SPNs are auto-persisted to `~/.azure/azureProfile.fabdep.json` on first `fabdep auth list`, so they survive `az account list --refresh` and re-logins. Renames are also stored there as aliases.
+
+**Multi-tenant: `fabdep auth login` + the tenant pin**
+
+For work across multiple Entra tenants, `fabdep auth login <alias>` logs a tenant's SPN into an **isolated** `AZURE_CONFIG_DIR` (default `~/.azure-<alias>`) and records it in a machine-local registry (the `tenants` key in `~/.azure/azureProfile.fabdep.json`), so two tenants never share the global `~/.azure` state — letting you deploy to different tenants from concurrent processes without identity bleed.
+
+```bash
+# First login (or after a cert swap) — pass the SPN details once:
+fabdep auth login contoso --app <CLIENT_ID> --tenant <TENANT_ID> --cert ~/contoso.pem
+
+# Re-login later — reuses the stored app id / cert / config dir:
+fabdep auth login contoso
+
+# Interactive user (non-SPN) login into the isolated dir:
+fabdep auth login contoso --user
+```
+
+Options: `--app`, `--tenant`, `--cert` (required on first SPN login; reused after), `--config-dir` (override the default `~/.azure-<alias>`), `--user` (interactive non-SPN login). The tenant id stored in the registry is read live from the fresh login, so it can't drift.
+
+A workspace then opts in with a `tenant:` line in its `fabdep.yml` (see [Configuration](#fabdepyml-required)). Before any Fabric call, fabdep resolves the alias, points `AZURE_CONFIG_DIR` at that tenant's login, and asserts the active identity lives in the pinned tenant — failing fast with a clear error on a mismatch instead of a confusing "workspace not found". Deploys with no `tenant:` line are unaffected.
 
 
 ---
@@ -158,6 +178,7 @@ Renames workspace item directories to match their display names from `.platform`
 ```yaml
 workspace_base_name: "my_workspace"
 capacity_id: "12345-67890-abcd-..."  # Optional, auto-detected if not specified
+tenant: contoso                         # Optional: pin to a tenant alias (see Authentication)
 
 # Optional: Manual parameter overrides
 manual_parameters:
@@ -170,6 +191,7 @@ manual_parameters:
 **Notes**:
 - With `-N`, if `capacity_id` is not specified, first active Fabric capacity is used
 - `manual_parameters` overrides auto-detected parameters (e.g., to keep external references)
+- `tenant` is an optional registry alias (created by `fabdep auth login`) — it routes the deploy to that tenant's isolated login and asserts the active identity is in that tenant. Omit it for single-tenant work; behavior is then unchanged. It's portable (no machine paths/GUIDs), so it can be committed and travels to every worktree.
 
 
 **How workspace resolution works**:

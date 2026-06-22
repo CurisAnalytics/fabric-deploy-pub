@@ -7,6 +7,7 @@ from textwrap import dedent
 
 from .auth import (
     list_accounts,
+    login_tenant,
     rename_subscription,
     switch_account,
 )
@@ -103,6 +104,21 @@ def parse_args() -> argparse.Namespace:
     rename_parser = auth_subparsers.add_parser("rename", help="Rename a subscription")
     _ = rename_parser.add_argument("subscription_id", help="Subscription ID to rename")
     _ = rename_parser.add_argument("name", help="New subscription name")
+
+    login_parser = auth_subparsers.add_parser(
+        "login",
+        help="Log a tenant in to an isolated config dir and register its alias",
+    )
+    _ = login_parser.add_argument("alias", help="Tenant alias (e.g. contoso) used in fabdep.yml")
+    _ = login_parser.add_argument("--app", help="SPN client id (first login / cert swap)")
+    _ = login_parser.add_argument("--tenant", help="Entra tenant GUID (first login)")
+    _ = login_parser.add_argument("--cert", help="Path to the SPN cert .pem (first login)")
+    _ = login_parser.add_argument(
+        "--config-dir", help="AZURE_CONFIG_DIR to use (default ~/.azure-<alias>)"
+    )
+    _ = login_parser.add_argument(
+        "--user", action="store_true", help="Interactive user login instead of an SPN"
+    )
 
     rename_items_parser = subparsers.add_parser(
         "rename",
@@ -258,6 +274,24 @@ def handle_auth_command(args: argparse.Namespace) -> None:
             rename_subscription(args.subscription_id, args.name)
         except Exception as e:
             print_error(f"\nFailed to rename subscription: {e}\n")
+            sys.exit(1)
+
+    elif args.auth_command == "login":
+        try:
+            entry = login_tenant(
+                args.alias,
+                app_id=args.app,
+                tenant=args.tenant,
+                cert=args.cert,
+                config_dir=args.config_dir,
+                user=args.user,
+            )
+            print(
+                f"registered tenant '{args.alias}' -> {entry['id']} "
+                f"(AZURE_CONFIG_DIR={entry.get('config_dir')})"
+            )
+        except Exception as e:
+            print_error(f"\nFailed to log in tenant '{args.alias}': {e}\n")
             sys.exit(1)
 
 
