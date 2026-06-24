@@ -9,8 +9,10 @@ CLI wrapper around Microsoft's [fabric-cicd](https://github.com/microsoft/fabric
 - **Workspace Creation**: Create new workspaces with `-N`
 - **Item Filtering**: Deploy/exclude specific item types
 - **Feature Branch Support**: Skip lakehouse replacement with `-L` (use dev lakehouse)
+- **Direct Lake Framing**: `fabdep refresh` / `deploy --frame` — sync SQL endpoint → refresh → poll → surface the first framing error
 - **Auth Management**: Switch accounts, persistent SPN logins & aliases
 - **Configurable Retries**: Auto-retry transient errors (customizable with `-r`)
+- **Friendlier Errors**: Cryptic Fabric failures (RequiredOptionsMissing, Workload_FailedToParseFile) get a plain-language hint; `-i` fails loudly instead of silently deploying nothing on a name mismatch
 
 
 ## Architecture
@@ -82,6 +84,8 @@ Options:
   -N, --new-workspace    Create workspace if it doesn't exist
   -r, --max-retries      Max retries for transient errors (default: 1)
   -L, --skip-lakehouse   Skip lakehouse parameter replacement (for feature branches)
+  -F, --fail-on-stale    Exit non-zero if a notebook has multiple lakehouses attached
+      --frame            After deploy, frame the Direct Lake model(s)
 ```
 
 **Examples**:
@@ -93,7 +97,49 @@ fabdep -b prod            # Deploy to "base_name [prod]"
 fabdep -N                 # Create workspace and deploy
 fabdep -r 2               # Retry up to 2 times on errors
 fabdep -L                 # Feature branch: use dev lakehouse references
+fabdep --frame            # Deploy, then frame the Direct Lake model(s)
 ```
+
+When `-i / --include-items` names an item that isn't in the repo (it matches
+the `.platform` **displayName**, not the folder name), fabdep now fails loudly
+instead of silently deploying nothing, and prints a one-line `Deployed: ...`
+confirmation of what landed.
+
+---
+
+
+### Refresh (Direct Lake framing)
+
+After a Delta write or a semantic-model deploy, a Direct Lake model must be
+re-framed — and its SQL analytics endpoint synced first, or the refresh fails
+with *"cannot access the source Delta table."* `fabdep refresh` runs the whole
+sequence: **sync SQL endpoint → refresh → poll → surface the first framing
+error.**
+
+```bash
+fabdep refresh [DIRECTORY] [OPTIONS]
+
+Options:
+  -i, --include-items    Semantic model display name(s) to frame (default: all in repo)
+  -b, --branch           Override git branch for workspace resolution
+      --no-sync          Skip the SQL analytics endpoint metadata sync
+      --timeout          Per-model refresh poll timeout in seconds (default: 900)
+```
+
+```bash
+fabdep refresh                      # Frame every model in the repo (sync first)
+fabdep refresh -i "Sales Model"     # Frame one model by display name
+fabdep deploy --frame               # Deploy, then frame in one shot
+```
+
+> A `Completed` refresh proves the model **re-framed**, not that measures
+> evaluate. Type drift / broken relationships surface only at query time —
+> still verify a visual or a DAX query.
+
+Semantic-model refresh uses the Power BI API (a different token audience than
+the Fabric API); `AzureCliCredential` mints the right scope automatically. In
+token-relay mode set `POWERBI_BEARER_TOKEN` for a Power BI-scoped token (it
+falls back to `FABRIC_BEARER_TOKEN`, which the Power BI host may reject).
 
 ---
 
