@@ -23,9 +23,59 @@ __all__ = [
     "is_auth_error",
     "is_connection_error",
     "is_transient_error",
+    "error_hint",
 ]
 
 SEP = "=" * 100
+
+
+# Known cryptic Fabric / fabric-cicd errors → a plain-language hint at the
+# actual cause. Each entry is (substrings, hint); a hint fires when ANY of its
+# substrings appears (case-insensitively) in the error text. Keep hints short
+# and actionable — they print alongside the raw error, not instead of it.
+# Append-only; add a row the first time an opaque error costs real bisecting.
+_ERROR_HINTS: list[tuple[tuple[str, ...], str]] = [
+    (
+        ("requiredoptionsmissing",),
+        "RequiredOptionsMissing names neither the table nor the property. "
+        "Usual causes (most common first):\n"
+        "\t• a column missing its `dataType:` line\n"
+        "\t• a `?updateMetadata=True` payload missing `.platform`\n"
+        "\t• a bidirectional relationship cycle\n"
+        "\t• a `sortByColumn:` pointing at a removed/calculated column\n"
+        "\t• a `measure 'Name'` with no `= expr` body\n"
+        "Bisect by moving half the table .tmdl files (and their `ref table` "
+        "lines in model.tmdl) out, then redeploy to narrow it down.",
+    ),
+    (
+        ("workload_failedtoparsefile", "failedtoparsefile"),
+        "Workload_FailedToParseFile usually means the SemanticModel's "
+        "compatibilityLevel is too low for a feature it uses (e.g. 1601 < 1604 "
+        "for Direct Lake). Check `compatibilityLevel:` in model.tmdl — Direct "
+        "Lake needs >= 1604 — then redeploy.",
+    ),
+]
+
+
+def error_hint(error_msg: str) -> str | None:
+    """Map a known-cryptic Fabric error to a plain-language hint, or None.
+
+    Fabric / fabric-cicd surface several opaque errors whose real cause is
+    well understood but never stated in the message (RequiredOptionsMissing,
+    Workload_FailedToParseFile, ...). This translates those signatures into a
+    one-shot hint so the cause doesn't have to be re-bisected each time.
+
+    Args:
+        error_msg: Error message string to classify.
+
+    Returns:
+        The first matching hint, or None when the error isn't a known one.
+    """
+    error_lower = error_msg.lower()
+    for substrings, hint in _ERROR_HINTS:
+        if any(s in error_lower for s in substrings):
+            return hint
+    return None
 
 
 class CustomFormatter(logging.Formatter):

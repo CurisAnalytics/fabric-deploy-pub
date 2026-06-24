@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from fabric_deploy.log import (
+    error_hint,
     is_auth_error,
     is_connection_error,
     is_transient_error,
@@ -127,3 +128,37 @@ def test_is_transient_error_does_not_retry_connection_error():
 )
 def test_is_transient_error_false(msg: str):
     assert is_transient_error(msg) is False
+
+
+# --- error_hint ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("msg", "needle"),
+    [
+        ("Deployment failed: RequiredOptionsMissing", "dataType:"),
+        ("requiredoptionsmissing on update", "Bisect"),
+        (
+            "Workload_FailedToParseFile while publishing SemanticModel",
+            "compatibilityLevel",
+        ),
+        ("error: FailedToParseFile", "1604"),
+    ],
+)
+def test_error_hint_matches_known(msg: str, needle: str):
+    hint = error_hint(msg)
+    assert hint is not None
+    assert needle in hint
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "401 Unauthorized",
+        "User does not have access to the connection used in pipeline X",
+        "Some unrelated failure",
+        "",
+    ],
+)
+def test_error_hint_none_for_unknown(msg: str):
+    assert error_hint(msg) is None

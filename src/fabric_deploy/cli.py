@@ -14,6 +14,7 @@ from .auth import (
 from .detect import ParameterDetector
 from .log import (
     SEP,
+    error_hint,
     format_account_list,
     format_auth_error_message,
     is_auth_error,
@@ -33,6 +34,14 @@ def handle_command_error(error: Exception, context: str) -> None:
     """
     error_msg = str(error)
     print_error(f"\n{context} failed: {error_msg}\n")
+
+    # Translate known-cryptic Fabric errors (RequiredOptionsMissing, parse
+    # failures, ...) into a plain-language hint. Independent of the auth /
+    # connection branches below — these are content errors that share no
+    # keywords with them.
+    hint = error_hint(error_msg)
+    if hint:
+        print_error(f"{SEP}\nLikely cause\n{SEP}\n\n{hint}\n\n{SEP}\n")
 
     # Connection errors first — their messages often contain auth keywords too.
     if is_connection_error(error_msg):
