@@ -40,11 +40,23 @@ __all__ = [
     "create_workspace",
     "list_capacities",
     "get_default_capacity_id",
+    "list_workspace_items",
+    "find_item_by_name",
+    "refresh_sql_endpoint_metadata",
+    "refresh_semantic_model",
 ]
 
 
+_FABRIC_HOST = "https://api.fabric.microsoft.com"
 _FABRIC_SCOPE = "https://api.fabric.microsoft.com/.default"
+# Semantic-model refresh lives on the Power BI API, a different host and token
+# audience than the Fabric API. AzureCliCredential mints the right scope on
+# demand; a relayed FABRIC_BEARER_TOKEN is Fabric-audience and may be rejected
+# here (use POWERBI_BEARER_TOKEN to relay a Power BI token explicitly).
+_POWERBI_HOST = "https://api.powerbi.com"
+_POWERBI_SCOPE = "https://analysis.windows.net/powerbi/api/.default"
 _BEARER_ENV = "FABRIC_BEARER_TOKEN"
+_POWERBI_BEARER_ENV = "POWERBI_BEARER_TOKEN"
 # Treat a token as expired this many seconds early, so a long-running deploy
 # doesn't begin with a token that dies mid-flight — we can't refresh a relayed
 # token, so failing fast with a clear message beats a confusing 401 partway in.
@@ -58,6 +70,12 @@ def _env_bearer_token() -> str | None:
     shells) would corrupt the Authorization header, so strip defensively.
     """
     token = os.environ.get(_BEARER_ENV, "").strip()
+    return token or None
+
+
+def _env_powerbi_token() -> str | None:
+    """Return the relayed Power BI bearer token from the environment, or None."""
+    token = os.environ.get(_POWERBI_BEARER_ENV, "").strip()
     return token or None
 
 
@@ -113,14 +131,20 @@ def fabric_credential() -> TokenCredential:
     return AzureCliCredential()
 
 
-def get_access_token() -> str:
+def get_access_token(scope: str = _FABRIC_SCOPE) -> str:
     """
-    Get Azure access token for Fabric API.
+    Get an Azure access token for the given API scope.
 
-    If `FABRIC_BEARER_TOKEN` is set, use it directly (token-relay mode for
-    boxes where `az login` is CA-blocked). Otherwise use `AzureCliCredential`
-    so the active subscription chosen by `fabdep auth switch` is what gets
-    used.
+    If a relay bearer token is set, use it directly (token-relay mode for
+    boxes where `az login` is CA-blocked). The Power BI scope prefers
+    `POWERBI_BEARER_TOKEN` and falls back to `FABRIC_BEARER_TOKEN` (whose
+    audience may be rejected by the Power BI host). Otherwise use
+    `AzureCliCredential`, which mints the requested scope on demand against
+    the active account chosen by `fabdep auth switch`.
+
+    Args:
+        scope: OAuth scope to request (Fabric API by default; pass the Power
+            BI scope for dataset-refresh calls).
 
     Returns:
         Access token string
@@ -128,21 +152,83 @@ def get_access_token() -> str:
     Raises:
         RuntimeError: If token acquisition fails (e.g. `az login` required)
     """
-    env_token = _env_bearer_token()
+    if scope == _POWERBI_SCOPE:
+        env_token = _env_powerbi_token() or _env_bearer_token()
+    else:
+        env_token = _env_bearer_token()
     if env_token:
         if _token_expired(_jwt_exp(env_token)):
             raise RuntimeError(
-                f"{_BEARER_ENV} is expired; relay a fresh token from a box "
+                f"Relay bearer token is expired; relay a fresh token from a box "
                 "that can `az account get-access-token --resource "
-                "https://api.fabric.microsoft.com`."
+                f"{scope.removesuffix('/.default')}`."
             )
         return env_token
     try:
-        return AzureCliCredential().get_token(_FABRIC_SCOPE).token
+        return AzureCliCredential().get_token(scope).token
     except ClientAuthenticationError as e:
         raise RuntimeError(
-            f"Failed to get Azure access token for Fabric API.\n{e}\n\n"
+            f"Failed to get Azure access token for scope {scope}.\n{e}\n\n"
             "Make sure you're logged in with 'az login'"
+        ) from e
+
+
+def _http_request(
+    url: str,
+    method: str = "GET",
+    data: dict | None = None,
+    scope: str = _FABRIC_SCOPE,
+    error_context: str = "API request",
+) -> tuple[int, dict[str, str], dict]:
+    """Make an authenticated HTTP request and return (status, headers, body).
+
+    Unlike `_fabric_api_request`, this exposes the status code and response
+    headers — needed to follow long-running operations (202 + `Location` /
+    `Retry-After`). An empty response body parses to `{}`.
+
+    Args:
+        url: Absolute request URL.
+        method: HTTP method.
+        data: Optional JSON request payload. For bodyless POST/PATCH/PUT an
+            empty body is sent so a `Content-Length: 0` header is present
+            (some Fabric endpoints require it).
+        scope: OAuth scope for the token (Fabric vs Power BI).
+        error_context: Context string for error messages.
+
+    Returns:
+        (status_code, headers_dict, parsed_body)
+
+    Raises:
+        RuntimeError: If the API call fails.
+    """
+    token = get_access_token(scope)
+    headers = {"Authorization": f"Bearer {token}"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+        request_data = json.dumps(data).encode()
+    elif method in ("POST", "PATCH", "PUT"):
+        request_data = b""  # forces Content-Length: 0
+    else:
+        request_data = None
+
+    try:
+        req = urllib.request.Request(
+            url, data=request_data, headers=headers, method=method
+        )
+        with urllib.request.urlopen(req) as response:
+            body = response.read().decode()
+            parsed = json.loads(body) if body.strip() else {}
+            return response.status, dict(response.headers), parsed
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode() if e.fp else ""
+        raise RuntimeError(
+            f"Failed to {error_context} (HTTP {e.code}).\n{error_body}\n\n"
+            "Check your permissions and network connectivity."
+        ) from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(
+            f"Failed to connect to the API.\n{e.reason}\n\n"
+            "Check your network connectivity."
         ) from e
 
 
@@ -167,32 +253,14 @@ def _fabric_api_request(
     Raises:
         RuntimeError: If API call fails
     """
-    token = get_access_token()
-    url = f"https://api.fabric.microsoft.com{endpoint}"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
-
-    request_data = json.dumps(data).encode() if data else None
-
-    try:
-        req = urllib.request.Request(
-            url, data=request_data, headers=headers, method=method
-        )
-        with urllib.request.urlopen(req) as response:
-            return json.loads(response.read().decode())
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode() if e.fp else ""
-        raise RuntimeError(
-            f"Failed to {error_context} (HTTP {e.code}).\n{error_body}\n\n"
-            "Check your permissions and network connectivity."
-        ) from e
-    except urllib.error.URLError as e:
-        raise RuntimeError(
-            f"Failed to connect to Fabric API.\n{e.reason}\n\n"
-            "Check your network connectivity."
-        ) from e
+    _status, _headers, body = _http_request(
+        f"{_FABRIC_HOST}{endpoint}",
+        method=method,
+        data=data,
+        scope=_FABRIC_SCOPE,
+        error_context=error_context,
+    )
+    return body
 
 
 def list_workspaces() -> list[FabricWorkspaceInfo]:
@@ -357,3 +425,213 @@ def create_workspace(
         error_context=f"create workspace '{workspace_name}'",
     )
     return data["id"]
+
+
+# --- Item lookup ---------------------------------------------------------
+
+
+def list_workspace_items(
+    workspace_id: str, item_type: str | None = None
+) -> list[dict]:
+    """List items in a workspace, optionally filtered by Fabric item type.
+
+    Args:
+        workspace_id: Workspace GUID.
+        item_type: Fabric item type (e.g. "SemanticModel", "SQLEndpoint").
+            Omit to list every item.
+
+    Returns:
+        List of item dicts (each has `id`, `displayName`, `type`).
+    """
+    endpoint = f"/v1/workspaces/{workspace_id}/items"
+    if item_type:
+        endpoint += f"?type={item_type}"
+    data = _fabric_api_request(
+        endpoint, error_context=f"list {item_type or 'workspace'} items"
+    )
+    return data.get("value", [])
+
+
+def find_item_by_name(
+    workspace_id: str, item_type: str, name: str | None = None
+) -> dict:
+    """Resolve a single workspace item of `item_type` by display name.
+
+    With `name=None`, succeeds only when exactly one item of that type exists
+    (the common single-model / single-endpoint staging case). Raises a
+    helpful, list-everything error on no/ambiguous match — so a typo surfaces
+    here instead of as a silent no-op downstream.
+
+    Args:
+        workspace_id: Workspace GUID.
+        item_type: Fabric item type to match.
+        name: Display name to match (case-insensitive), or None.
+
+    Returns:
+        The matching item dict.
+
+    Raises:
+        ValueError: On zero or multiple matches.
+    """
+    items = list_workspace_items(workspace_id, item_type)
+    if name is not None:
+        matches = [i for i in items if i["displayName"].lower() == name.lower()]
+    else:
+        matches = items
+
+    if len(matches) == 1:
+        return matches[0]
+
+    available = sorted(i["displayName"] for i in items)
+    listing = "\n".join(f"  - {n}" for n in available) or "  (none)"
+    if not matches:
+        target = f" matching '{name}'" if name else ""
+        raise ValueError(
+            f"No {item_type}{target} found in the workspace.\n"
+            f"Available {item_type}s ({len(available)}):\n{listing}"
+        )
+    raise ValueError(
+        f"Multiple {item_type}s found"
+        + (f" matching '{name}'" if name else "")
+        + f" — specify one by name:\n{listing}"
+    )
+
+
+# --- Refresh / framing ---------------------------------------------------
+
+# Terminal states for a Fabric long-running operation.
+_LRO_TERMINAL = {"Succeeded", "Completed", "Failed", "Cancelled", "Undefined"}
+
+
+def _poll_fabric_lro(
+    headers: dict[str, str],
+    error_context: str,
+    timeout_s: int = 600,
+) -> dict:
+    """Follow a Fabric 202 long-running operation to completion.
+
+    Polls the `Location` URL on the cadence the service asks for
+    (`Retry-After`), then fetches the operation result. Raises on a Failed /
+    Cancelled operation or if `timeout_s` is exceeded.
+
+    Returns:
+        The operation result body (`{}` if the operation has no result).
+    """
+    location = headers.get("Location") or headers.get("location")
+    op_id = headers.get("x-ms-operation-id") or headers.get("x-ms-operationid")
+    retry_after = int(headers.get("Retry-After") or 5)
+    if not location:
+        return {}
+
+    waited = 0
+    while True:
+        sleep_for = min(retry_after, max(1, timeout_s - waited))
+        time.sleep(sleep_for)
+        waited += sleep_for
+        _status, hdrs, body = _http_request(
+            location, scope=_FABRIC_SCOPE, error_context=f"poll {error_context}"
+        )
+        op_status = body.get("status")
+        if op_status in ("Succeeded", "Completed"):
+            if op_id:
+                try:
+                    _s, _h, result = _http_request(
+                        f"{_FABRIC_HOST}/v1/operations/{op_id}/result",
+                        scope=_FABRIC_SCOPE,
+                        error_context=f"fetch {error_context} result",
+                    )
+                    return result
+                except RuntimeError:
+                    return body  # result endpoint optional for some ops
+            return body
+        if op_status in ("Failed", "Cancelled", "Undefined"):
+            raise RuntimeError(f"{error_context} {op_status}: {body.get('error')}")
+        retry_after = int(hdrs.get("Retry-After") or retry_after)
+        if waited >= timeout_s:
+            raise RuntimeError(
+                f"{error_context} did not finish within {timeout_s}s "
+                f"(last status: {op_status})."
+            )
+
+
+def refresh_sql_endpoint_metadata(
+    workspace_id: str, sql_endpoint_id: str, timeout_s: int = 600
+) -> list[dict]:
+    """Sync a SQL analytics endpoint's metadata (table discovery + schema).
+
+    Required after any Delta write before a Direct Lake refresh, otherwise the
+    refresh fails with "cannot access the source Delta table". Handles both
+    the 200 (synchronous) and 202 (LRO) responses.
+
+    Returns:
+        Per-table sync statuses: `[{tableName, status, error?}, ...]`.
+    """
+    status, headers, body = _http_request(
+        f"{_FABRIC_HOST}/v1/workspaces/{workspace_id}/sqlEndpoints/{sql_endpoint_id}/refreshMetadata",
+        method="POST",
+        scope=_FABRIC_SCOPE,
+        error_context="refresh SQL endpoint metadata",
+    )
+    if status == 202:
+        body = _poll_fabric_lro(
+            headers, error_context="SQL endpoint metadata sync", timeout_s=timeout_s
+        )
+    return body.get("value", []) if isinstance(body, dict) else []
+
+
+def refresh_semantic_model(
+    workspace_id: str,
+    dataset_id: str,
+    timeout_s: int = 900,
+    poll_s: int = 10,
+) -> dict:
+    """Trigger an enhanced (framing) refresh of a semantic model and poll it.
+
+    Uses the Power BI enhanced-refresh API (POST → 202 + `Location` → poll the
+    refresh object until terminal). For a Direct Lake model this is the
+    framing step; a `Completed` status proves the model re-framed but NOT that
+    measures evaluate.
+
+    Returns:
+        The final refresh-detail object, including `status` and — on failure —
+        `serviceExceptionJson` / `messages`.
+    """
+    body = {"type": "automatic", "commitMode": "transactional", "objects": []}
+    _status, headers, _resp = _http_request(
+        f"{_POWERBI_HOST}/v1.0/myorg/groups/{workspace_id}/datasets/{dataset_id}/refreshes",
+        method="POST",
+        data=body,
+        scope=_POWERBI_SCOPE,
+        error_context="trigger semantic model refresh",
+    )
+
+    location = headers.get("Location") or headers.get("location")
+    request_id = headers.get("x-ms-request-id") or headers.get("RequestId")
+    if location and location.startswith("/"):
+        location = f"{_POWERBI_HOST}{location}"
+    if not location:
+        location = (
+            f"{_POWERBI_HOST}/v1.0/myorg/groups/{workspace_id}"
+            f"/datasets/{dataset_id}/refreshes/{request_id}"
+        )
+
+    waited = 0
+    detail: dict = {}
+    while True:
+        _s, _h, detail = _http_request(
+            location, scope=_POWERBI_SCOPE, error_context="poll semantic model refresh"
+        )
+        status = detail.get("status")
+        # "Unknown" with no endTime means still in progress.
+        if status and status != "InProgress" and not (
+            status == "Unknown" and not detail.get("endTime")
+        ):
+            return detail
+        if waited >= timeout_s:
+            raise RuntimeError(
+                f"Semantic model refresh did not finish within {timeout_s}s "
+                f"(last status: {status})."
+            )
+        sleep_for = min(poll_s, max(1, timeout_s - waited))
+        time.sleep(sleep_for)
+        waited += sleep_for
