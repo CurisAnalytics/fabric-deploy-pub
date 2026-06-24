@@ -152,6 +152,60 @@ class TestFailOnStale:
         assert fake_publish.called
 
 
+class TestIncludeItemsValidation:
+    """Pin the --include-items guard: a name that matches nothing must raise
+    instead of silently deploying zero items (fabric-cicd's old behavior)."""
+
+    def test_repo_items_keys_on_display_name(self, deployer):
+        index = deployer._repo_items()
+        # Keyed '<displayName>.<ItemType>' — note the space-containing names.
+        assert "Fill Lakehouse.Notebook" in index
+        assert "SQL DB.SemanticModel" in index
+
+    def test_validate_returns_matched_subset(self, deployer):
+        matched = deployer._validate_include_items(["Fill Lakehouse.Notebook"])
+        assert matched == ["Fill Lakehouse.Notebook"]
+
+    def test_validate_drops_unmatched_but_keeps_matched(self, deployer):
+        matched = deployer._validate_include_items(
+            ["Fill Lakehouse.Notebook", "Ghost.Notebook"]
+        )
+        assert matched == ["Fill Lakehouse.Notebook"]
+
+    def test_validate_raises_when_nothing_matches(self, deployer):
+        with pytest.raises(RuntimeError, match="matched no items"):
+            deployer._validate_include_items(["Ghost.Notebook"])
+
+    def test_deploy_raises_before_publish_on_total_mismatch(self, deployer):
+        with (
+            patch("fabric_deploy.workspace.FabricWorkspace") as fake_fw,
+            patch("fabric_deploy.workspace.publish_all_items") as fake_publish,
+            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
+            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
+        ):
+            with pytest.raises(RuntimeError, match="matched no items"):
+                deployer.deploy(include_items=["Ghost.Notebook"])
+
+        assert not fake_fw.called
+        assert not fake_publish.called
+
+    def test_deploy_passes_only_matched_items_to_publish(self, deployer):
+        with (
+            patch("fabric_deploy.workspace.FabricWorkspace"),
+            patch("fabric_deploy.workspace.publish_all_items") as fake_publish,
+            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
+            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
+        ):
+            deployer.deploy(
+                include_items=["Fill Lakehouse.Notebook", "Ghost.Notebook"]
+            )
+
+        assert fake_publish.called
+        assert fake_publish.call_args.kwargs["items_to_include"] == [
+            "Fill Lakehouse.Notebook"
+        ]
+
+
 class TestParameterFileWriter:
     """Pin _write_parameter_file behavior under the no-auto-scoping model:
     every detected parameter flows through; only manual_parameters carry

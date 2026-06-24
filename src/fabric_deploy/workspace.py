@@ -484,6 +484,66 @@ class WorkspaceDeployer:
                     item_types.add(parts[1])
         return item_types
 
+    def _repo_items(self) -> dict[str, str]:
+        """Map '<displayName>.<ItemType>' -> item directory name for the repo.
+
+        Keyed on the `.platform` displayName — which is what fabric-cicd's
+        `items_to_include` matches on, NOT the directory name (the two can
+        differ, and that mismatch is exactly the `-i` silent no-op footgun).
+        """
+        items: dict[str, str] = {}
+        for platform_file in self._repo_dir_resolved.rglob(".platform"):
+            parent = platform_file.parent.name
+            if "." not in parent:
+                continue
+            item_type = parent.rsplit(".", 1)[1]
+            if item_type not in ACCEPTED_ITEM_TYPES:
+                continue
+            try:
+                meta = loads(platform_file.read_text())
+                display = meta["metadata"]["displayName"]
+            except Exception:
+                continue
+            items[f"{display}.{item_type}"] = parent
+        return items
+
+    def _validate_include_items(self, include_items: list[str]) -> list[str]:
+        """Resolve `--include-items` against the repo's display names.
+
+        fabric-cicd silently skips any `items_to_include` entry whose display
+        name isn't in the repo — so a single typo (or matching the directory
+        name instead of the displayName) means nothing publishes and orphan
+        cleanup is disabled, with no error. This makes that loud:
+
+        - Unmatched entries are warned about, with the available items listed.
+        - If NOTHING matches, raise instead of running a no-op deploy.
+
+        Returns the matched subset (what should actually be published).
+        """
+        index = self._repo_items()
+        matched = [it for it in include_items if it in index]
+        missing = [it for it in include_items if it not in index]
+
+        if missing:
+            self.logger.warning(
+                f"{len(missing)} requested item(s) not found by display name "
+                f"(fabric-cicd matches displayName, not directory name): "
+                f"{', '.join(missing)}"
+            )
+            self.logger.warning(
+                f"Available items: {', '.join(sorted(index)) or '(none)'}"
+            )
+
+        if not matched:
+            raise RuntimeError(
+                "--include-items matched no items by display name, so nothing "
+                "would deploy (the silent no-op fabdep used to hide). "
+                f"Requested: {', '.join(include_items)}. "
+                "Names are '<displayName>.<ItemType>' — check the displayName in "
+                "each item's .platform, not the folder name."
+            )
+        return matched
+
     def _detect_lakehouse(self) -> None:
         """Set self.lakehouse_name from the first *.Lakehouse/.platform file."""
         lakehouses = list(self._repo_dir_resolved.glob("*.Lakehouse"))
@@ -593,6 +653,8 @@ class WorkspaceDeployer:
             self.logger.warning(
                 "Orphan cleanup disabled when using --include-items for safety."
             )
+            # Fail fast on a name mismatch instead of silently deploying nothing.
+            include_items = self._validate_include_items(include_items)
 
         item_type_in_scope = self._resolve_item_scope(
             item_types=item_types,
@@ -648,6 +710,12 @@ class WorkspaceDeployer:
                 item_types=item_type_in_scope,
                 include_items=include_items,
             )
+            # One-line confirmation of what actually deployed — fabric-cicd's
+            # "Skipping ... due to items_to_include" noise otherwise buries it.
+            if include_items:
+                self.logger.info(
+                    f"Deployed {len(include_items)} item(s): {', '.join(include_items)}"
+                )
             self.logger.info("Deployment complete!")
         finally:
             if self._created_param_file:
