@@ -240,11 +240,53 @@ def parse_args() -> argparse.Namespace:
         help="Exit non-zero if any notebook has multiple lakehouses attached "
         "(for CI / autonomous agent loops where the warning would get buried)",
     )
+    _ = deploy_parser.add_argument(
+        "--frame",
+        action="store_true",
+        help="After deploy, frame the Direct Lake model(s): sync SQL endpoint "
+        "-> refresh -> poll -> surface the first framing error",
+    )
+
+    refresh_parser = subparsers.add_parser(
+        "refresh",
+        help="Frame a Direct Lake semantic model (sync SQL endpoint -> refresh -> poll)",
+        description="Sync the SQL analytics endpoint metadata, then refresh and "
+        "poll the semantic model(s), surfacing the first framing error.",
+    )
+    _ = refresh_parser.add_argument(
+        "directory",
+        nargs="?",
+        default=".",
+        type=Path,
+        help="Workspace directory (defaults to current directory)",
+    )
+    _ = refresh_parser.add_argument(
+        "--include-items",
+        "-i",
+        nargs="+",
+        help="Semantic model display name(s) to frame (default: all in repo)",
+    )
+    _ = refresh_parser.add_argument(
+        "--branch",
+        "-b",
+        help="Override git branch for workspace resolution",
+    )
+    _ = refresh_parser.add_argument(
+        "--no-sync",
+        action="store_true",
+        help="Skip the SQL analytics endpoint metadata sync",
+    )
+    _ = refresh_parser.add_argument(
+        "--timeout",
+        type=int,
+        default=900,
+        help="Per-model refresh poll timeout in seconds (default: 900)",
+    )
 
     # argparse can't natively pick a default subparser or treat unknown
     # leading args as a subcommand's options — so resolve it ourselves
     # and feed argparse a normalized argv.
-    known_commands = {"auth", "deploy", "rename", "detect"}
+    known_commands = {"auth", "deploy", "rename", "detect", "refresh"}
     help_flags = {"-h", "--help", "-V", "--version"}
 
     raw = sys.argv[1:]
@@ -394,6 +436,47 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
     except Exception as e:
         handle_command_error(e, "Deployment")
 
+    if getattr(args, "frame", False):
+        # Frame the model(s) just deployed. If specific SemanticModels were
+        # targeted via -i, frame those; otherwise frame every model in the repo.
+        models = None
+        if args.include_items:
+            sm = [
+                it.rsplit(".", 1)[0]
+                for it in args.include_items
+                if it.endswith(".SemanticModel")
+            ]
+            models = sm or None
+        try:
+            from .refresh import frame_models
+
+            frame_models(
+                repo_dir=args.directory,
+                branch_override=args.branch,
+                models=models,
+            )
+        except Exception as e:
+            handle_command_error(e, "Framing")
+
+
+def handle_refresh_command(args: argparse.Namespace) -> None:
+    """Handle refresh subcommand execution (Direct Lake framing)."""
+    from .refresh import frame_models
+
+    try:
+        frame_models(
+            repo_dir=args.directory,
+            branch_override=args.branch,
+            models=args.include_items,
+            sync=not args.no_sync,
+            timeout_s=int(args.timeout),
+        )
+    except FileNotFoundError as e:
+        print_error(f"\n{e}\n")
+        sys.exit(1)
+    except Exception as e:
+        handle_command_error(e, "Framing")
+
 
 def main() -> None:
     """CLI entry point - routes to appropriate command handler."""
@@ -405,6 +488,8 @@ def main() -> None:
         handle_rename_command(args)
     elif args.command == "detect":
         handle_detect_command(args)
+    elif args.command == "refresh":
+        handle_refresh_command(args)
     elif args.command == "deploy":
         handle_deploy_command(args)
     else:
