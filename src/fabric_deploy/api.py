@@ -5,6 +5,7 @@ import json
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import TypedDict
 
@@ -89,7 +90,7 @@ def _jwt_exp(token: str) -> int:
         return int(payload["exp"])
     except (IndexError, KeyError, ValueError) as e:
         raise RuntimeError(
-            f"{_BEARER_ENV} is not a decodable JWT: {e}"
+            f"Relay bearer token is not a decodable JWT: {e}"
         ) from e
 
 
@@ -443,13 +444,24 @@ def list_workspace_items(
     Returns:
         List of item dicts (each has `id`, `displayName`, `type`).
     """
-    endpoint = f"/v1/workspaces/{workspace_id}/items"
-    if item_type:
-        endpoint += f"?type={item_type}"
-    data = _fabric_api_request(
-        endpoint, error_context=f"list {item_type or 'workspace'} items"
-    )
-    return data.get("value", [])
+    base = f"/v1/workspaces/{workspace_id}/items"
+    params = [f"type={item_type}"] if item_type else []
+    ctx = f"list {item_type or 'workspace'} items"
+
+    items: list[dict] = []
+    token: str | None = None
+    while True:
+        query = list(params)
+        if token:
+            query.append(f"continuationToken={urllib.parse.quote(token)}")
+        endpoint = base + ("?" + "&".join(query) if query else "")
+        data = _fabric_api_request(endpoint, error_context=ctx)
+        items.extend(data.get("value", []))
+        # The items API paginates; a model/endpoint on page 2+ would otherwise
+        # be invisible and resolve as "not found".
+        token = data.get("continuationToken")
+        if not token:
+            return items
 
 
 def find_item_by_name(
@@ -499,9 +511,6 @@ def find_item_by_name(
 
 # --- Refresh / framing ---------------------------------------------------
 
-# Terminal states for a Fabric long-running operation.
-_LRO_TERMINAL = {"Succeeded", "Completed", "Failed", "Cancelled", "Undefined"}
-
 
 def _poll_fabric_lro(
     headers: dict[str, str],
@@ -512,16 +521,20 @@ def _poll_fabric_lro(
 
     Polls the `Location` URL on the cadence the service asks for
     (`Retry-After`), then fetches the operation result. Raises on a Failed /
-    Cancelled operation or if `timeout_s` is exceeded.
+    Cancelled operation, a 202 with no `Location` to poll, or a timeout.
 
     Returns:
         The operation result body (`{}` if the operation has no result).
     """
     location = headers.get("Location") or headers.get("location")
     op_id = headers.get("x-ms-operation-id") or headers.get("x-ms-operationid")
-    retry_after = int(headers.get("Retry-After") or 5)
+    # Clamp to >= 1: a Retry-After of 0 would never advance `waited` -> spin.
+    retry_after = max(1, int(headers.get("Retry-After") or 5))
     if not location:
-        return {}
+        # 202 with nothing to poll — don't report a no-op as success.
+        raise RuntimeError(
+            f"{error_context}: 202 Accepted but no Location header to poll."
+        )
 
     waited = 0
     while True:
@@ -544,9 +557,9 @@ def _poll_fabric_lro(
                 except RuntimeError:
                     return body  # result endpoint optional for some ops
             return body
-        if op_status in ("Failed", "Cancelled", "Undefined"):
+        if op_status in ("Failed", "Cancelled"):
             raise RuntimeError(f"{error_context} {op_status}: {body.get('error')}")
-        retry_after = int(hdrs.get("Retry-After") or retry_after)
+        retry_after = max(1, int(hdrs.get("Retry-After") or retry_after))
         if waited >= timeout_s:
             raise RuntimeError(
                 f"{error_context} did not finish within {timeout_s}s "

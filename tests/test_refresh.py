@@ -70,6 +70,50 @@ def test_extract_falls_back_to_messages():
     assert "0xC11C0020" in out and "evicted" in out
 
 
+def test_extract_prefers_refresh_attempt_over_thin_top_level():
+    """Real PBI failures put the rich error in refreshAttempts[]; the top-level
+    serviceExceptionJson is often just {"errorCode": ...}."""
+    detail = {
+        "status": "Failed",
+        "serviceExceptionJson": json.dumps(
+            {"errorCode": "ModelRefresh_ShortMessage_ProcessingError"}
+        ),
+        "refreshAttempts": [
+            {
+                "serviceExceptionJson": json.dumps(
+                    {"errorCode": "0xC112", "errorDescription": "real cause here"}
+                )
+            }
+        ],
+    }
+    out = extract_refresh_error(detail)
+    assert "real cause here" in out
+    assert "0xC112" in out
+
+
+def test_extract_errorcode_only_does_not_echo_twice():
+    """errorCode-only top-level must not return 'CODE: {json blob}'."""
+    detail = {
+        "status": "Failed",
+        "serviceExceptionJson": json.dumps({"errorCode": "ProcessingError"}),
+    }
+    out = extract_refresh_error(detail)
+    assert out == "ProcessingError"
+
+
+def test_extract_messages_skips_warnings():
+    detail = {
+        "status": "Failed",
+        "messages": [
+            {"code": "W1", "message": "just a warning", "type": "Warning"},
+            {"code": "E1", "message": "the real error", "type": "Error"},
+        ],
+    }
+    out = extract_refresh_error(detail)
+    assert "the real error" in out
+    assert "just a warning" not in out
+
+
 def test_extract_falls_back_to_status():
     assert "Failed" in extract_refresh_error({"status": "Failed"})
 

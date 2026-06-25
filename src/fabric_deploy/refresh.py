@@ -50,30 +50,49 @@ def failed_table_syncs(statuses: list[dict]) -> list[tuple[str, str]]:
     return failures
 
 
+def _pick_service_exception(detail: dict) -> str | None:
+    """Pick the most detailed serviceExceptionJson from a refresh detail.
+
+    The per-attempt `refreshAttempts[].serviceExceptionJson` carries the rich
+    error (with `errorDescription`); the top-level field is often just
+    `{"errorCode": ...}`. Prefer the last attempt that has one, then top-level.
+    """
+    for attempt in reversed(detail.get("refreshAttempts") or []):
+        if isinstance(attempt, dict) and attempt.get("serviceExceptionJson"):
+            return attempt["serviceExceptionJson"]
+    return detail.get("serviceExceptionJson")
+
+
 def extract_refresh_error(detail: dict) -> str | None:
     """Pull the first human-readable framing error out of a refresh detail.
 
     Returns None when the refresh succeeded. Prefers the structured
-    `serviceExceptionJson`, then the `messages` array, then the bare status —
-    so a Failed refresh always yields *something* actionable.
+    serviceExceptionJson (per-attempt before top-level), then the first
+    `Error`-typed message, then the bare status — so a Failed refresh always
+    yields *something* actionable, and never just echoes the error code twice.
     """
     status = detail.get("status")
     if status in (None, "Completed"):
         return None
 
-    raw = detail.get("serviceExceptionJson")
+    raw = _pick_service_exception(detail)
     if raw:
         try:
             parsed = json.loads(raw)
-            msg = parsed.get("errorDescription") or parsed.get("error") or raw
+            msg = parsed.get("errorDescription") or parsed.get("error")
             code = parsed.get("errorCode")
-            return f"{code}: {msg}" if code else str(msg)
+            if msg and code:
+                return f"{code}: {msg}"
+            return msg or code or str(raw)
         except (ValueError, TypeError):
             return str(raw)
 
-    messages = detail.get("messages")
-    if messages:
-        first = messages[0]
+    messages = detail.get("messages") or []
+    # Entries carry type Error|Warning — surface an actual error, not a warning.
+    errors = [m for m in messages if isinstance(m, dict) and m.get("type") == "Error"]
+    chosen = errors or messages
+    if chosen:
+        first = chosen[0]
         if isinstance(first, dict):
             return f"{first.get('code', '')} {first.get('message', '')}".strip()
         return str(first)
