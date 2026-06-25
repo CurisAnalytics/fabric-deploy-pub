@@ -129,6 +129,7 @@ Options:
 ```bash
 fabdep refresh                      # Frame every model in the repo (sync first)
 fabdep refresh -i "Sales Model"     # Frame one model by display name
+fabdep refresh -i "Sales Model.SemanticModel"   # trailing .SemanticModel tolerated
 fabdep deploy --frame               # Deploy, then frame in one shot
 ```
 

@@ -161,6 +161,11 @@ def frame_models(
     workspace_id = get_workspace_id_by_name(config.workspace_name)
     log.info(f"Workspace: '{config.workspace_name}' ({workspace_id})")
 
+    # `refresh -i` takes a display name, but `deploy -i` takes "Name.Type" —
+    # tolerate a trailing ".SemanticModel" so the two share muscle memory.
+    if models:
+        models = [m.removesuffix(".SemanticModel") for m in models]
+
     targets = models or _repo_display_names(repo_dir, "SemanticModel")
     if not targets:
         raise ValueError(

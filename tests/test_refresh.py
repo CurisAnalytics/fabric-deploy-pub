@@ -124,6 +124,23 @@ def test_frame_models_raises_first_framing_error(patch_api, monkeypatch, tmp_pat
         frame_models(tmp_path, models=["My Model"], sync=False)
 
 
+def test_frame_models_strips_semanticmodel_suffix(patch_api, monkeypatch, tmp_path):
+    """`refresh -i 'X.SemanticModel'` (deploy-style) resolves the same as 'X'."""
+    seen: list[str] = []
+
+    def _find(ws, t, name=None):
+        seen.append(name)
+        return {"id": "ds", "displayName": name}
+
+    monkeypatch.setattr("fabric_deploy.refresh.find_item_by_name", _find)
+    monkeypatch.setattr(
+        "fabric_deploy.refresh.refresh_semantic_model",
+        lambda ws, ds, timeout_s=900: {"status": "Completed"},
+    )
+    frame_models(tmp_path, models=["Northwind Sales Model.SemanticModel"], sync=False)
+    assert seen == ["Northwind Sales Model"]
+
+
 def test_frame_models_requires_a_target(patch_api, tmp_path):
     # Empty repo + no explicit models -> nothing to frame.
     with pytest.raises(ValueError, match="No semantic model"):

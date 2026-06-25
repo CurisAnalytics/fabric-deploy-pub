@@ -264,7 +264,8 @@ def parse_args() -> argparse.Namespace:
         "--include-items",
         "-i",
         nargs="+",
-        help="Semantic model display name(s) to frame (default: all in repo)",
+        help="Semantic model display name(s) to frame (default: all in repo); "
+        "a trailing '.SemanticModel' is tolerated to match deploy -i",
     )
     _ = refresh_parser.add_argument(
         "--branch",
