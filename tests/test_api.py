@@ -152,15 +152,13 @@ def test_refresh_semantic_model_polls_until_completed(monkeypatch):
 # --- get_access_token scope fallbacks ------------------------------------
 
 
-def test_powerbi_scope_prefers_powerbi_token(monkeypatch):
+@pytest.mark.parametrize("set_powerbi", [True, False])
+def test_powerbi_scope_token_resolution(monkeypatch, set_powerbi: bool):
+    """Power BI scope prefers POWERBI_BEARER_TOKEN, else falls back to Fabric's."""
     pbi, fabric = _jwt(), _jwt()
-    monkeypatch.setenv("POWERBI_BEARER_TOKEN", pbi)
     monkeypatch.setenv("FABRIC_BEARER_TOKEN", fabric)
-    assert get_access_token(_POWERBI_SCOPE) == pbi
-
-
-def test_powerbi_scope_falls_back_to_fabric_token(monkeypatch):
-    fabric = _jwt()
-    monkeypatch.delenv("POWERBI_BEARER_TOKEN", raising=False)
-    monkeypatch.setenv("FABRIC_BEARER_TOKEN", fabric)
-    assert get_access_token(_POWERBI_SCOPE) == fabric
+    if set_powerbi:
+        monkeypatch.setenv("POWERBI_BEARER_TOKEN", pbi)
+    else:
+        monkeypatch.delenv("POWERBI_BEARER_TOKEN", raising=False)
+    assert get_access_token(_POWERBI_SCOPE) == (pbi if set_powerbi else fabric)

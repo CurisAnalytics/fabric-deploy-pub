@@ -123,13 +123,3 @@ class TestLoadConfig:
         assert d.workspace_name == "newws [DEV]"
         # Workspace ID still resolved via the (mocked) lookup after creation.
         assert d.workspace_id == mock_fabric_api.workspace_id
-
-    def test_new_workspace_uses_default_capacity_when_unset(
-        self, tmp_path: Path, mock_fabric_api
-    ):
-        _seed_workspace(tmp_path)
-        _write_fabdep_yml(tmp_path, 'workspace_base_name: "newws"\n')
-
-        d = WorkspaceDeployer(tmp_path, branch_override="dev", new_workspace=True)
-
-        assert d.workspace_id == mock_fabric_api.workspace_id

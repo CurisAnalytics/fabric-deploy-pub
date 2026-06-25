@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from fabric_deploy.workspace import WorkspaceDeployer
 
 
@@ -73,8 +75,15 @@ class TestManualParameters:
         assert d._manual_count == 0
         assert any(UNRELATED_UUID in rec.message for rec in caplog.records)
 
-    def test_item_type_as_list_overrides_item_types(
-        self, tmp_path: Path, mock_fabric_api
+    @pytest.mark.parametrize(
+        ("item_type_yaml", "expected"),
+        [
+            ('["SemanticModel", "Report"]', {"SemanticModel", "Report"}),
+            ('"SemanticModel"', {"SemanticModel"}),  # string normalizes to a set
+        ],
+    )
+    def test_item_type_normalizes_to_set(
+        self, tmp_path: Path, mock_fabric_api, item_type_yaml: str, expected: set[str]
     ):
         _build_repo(
             tmp_path,
@@ -82,30 +91,12 @@ class TestManualParameters:
             'manual_parameters:\n'
             f'  - find_value: "{DETECTED_UUID}"\n'
             '    replace_value: "x"\n'
-            '    item_type: ["SemanticModel", "Report"]\n',
+            f'    item_type: {item_type_yaml}\n',
         )
 
         d = WorkspaceDeployer(tmp_path, branch_override="dev")
 
-        param = d._detector.parameters[DETECTED_UUID]
-        assert param.item_types == {"SemanticModel", "Report"}
-
-    def test_item_type_as_string_normalizes_to_set(
-        self, tmp_path: Path, mock_fabric_api
-    ):
-        _build_repo(
-            tmp_path,
-            'workspace_base_name: "ws"\n'
-            'manual_parameters:\n'
-            f'  - find_value: "{DETECTED_UUID}"\n'
-            '    replace_value: "x"\n'
-            '    item_type: "SemanticModel"\n',
-        )
-
-        d = WorkspaceDeployer(tmp_path, branch_override="dev")
-
-        param = d._detector.parameters[DETECTED_UUID]
-        assert param.item_types == {"SemanticModel"}
+        assert d._detector.parameters[DETECTED_UUID].item_types == expected
 
     def test_dict_replace_value_extracts_first_value(
         self, tmp_path: Path, mock_fabric_api

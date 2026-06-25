@@ -21,21 +21,23 @@ from fabric_deploy.refresh import (
 # --- failed_table_syncs --------------------------------------------------
 
 
-def test_failed_table_syncs_only_returns_failures():
-    statuses = [
-        {"tableName": "ok", "status": "Success"},
-        {"tableName": "skipped", "status": "NotRun"},
-        {
-            "tableName": "bad",
-            "status": "Failure",
-            "error": {"message": "token problem"},
-        },
-    ]
-    assert failed_table_syncs(statuses) == [("bad", "token problem")]
-
-
-def test_failed_table_syncs_empty_when_all_ok():
-    assert failed_table_syncs([{"tableName": "t", "status": "Success"}]) == []
+@pytest.mark.parametrize(
+    ("statuses", "expected"),
+    [
+        # Only Failure rows are returned; Success/NotRun are not failures.
+        (
+            [
+                {"tableName": "ok", "status": "Success"},
+                {"tableName": "skipped", "status": "NotRun"},
+                {"tableName": "bad", "status": "Failure", "error": {"message": "token problem"}},
+            ],
+            [("bad", "token problem")],
+        ),
+        ([{"tableName": "t", "status": "Success"}], []),
+    ],
+)
+def test_failed_table_syncs(statuses, expected):
+    assert failed_table_syncs(statuses) == expected
 
 
 # --- extract_refresh_error -----------------------------------------------

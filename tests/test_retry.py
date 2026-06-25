@@ -1,9 +1,10 @@
 """Unit tests for WorkspaceDeployer._deploy_items retry logic.
 
-Pins three behaviors:
-1. Transient error → retry → success (no exception).
-2. Transient error × (max_retries + 1) → raises (we ran out of retries).
-3. Non-transient error → no retry, raises immediately.
+One parametrized test pins the retry contract:
+- transient error → retry → success
+- transient error past max_retries → raises
+- non-transient (auth) error → no retry, raises immediately
+- higher max_retries → more attempts
 """
 
 from __future__ import annotations
@@ -12,7 +13,11 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from fabric_deploy.workspace import WorkspaceDeployer
+
+TRANSIENT = "Internal server error"
 
 
 def _seed(repo: Path) -> None:
@@ -26,95 +31,52 @@ def _seed(repo: Path) -> None:
 
 def _make_deployer(tmp_path: Path, max_retries: int = 1) -> WorkspaceDeployer:
     _seed(tmp_path)
-    return WorkspaceDeployer(
-        tmp_path, branch_override="dev", max_retries=max_retries
-    )
+    return WorkspaceDeployer(tmp_path, branch_override="dev", max_retries=max_retries)
 
 
-class TestRetry:
-    def test_transient_error_retried_then_succeeds(
-        self, tmp_path: Path, mock_fabric_api
-    ):
-        d = _make_deployer(tmp_path, max_retries=1)
-
-        # First call raises transient, second succeeds.
-        publish_mock = MagicMock(
-            side_effect=[Exception("Internal server error"), None]
-        )
-
-        with (
-            patch("fabric_deploy.workspace.FabricWorkspace"),
-            patch("fabric_deploy.workspace.publish_all_items", publish_mock),
-            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
-        ):
-            d._deploy_items(item_types=["Notebook"])
-
-        assert publish_mock.call_count == 2
-
-    def test_max_retries_exhausted_raises(self, tmp_path: Path, mock_fabric_api):
-        d = _make_deployer(tmp_path, max_retries=1)
-
-        publish_mock = MagicMock(side_effect=Exception("Internal server error"))
-
-        with (
-            patch("fabric_deploy.workspace.FabricWorkspace"),
-            patch("fabric_deploy.workspace.publish_all_items", publish_mock),
-            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
-        ):
-            try:
-                d._deploy_items(item_types=["Notebook"])
-            except Exception as e:
-                assert "Internal server error" in str(e)
-            else:
-                raise AssertionError("Expected exception when retries exhausted")
-
-        # max_retries=1 means initial attempt + 1 retry = 2 total calls.
-        assert publish_mock.call_count == 2
-
-    def test_non_transient_error_not_retried(
-        self, tmp_path: Path, mock_fabric_api
-    ):
-        d = _make_deployer(tmp_path, max_retries=3)
-
-        # Auth error is not transient — must not be retried even with high max_retries.
-        publish_mock = MagicMock(side_effect=Exception("401 Unauthorized"))
-
-        with (
-            patch("fabric_deploy.workspace.FabricWorkspace"),
-            patch("fabric_deploy.workspace.publish_all_items", publish_mock),
-            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
-        ):
-            try:
-                d._deploy_items(item_types=["Notebook"])
-            except Exception as e:
-                assert "401" in str(e)
-            else:
-                raise AssertionError("Expected exception to be raised")
-
-        # Only the first attempt — no retry on non-transient.
-        assert publish_mock.call_count == 1
-
-    def test_higher_max_retries_allows_more_attempts(
-        self, tmp_path: Path, mock_fabric_api
-    ):
-        d = _make_deployer(tmp_path, max_retries=3)
-
-        # Three transient failures, then success.
-        publish_mock = MagicMock(
-            side_effect=[
-                Exception("Internal server error"),
+@pytest.mark.parametrize(
+    ("side_effect", "max_retries", "expected_calls", "raises_match"),
+    [
+        # transient then success: initial + 1 retry
+        ([Exception(TRANSIENT), None], 1, 2, None),
+        # transient exhausts retries: initial + 1 retry, then raises
+        (Exception(TRANSIENT), 1, 2, TRANSIENT),
+        # non-transient: no retry even with max_retries=3
+        (Exception("401 Unauthorized"), 3, 1, "401"),
+        # three transient failures then success: initial + 3 retries
+        (
+            [
+                Exception(TRANSIENT),
                 Exception("Service unavailable"),
                 Exception("Gateway timeout"),
                 None,
-            ]
-        )
+            ],
+            3,
+            4,
+            None,
+        ),
+    ],
+)
+def test_deploy_items_retry(
+    tmp_path: Path,
+    mock_fabric_api,
+    side_effect,
+    max_retries: int,
+    expected_calls: int,
+    raises_match: str | None,
+):
+    d = _make_deployer(tmp_path, max_retries=max_retries)
+    publish_mock = MagicMock(side_effect=side_effect)
 
-        with (
-            patch("fabric_deploy.workspace.FabricWorkspace"),
-            patch("fabric_deploy.workspace.publish_all_items", publish_mock),
-            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
-        ):
+    with (
+        patch("fabric_deploy.workspace.FabricWorkspace"),
+        patch("fabric_deploy.workspace.publish_all_items", publish_mock),
+        patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
+    ):
+        if raises_match:
+            with pytest.raises(Exception, match=raises_match):
+                d._deploy_items(item_types=["Notebook"])
+        else:
             d._deploy_items(item_types=["Notebook"])
 
-        # Initial + 3 retries = 4 calls total.
-        assert publish_mock.call_count == 4
+    assert publish_mock.call_count == expected_calls

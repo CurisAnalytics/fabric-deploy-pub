@@ -68,18 +68,7 @@ class TestFabricWorkspaceConstruction:
             f"`token_credential` must be a TokenCredential instance, got "
             f"{type(cred).__name__}"
         )
-
-    def test_deploy_uses_resolved_workspace_id(self, deployer):
-        """Sanity: the workspace_id resolved from the API is what we pass through."""
-        with (
-            patch("fabric_deploy.workspace.FabricWorkspace") as fake_fw,
-            patch("fabric_deploy.workspace.publish_all_items"),
-            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
-            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
-        ):
-            deployer.deploy(item_types=["Notebook"])
-
-        kwargs = fake_fw.call_args.kwargs
+        # The resolved workspace id / repo dir are passed straight through.
         assert kwargs.get("workspace_id") == FAKE_WORKSPACE_ID
         assert kwargs.get("repository_directory") == str(TEST_WS_DIR.resolve())
 
