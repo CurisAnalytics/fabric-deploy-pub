@@ -12,7 +12,7 @@ CLI wrapper around Microsoft's [fabric-cicd](https://github.com/microsoft/fabric
 - **Direct Lake Framing**: `fabdep refresh` / `deploy --frame` — sync SQL endpoint → refresh → poll → surface the first framing error
 - **Auth Management**: Switch accounts, persistent SPN logins & aliases
 - **Configurable Retries**: Auto-retry transient errors (customizable with `-r`)
-- **Friendlier Errors**: Cryptic Fabric failures (RequiredOptionsMissing, Workload_FailedToParseFile) get a plain-language hint; `-i` fails loudly instead of silently deploying nothing on a name mismatch
+- **Friendlier Errors**: Cryptic Fabric failures (RequiredOptionsMissing, compatibilityLevel parse errors, Direct-Lake hybrid-mode and storage-mode-change rejections) get a plain-language hint; `-i` fails loudly instead of silently deploying nothing on a name mismatch
 
 
 ## Architecture

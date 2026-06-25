@@ -48,11 +48,34 @@ _ERROR_HINTS: list[tuple[tuple[str, ...], str]] = [
         "lines in model.tmdl) out, then redeploy to narrow it down.",
     ),
     (
+        # Match the error CODE, not the message — Microsoft's own text misspells
+        # it ("minimal compatability level of 1604").
         ("workload_failedtoparsefile", "failedtoparsefile"),
         "Workload_FailedToParseFile usually means the SemanticModel's "
         "compatibilityLevel is too low for a feature it uses (e.g. 1601 < 1604 "
-        "for Direct Lake). Check `compatibilityLevel:` in model.tmdl — Direct "
-        "Lake needs >= 1604 — then redeploy.",
+        "for Direct Lake). Bump `compatibilityLevel` in database.tmdl to "
+        ">= 1604, then redeploy.",
+    ),
+    (
+        # Dataset_Import_FailedToImportDataset, hybrid-mode variant. Matched by
+        # message substring because it shares its code with the next entry.
+        (
+            "composite model does not support direct lake on sql mode",
+            "direct lake on sql mode together with other storage modes",
+        ),
+        "Pure Direct-Lake-on-SQL can't be mixed with import/DirectQuery or "
+        "calculated/import tables in the same model. Convert every data table "
+        "to a `mode: directLake` entity (or drop the unsupported ones).",
+    ),
+    (
+        # Dataset_Import_FailedToImportDataset, in-place storage-mode-change variant.
+        (
+            "cannot change the storage mode of partition",
+            "converting existing tables or partitions from import or directquery mode to direct lake is not supported",
+        ),
+        "fabric-cicd can't flip a partition's storage mode in place "
+        "(Import/DirectQuery -> Direct Lake). Delete the semantic model item, "
+        "then redeploy it fresh as Direct Lake.",
     ),
 ]
 

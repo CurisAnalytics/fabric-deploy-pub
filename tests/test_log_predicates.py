@@ -143,12 +143,51 @@ def test_is_transient_error_false(msg: str):
             "compatibilityLevel",
         ),
         ("error: FailedToParseFile", "1604"),
+        # Verbatim strings captured from a live Northwind framing session.
+        (
+            "The database compatibility level of 1601 is below the minimal "
+            "compatability level of 1604 needed for [model Model].[table "
+            "date_view_dim].[partition date_view_dim]::[Mode]. "
+            "(Workload_FailedToParseFile)",
+            "database.tmdl",
+        ),
+        (
+            "Dataset_Import_FailedToImportDataset: You cannot use Direct Lake on "
+            "SQL mode together with other storage modes in the same model. "
+            "Composite model does not support Direct Lake on SQL mode. Please "
+            "remove the unsupported tables or switch them to Direct Lake on "
+            "OneLake mode.",
+            "directLake",
+        ),
+        (
+            "Dataset_Import_FailedToImportDataset: You cannot change the storage "
+            "mode of partition 'date_view_dim'. Converting existing tables or "
+            "partitions from Import or DirectQuery mode to Direct Lake is not "
+            "supported.",
+            "Delete the semantic model item",
+        ),
     ],
 )
 def test_error_hint_matches_known(msg: str, needle: str):
     hint = error_hint(msg)
     assert hint is not None
     assert needle in hint
+
+
+def test_error_hint_distinguishes_shared_error_code():
+    """Both hybrid-mode and in-place-change share Dataset_Import_FailedToImportDataset
+    but must map to different hints (matched on message, not code)."""
+    hybrid = error_hint(
+        "Dataset_Import_FailedToImportDataset: Composite model does not support "
+        "Direct Lake on SQL mode."
+    )
+    inplace = error_hint(
+        "Dataset_Import_FailedToImportDataset: You cannot change the storage "
+        "mode of partition 'x'."
+    )
+    assert hybrid != inplace
+    assert "directLake" in hybrid
+    assert "Delete the semantic model item" in inplace
 
 
 @pytest.mark.parametrize(
