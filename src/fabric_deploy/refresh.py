@@ -26,7 +26,7 @@ from .api import (
 )
 from .config import FabdepConfig
 from .log import get_logger
-from .workspace import apply_tenant_pin
+from .identity import apply_tenant_pin
 
 __all__ = [
     "extract_refresh_error",

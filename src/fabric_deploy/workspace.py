@@ -5,7 +5,6 @@
 # pyright: reportUnknownVariableType=false
 
 import logging
-import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from json import loads
@@ -26,60 +25,11 @@ from .api import (
     get_default_capacity_id,
     get_workspace_id_by_name,
 )
-from .auth import assert_active_tenant, tenant_registry
-from .identity import _env_bearer_token, fabric_credential
-from .config import FabdepConfig, TenantPin
+from .config import FabdepConfig
 from .detect import ParameterDetector
 from .git import current_branch
+from .identity import apply_tenant_pin, fabric_credential
 from .log import get_logger, is_transient_error, patch_fabric_cicd_logger
-
-
-def apply_tenant_pin(pin: TenantPin | None, logger: logging.Logger) -> None:
-    """Honor a fabdep.yml `tenant:` pin before any Fabric API call.
-
-    Points `AZURE_CONFIG_DIR` at the tenant's isolated login so the right
-    identity is selected automatically (no manual `fabdep auth switch`) and two
-    tenants never share `~/.azure` state. Then asserts the active identity
-    lives in the pinned tenant, so an identity mix-up surfaces as a clear
-    tenant error here instead of a confusing "workspace not found" later — and,
-    under `--new-workspace`, can't create the workspace in the wrong tenant.
-
-    Shared by `WorkspaceDeployer` (deploy) and the refresh command so both
-    paths resolve the same pinned identity.
-    """
-    if pin is None:
-        return
-    pin = pin.resolve(tenant_registry())
-    assert pin.id is not None  # resolve() guarantees a concrete id or raises
-
-    if pin.config_dir:
-        target = os.path.expanduser(pin.config_dir)
-        existing = os.environ.get("AZURE_CONFIG_DIR")
-        if existing and existing != target:
-            logger.info(
-                f"Overriding AZURE_CONFIG_DIR ({existing} -> {target}) "
-                "per fabdep.yml tenant pin"
-            )
-        # Set on the process env and intentionally not restored: AzureCliCredential
-        # reads AZURE_CONFIG_DIR at call time, so it must persist through the run.
-        # The CLI is one operation per process; concurrent multi-tenant work uses
-        # separate processes (see the multi-tenant-auth recipe), so this is safe.
-        os.environ["AZURE_CONFIG_DIR"] = target
-
-    # A pre-injected bearer token owns auth and can't be introspected via
-    # `az` — nothing to assert in that mode. Use the same helper api.py
-    # gates on, so a malformed (whitespace) token is treated identically
-    # by both: skip-assert here and relay there must agree.
-    if _env_bearer_token():
-        return
-
-    account = assert_active_tenant(
-        pin.id, config_dir=pin.config_dir, require_spn=pin.require_spn
-    )
-    logger.info(
-        f"Tenant pin OK: '{account.get('name')}' in {pin.id} "
-        f"({account.get('user', {}).get('name')})"
-    )
 
 
 @dataclass

@@ -13,21 +13,37 @@ Semantic-model refresh lives on the Power BI API, a different audience than the
 Fabric API; `get_access_token(scope)` handles both.
 """
 
+from __future__ import annotations
+
 import base64
 import json
+import logging
 import os
+import subprocess
 import time
+from typing import TYPE_CHECKING, TypedDict
 
 from azure.core.credentials import AccessToken, TokenCredential
 from azure.core.exceptions import ClientAuthenticationError
 from azure.identity import AzureCliCredential
 
+from .profile import _read_fabdep_profile
+
+if TYPE_CHECKING:
+    from .config import TenantPin, TenantRegistryEntry
+
 __all__ = [
     "FABRIC_SCOPE",
     "POWERBI_SCOPE",
+    "AzureAccount",
+    "TenantMismatchError",
     "StaticTokenCredential",
     "fabric_credential",
     "get_access_token",
+    "active_account",
+    "assert_active_tenant",
+    "tenant_registry",
+    "apply_tenant_pin",
 ]
 
 FABRIC_SCOPE = "https://api.fabric.microsoft.com/.default"
@@ -148,3 +164,154 @@ def get_access_token(scope: str = FABRIC_SCOPE) -> str:
             f"Failed to get Azure access token for scope {scope}.\n{e}\n\n"
             "Make sure you're logged in with 'az login'"
         ) from e
+
+
+# --- Identity introspection & tenant pinning -----------------------------
+
+
+class AzureUser(TypedDict):
+    name: str
+    type: str
+
+
+class AzureAccount(TypedDict):
+    cloudName: str
+    homeTenantId: str
+    id: str
+    isDefault: bool
+    name: str
+    state: str
+    tenantId: str
+    user: AzureUser
+
+
+class TenantMismatchError(RuntimeError):
+    """The active Azure identity does not satisfy fabdep.yml's tenant pin."""
+
+
+def active_account(config_dir: str | None = None) -> AzureAccount | None:
+    """Return the active `az` account, or None if not logged in.
+
+    Honors `config_dir` (an `AZURE_CONFIG_DIR`) so an isolated per-tenant
+    login can be inspected without disturbing the process environment.
+    """
+    env = os.environ.copy()
+    if config_dir:
+        env["AZURE_CONFIG_DIR"] = os.path.expanduser(config_dir)
+    result = subprocess.run(
+        ["az", "account", "show", "--output", "json"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        # Honor the "None if not logged in" contract even if `az` somehow
+        # returns success with non-JSON stdout, rather than leaking a decode error.
+        return None
+
+
+def assert_active_tenant(
+    expected_tenant_id: str,
+    *,
+    config_dir: str | None = None,
+    require_spn: bool = False,
+) -> AzureAccount:
+    """Verify the active identity lives in `expected_tenant_id`.
+
+    Raises `TenantMismatchError` if no one is logged in, the active tenant
+    differs, or `require_spn` is set and the identity is a user. Returns the
+    account on success.
+    """
+    acct = active_account(config_dir)
+    where = f" in AZURE_CONFIG_DIR={os.path.expanduser(config_dir)}" if config_dir else ""
+
+    if acct is None:
+        raise TenantMismatchError(
+            f"No active Azure login found{where}.\n"
+            f"fabdep.yml pins tenant {expected_tenant_id}.\n"
+            "Log in for this tenant, e.g.:\n"
+            "  AZURE_CONFIG_DIR=<dir> az login --service-principal \\\n"
+            "    --username <app-id> --tenant <tenant-id> --certificate <cert.pem>"
+        )
+
+    # Pin against tenantId (the tenant the identity is acting in), not
+    # homeTenantId — a guest / multi-tenant SPN acts in tenantId.
+    actual = acct.get("tenantId")
+    if actual != expected_tenant_id:
+        user = acct.get("user", {}).get("name", "?")
+        raise TenantMismatchError(
+            f"Active identity is in tenant {actual}, but fabdep.yml pins "
+            f"{expected_tenant_id}.\n"
+            f"Active account: {acct.get('name')} (identity: {user}).\n"
+            "Switch identity or correct the tenant pin before deploying."
+        )
+
+    if require_spn and acct.get("user", {}).get("type", "").lower() != "serviceprincipal":
+        user = acct.get("user", {}).get("name", "?")
+        raise TenantMismatchError(
+            f"fabdep.yml requires a service principal for tenant "
+            f"{expected_tenant_id}, but the active identity is a user ({user})."
+        )
+
+    return acct
+
+
+def tenant_registry() -> dict[str, TenantRegistryEntry]:
+    """Machine-local `alias -> {id, config_dir, ...}` map from the fabdep profile.
+
+    Lets a committed fabdep.yml carry a portable `tenant: <alias>` instead of a
+    machine-specific config_dir or a bare tenant GUID. Written by `fabdep auth
+    login` (the single source of truth); empty when none are registered.
+    """
+    return _read_fabdep_profile().get("tenants", {})
+
+
+def apply_tenant_pin(pin: TenantPin | None, logger: logging.Logger) -> None:
+    """Honor a fabdep.yml `tenant:` pin before any Fabric API call.
+
+    Points `AZURE_CONFIG_DIR` at the tenant's isolated login so the right
+    identity is selected automatically (no manual `fabdep auth switch`) and two
+    tenants never share `~/.azure` state. Then asserts the active identity
+    lives in the pinned tenant, so an identity mix-up surfaces as a clear
+    tenant error here instead of a confusing "workspace not found" later — and,
+    under `--new-workspace`, can't create the workspace in the wrong tenant.
+
+    Shared by `WorkspaceDeployer` (deploy) and the refresh command so both
+    paths resolve the same pinned identity.
+    """
+    if pin is None:
+        return
+    pin = pin.resolve(tenant_registry())
+    assert pin.id is not None  # resolve() guarantees a concrete id or raises
+
+    if pin.config_dir:
+        target = os.path.expanduser(pin.config_dir)
+        existing = os.environ.get("AZURE_CONFIG_DIR")
+        if existing and existing != target:
+            logger.info(
+                f"Overriding AZURE_CONFIG_DIR ({existing} -> {target}) "
+                "per fabdep.yml tenant pin"
+            )
+        # Set on the process env and intentionally not restored: AzureCliCredential
+        # reads AZURE_CONFIG_DIR at call time, so it must persist through the run.
+        # The CLI is one operation per process; concurrent multi-tenant work uses
+        # separate processes (see the multi-tenant-auth recipe), so this is safe.
+        os.environ["AZURE_CONFIG_DIR"] = target
+
+    # A pre-injected bearer token owns auth and can't be introspected via
+    # `az` — nothing to assert in that mode. Use the same helper api gates on,
+    # so a malformed (whitespace) token is treated identically by both.
+    if _env_bearer_token():
+        return
+
+    account = assert_active_tenant(
+        pin.id, config_dir=pin.config_dir, require_spn=pin.require_spn
+    )
+    logger.info(
+        f"Tenant pin OK: '{account.get('name')}' in {pin.id} "
+        f"({account.get('user', {}).get('name')})"
+    )

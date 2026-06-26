@@ -1,145 +1,32 @@
-"""Azure authentication utilities for Fabric CI/CD."""
+"""Azure account management for the `fabdep auth` subcommands.
+
+Identity/credential concerns (token acquisition, tenant pinning, identity
+introspection) live in `identity`; the fabdep profile's JSON I/O lives in
+`profile`. This module is just the account-management actions the CLI exposes:
+list / switch / rename / multi-tenant login.
+"""
+
+from __future__ import annotations
 
 import json
 import os
 import subprocess
-from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING
+
+from .identity import AzureAccount, active_account, tenant_registry
+from .profile import _read_fabdep_profile, _write_fabdep_profile
 
 if TYPE_CHECKING:
     from .config import TenantRegistryEntry
 
 
-class AzureUser(TypedDict):
-    name: str
-    type: str
-
-
-class AzureAccount(TypedDict):
-    cloudName: str
-    homeTenantId: str
-    id: str
-    isDefault: bool
-    name: str
-    state: str
-    tenantId: str
-    user: AzureUser
-
-
-class TenantMismatchError(RuntimeError):
-    """The active Azure identity does not satisfy fabdep.yml's tenant pin."""
-
-
 __all__ = [
-    "AzureAccount",
-    "TenantMismatchError",
     "list_accounts",
     "get_current_account",
     "switch_account",
     "rename_subscription",
-    "active_account",
-    "assert_active_tenant",
-    "tenant_registry",
     "login_tenant",
 ]
-
-
-def active_account(config_dir: str | None = None) -> AzureAccount | None:
-    """Return the active `az` account, or None if not logged in.
-
-    Honors `config_dir` (an `AZURE_CONFIG_DIR`) so an isolated per-tenant
-    login can be inspected without disturbing the process environment.
-    """
-    env = os.environ.copy()
-    if config_dir:
-        env["AZURE_CONFIG_DIR"] = os.path.expanduser(config_dir)
-    result = subprocess.run(
-        ["az", "account", "show", "--output", "json"],
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-    if result.returncode != 0:
-        return None
-    try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError:
-        # Honor the "None if not logged in" contract even if `az` somehow
-        # returns success with non-JSON stdout, rather than leaking a decode error.
-        return None
-
-
-def assert_active_tenant(
-    expected_tenant_id: str,
-    *,
-    config_dir: str | None = None,
-    require_spn: bool = False,
-) -> AzureAccount:
-    """Verify the active identity lives in `expected_tenant_id`.
-
-    Raises `TenantMismatchError` if no one is logged in, the active tenant
-    differs, or `require_spn` is set and the identity is a user. Returns the
-    account on success.
-    """
-    acct = active_account(config_dir)
-    where = f" in AZURE_CONFIG_DIR={os.path.expanduser(config_dir)}" if config_dir else ""
-
-    if acct is None:
-        raise TenantMismatchError(
-            f"No active Azure login found{where}.\n"
-            f"fabdep.yml pins tenant {expected_tenant_id}.\n"
-            "Log in for this tenant, e.g.:\n"
-            "  AZURE_CONFIG_DIR=<dir> az login --service-principal \\\n"
-            "    --username <app-id> --tenant <tenant-id> --certificate <cert.pem>"
-        )
-
-    # Pin against tenantId (the tenant the identity is acting in), not
-    # homeTenantId — a guest / multi-tenant SPN acts in tenantId.
-    actual = acct.get("tenantId")
-    if actual != expected_tenant_id:
-        user = acct.get("user", {}).get("name", "?")
-        raise TenantMismatchError(
-            f"Active identity is in tenant {actual}, but fabdep.yml pins "
-            f"{expected_tenant_id}.\n"
-            f"Active account: {acct.get('name')} (identity: {user}).\n"
-            "Switch identity or correct the tenant pin before deploying."
-        )
-
-    if require_spn and acct.get("user", {}).get("type", "").lower() != "serviceprincipal":
-        user = acct.get("user", {}).get("name", "?")
-        raise TenantMismatchError(
-            f"fabdep.yml requires a service principal for tenant "
-            f"{expected_tenant_id}, but the active identity is a user ({user})."
-        )
-
-    return acct
-
-
-FABDEP_PROFILE_PATH = Path.home() / ".azure" / "azureProfile.fabdep.json"
-
-
-def _read_fabdep_profile() -> dict:
-    """Read the fabdep profile, returning empty structure if missing."""
-    if not FABDEP_PROFILE_PATH.exists():
-        return {"accounts": [], "aliases": {}}
-    return json.loads(FABDEP_PROFILE_PATH.read_text(encoding="utf-8"))
-
-
-def _write_fabdep_profile(profile: dict) -> None:
-    """Write the fabdep profile."""
-    FABDEP_PROFILE_PATH.write_text(
-        json.dumps(profile, indent=2), encoding="utf-8"
-    )
-
-
-def tenant_registry() -> dict[str, "TenantRegistryEntry"]:
-    """Machine-local `alias -> {id, config_dir, ...}` map from the fabdep profile.
-
-    Lets a committed fabdep.yml carry a portable `tenant: <alias>` instead of a
-    machine-specific config_dir or a bare tenant GUID. Written by `fabdep auth
-    login` (the single source of truth); empty when none are registered.
-    """
-    return _read_fabdep_profile().get("tenants", {})
 
 
 def login_tenant(
@@ -150,7 +37,7 @@ def login_tenant(
     cert: str | None = None,
     config_dir: str | None = None,
     user: bool = False,
-) -> "TenantRegistryEntry":
+) -> TenantRegistryEntry:
     """Log a tenant in to an isolated AZURE_CONFIG_DIR and register the alias.
 
     SPN-cert mode (default) needs app_id + tenant + cert; on a re-login these are
