@@ -13,12 +13,12 @@ import time
 import pytest
 
 from fabric_deploy.api import (
-    _poll_fabric_lro,
     find_item_by_name,
     list_workspace_items,
     refresh_semantic_model,
 )
 from fabric_deploy.identity import POWERBI_SCOPE, get_access_token
+from fabric_deploy.transport import _poll_fabric_lro
 
 
 def _jwt(exp_offset: int = 3600) -> str:
@@ -91,7 +91,7 @@ def test_find_item_ambiguous_raises(monkeypatch):
 
 
 def test_poll_lro_runs_then_succeeds_and_fetches_result(monkeypatch):
-    monkeypatch.setattr("fabric_deploy.api.time.sleep", lambda _s: None)
+    monkeypatch.setattr("fabric_deploy.transport.time.sleep", lambda _s: None)
     state = {"polls": 0}
 
     def fake_http(url, method="GET", data=None, scope=None, error_context=""):
@@ -102,7 +102,7 @@ def test_poll_lro_runs_then_succeeds_and_fetches_result(monkeypatch):
             return 200, {"Retry-After": "1"}, {"status": "Running"}
         return 200, {}, {"status": "Succeeded"}
 
-    monkeypatch.setattr("fabric_deploy.api._http_request", fake_http)
+    monkeypatch.setattr("fabric_deploy.transport._http_request", fake_http)
     result = _poll_fabric_lro(
         {"Location": "https://x/op", "x-ms-operation-id": "op1", "Retry-After": "1"},
         "sync",
@@ -112,12 +112,12 @@ def test_poll_lro_runs_then_succeeds_and_fetches_result(monkeypatch):
 
 
 def test_poll_lro_raises_on_failed(monkeypatch):
-    monkeypatch.setattr("fabric_deploy.api.time.sleep", lambda _s: None)
+    monkeypatch.setattr("fabric_deploy.transport.time.sleep", lambda _s: None)
 
     def fake_http(url, method="GET", data=None, scope=None, error_context=""):
         return 200, {}, {"status": "Failed", "error": {"message": "boom"}}
 
-    monkeypatch.setattr("fabric_deploy.api._http_request", fake_http)
+    monkeypatch.setattr("fabric_deploy.transport._http_request", fake_http)
     with pytest.raises(RuntimeError, match="Failed"):
         _poll_fabric_lro({"Location": "https://x/op", "Retry-After": "1"}, "sync")
 
