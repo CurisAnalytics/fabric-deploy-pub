@@ -2,8 +2,8 @@
 
 One-line status per release. Newest first. Dates are release/commit dates.
 
-## [2.0.0] — Unreleased
-Layered-architecture refactor: identity/credential provider extracted into one module, REST transport split from Fabric domain calls, and the `WorkspaceDeployer` god-object decomposed. **CLI unchanged**; programmatic API (`fabric_deploy` imports) reorganized — hence the major bump.
+## [1.6.0] — Unreleased
+Internal layered-architecture refactor — **no public API or CLI change** (the only declared export, `WorkspaceDeployer`, keeps its exact interface). The two god-modules split into focused layers: `identity` (credential/token/tenant-pin), `transport` (HTTP + LRO polling), `client` (Fabric/Power BI domain calls, was `api.py`), `profile` (fabdep-profile I/O), `scope` (repo item introspection + deploy-scope), `params` (parameter.yml lifecycle). `WorkspaceDeployer` slimmed 781→380 lines into an orchestrator. The relay auth is now a labeled fallback inside `identity` rather than smeared through the REST module.
 
 ## [1.5.1] — 2026-06-25
 Test-suite consolidation onto the parametrized house style (~110 fewer LOC); no runtime change.
