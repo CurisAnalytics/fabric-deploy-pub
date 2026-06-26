@@ -22,13 +22,12 @@ from fabric_cicd._common._logging import log_header
 from fabric_cicd.constants import ACCEPTED_ITEM_TYPES
 
 from .api import (
-    _env_bearer_token,
     create_workspace,
-    fabric_credential,
     get_default_capacity_id,
     get_workspace_id_by_name,
 )
 from .auth import assert_active_tenant, tenant_registry
+from .identity import _env_bearer_token, fabric_credential
 from .config import FabdepConfig, TenantPin
 from .detect import ParameterDetector
 from .git import current_branch

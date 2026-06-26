@@ -13,13 +13,12 @@ import time
 import pytest
 
 from fabric_deploy.api import (
-    _POWERBI_SCOPE,
     _poll_fabric_lro,
     find_item_by_name,
-    get_access_token,
     list_workspace_items,
     refresh_semantic_model,
 )
+from fabric_deploy.identity import POWERBI_SCOPE, get_access_token
 
 
 def _jwt(exp_offset: int = 3600) -> str:
@@ -161,4 +160,4 @@ def test_powerbi_scope_token_resolution(monkeypatch, set_powerbi: bool):
         monkeypatch.setenv("POWERBI_BEARER_TOKEN", pbi)
     else:
         monkeypatch.delenv("POWERBI_BEARER_TOKEN", raising=False)
-    assert get_access_token(_POWERBI_SCOPE) == (pbi if set_powerbi else fabric)
+    assert get_access_token(POWERBI_SCOPE) == (pbi if set_powerbi else fabric)
