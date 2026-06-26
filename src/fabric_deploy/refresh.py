@@ -17,7 +17,7 @@ import logging
 from json import loads
 from pathlib import Path
 
-from .api import (
+from .client import (
     find_item_by_name,
     get_workspace_id_by_name,
     list_workspace_items,

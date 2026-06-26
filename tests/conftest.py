@@ -15,7 +15,7 @@ FAKE_CAPACITY_ID = "00000000-0000-0000-0000-0000000000c0"
 def mock_fabric_api(monkeypatch):
     """Patch the Fabric REST API surface used during deployer construction.
 
-    Patches both `fabric_deploy.api.*` (the source) and
+    Patches both `fabric_deploy.client.*` (the source) and
     `fabric_deploy.workspace.*` (the call site, since `workspace.py` imports
     these names directly). Returns a small handle so tests can override the
     workspace ID per test if needed.
@@ -52,11 +52,11 @@ def mock_fabric_api(monkeypatch):
 
     # Also patch the source in api.py for tests that import from there directly
     monkeypatch.setattr(
-        "fabric_deploy.api.get_workspace_id_by_name",
+        "fabric_deploy.client.get_workspace_id_by_name",
         _get_workspace_id_by_name,
     )
     monkeypatch.setattr(
-        "fabric_deploy.api.get_default_capacity_id",
+        "fabric_deploy.client.get_default_capacity_id",
         _get_default_capacity_id,
     )
 

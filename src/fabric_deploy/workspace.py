@@ -20,7 +20,7 @@ from fabric_cicd import (
 from fabric_cicd._common._logging import log_header
 from fabric_cicd.constants import ACCEPTED_ITEM_TYPES
 
-from .api import (
+from .client import (
     create_workspace,
     get_default_capacity_id,
     get_workspace_id_by_name,

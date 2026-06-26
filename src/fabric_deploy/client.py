@@ -1,4 +1,4 @@
-"""Microsoft Fabric REST API utilities."""
+"""Fabric / Power BI REST domain client (over transport, authed via identity)."""
 
 import time
 import urllib.parse

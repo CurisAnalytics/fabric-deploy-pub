@@ -12,7 +12,7 @@ import time
 
 import pytest
 
-from fabric_deploy.api import (
+from fabric_deploy.client import (
     find_item_by_name,
     list_workspace_items,
     refresh_semantic_model,
@@ -47,7 +47,7 @@ def test_list_workspace_items_follows_continuation_token(monkeypatch):
         seen.append(endpoint)
         return pages[len(seen) - 1]
 
-    monkeypatch.setattr("fabric_deploy.api._fabric_api_request", fake_request)
+    monkeypatch.setattr("fabric_deploy.client._fabric_api_request", fake_request)
     items = list_workspace_items("ws", "SemanticModel")
 
     assert [i["id"] for i in items] == ["1", "2"]  # both pages merged
@@ -61,7 +61,7 @@ def test_list_workspace_items_follows_continuation_token(monkeypatch):
 
 def _items(monkeypatch, items):
     monkeypatch.setattr(
-        "fabric_deploy.api.list_workspace_items", lambda ws, t: items
+        "fabric_deploy.client.list_workspace_items", lambda ws, t: items
     )
 
 
@@ -131,7 +131,7 @@ def test_poll_lro_raises_when_no_location():
 
 
 def test_refresh_semantic_model_polls_until_completed(monkeypatch):
-    monkeypatch.setattr("fabric_deploy.api.time.sleep", lambda _s: None)
+    monkeypatch.setattr("fabric_deploy.client.time.sleep", lambda _s: None)
     gets = {"n": 0}
 
     def fake_http(url, method="GET", data=None, scope=None, error_context=""):
@@ -142,7 +142,7 @@ def test_refresh_semantic_model_polls_until_completed(monkeypatch):
             return 200, {}, {"status": "Unknown"}  # no endTime -> in progress
         return 200, {}, {"status": "Completed"}
 
-    monkeypatch.setattr("fabric_deploy.api._http_request", fake_http)
+    monkeypatch.setattr("fabric_deploy.client._http_request", fake_http)
     detail = refresh_semantic_model("ws", "ds", timeout_s=100, poll_s=1)
     assert detail["status"] == "Completed"
     assert gets["n"] == 2
