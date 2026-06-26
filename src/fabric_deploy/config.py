@@ -22,9 +22,9 @@ __all__ = ["FabdepConfig", "TenantPin", "TenantRegistryEntry"]
 class TenantRegistryEntry(TypedDict):
     """A machine-local tenant registry entry (alias -> this).
 
-    Written by the `az-tenant-login` helper as it logs each tenant's SPN into its
-    isolated config dir, and read by fabdep to resolve a `fabdep.yml` alias. The
-    helper is the single source of truth — see the multi-tenant-auth recipe.
+    Written by `fabdep auth login <alias>` as it logs each tenant's SPN into its
+    isolated config dir, and read by fabdep to resolve a `fabdep.yml` alias. That
+    command is the single source of truth — see the multi-tenant-auth recipe.
     """
 
     id: str  # Entra tenant GUID asserted before deploy
@@ -72,14 +72,14 @@ class TenantPin:
             raise ValueError(
                 f"Unknown tenant alias '{self.alias}' in fabdep.yml.\n"
                 f"Known aliases: {known}.\n"
-                "Log the tenant in with `az-tenant-login <alias>`, which registers "
+                "Log the tenant in with `fabdep auth login <alias>`, which registers "
                 "it under 'tenants' in ~/.azure/azureProfile.fabdep.json."
             )
         entry = registry[self.alias]
         if not entry.get("id"):
             raise ValueError(
                 f"Tenant alias '{self.alias}' is registered without an 'id'; "
-                f"re-run `az-tenant-login {self.alias}`."
+                f"re-run `fabdep auth login {self.alias}`."
             )
         return TenantPin(
             alias=self.alias,

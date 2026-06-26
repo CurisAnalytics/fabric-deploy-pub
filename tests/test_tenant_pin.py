@@ -3,8 +3,8 @@
 Covers four layers:
 - config parsing of the `tenant:` alias string into TenantPin
 - TenantPin.resolve() filling id/config_dir/require_spn from the machine-local
-  registry (written by the az-tenant-login helper)
-- auth.assert_active_tenant tenant/identity checks
+  registry (written by `fabdep auth login`)
+- identity.assert_active_tenant tenant/identity checks
 - WorkspaceDeployer wiring (alias resolved, AZURE_CONFIG_DIR set, assertion
   before any Fabric API call)
 """

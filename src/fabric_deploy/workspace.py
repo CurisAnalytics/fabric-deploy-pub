@@ -293,11 +293,11 @@ class WorkspaceDeployer:
             self.logger.info(f"Including items: {', '.join(include_items)}")
 
         param_file = self._repo_dir_resolved / "parameter.yml"
-        bak_file = param_file.with_suffix(".yml.bak")
+        bak_file = self._repo_dir_resolved / "parameter.yml.backup"
         if bak_file.exists() and not param_file.exists():
             mtime = datetime.fromtimestamp(bak_file.stat().st_mtime)
             self.logger.info(
-                f"Parameter file (.bak) modified: {mtime.strftime('%d/%m/%Y %H:%M:%S')}"
+                f"Parameter file (.backup) modified: {mtime.strftime('%d/%m/%Y %H:%M:%S')}"
             )
         elif param_file.exists():
             mtime = datetime.fromtimestamp(param_file.stat().st_mtime)
