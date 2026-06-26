@@ -1,39 +1,21 @@
-"""Unit tests for scope.resolve_item_scope and the deployer's
-_add_domain_substitutions FQDN rewrite.
+"""Unit tests for scope.resolve_item_scope and params.apply_domain_substitutions.
 
-resolve_item_scope is a pure function (logger + inputs); _add_domain_substitutions
-is still a deployer method, so those tests build a deployer via the fixtures.
+Both are now pure functions (no deployer state), so the tests call them
+directly with a plain logger / inputs.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 
-import pytest
 import yaml
 
 from fabric_deploy.detect import DetectedParameter, ParameterDetector
+from fabric_deploy.params import apply_domain_substitutions
 from fabric_deploy.scope import resolve_item_scope
-from fabric_deploy.workspace import WorkspaceDeployer
 
 LOG = logging.getLogger("test.scope")
-
-
-def _seed(repo: Path) -> None:
-    lh = repo / "lh.Lakehouse"
-    lh.mkdir()
-    (lh / ".platform").write_text(
-        json.dumps({"metadata": {"displayName": "lh", "type": "Lakehouse"}})
-    )
-    (repo / "fabdep.yml").write_text('workspace_base_name: "ws"\n')
-
-
-@pytest.fixture
-def deployer(tmp_path: Path, mock_fabric_api) -> WorkspaceDeployer:
-    _seed(tmp_path)
-    return WorkspaceDeployer(tmp_path, branch_override="dev")
 
 
 # --- resolve_item_scope ---------------------------------------------------
@@ -131,11 +113,11 @@ class TestAddDomainSubstitutions:
         }
         return d
 
-    def test_database_domain_appends_database_rewrite(self, deployer, tmp_path):
+    def test_database_domain_appends_database_rewrite(self, tmp_path):
         param_file = self._seed_param_file(tmp_path, "HOST.datawarehouse.fabric.microsoft.com")
         detector = self._detector_with(domain_type="database", db_name="mydb")
 
-        deployer._add_domain_substitutions(param_file, detector)
+        apply_domain_substitutions(param_file, detector)
 
         with open(param_file) as f:
             data = yaml.safe_load(f)
@@ -144,7 +126,7 @@ class TestAddDomainSubstitutions:
         assert appended["replace_value"]["fabdep"] == '.database.fabric.microsoft.com","mydb'
         assert appended["item_type"] == ["SemanticModel"]
 
-    def test_pbidedicated_suffix_appends_suffix_rewrite(self, deployer, tmp_path):
+    def test_pbidedicated_suffix_appends_suffix_rewrite(self, tmp_path):
         param_file = self._seed_param_file(tmp_path, "HOST.datawarehouse.pbidedicated.windows.net")
         detector = self._detector_with(
             domain_type="datawarehouse",
@@ -152,7 +134,7 @@ class TestAddDomainSubstitutions:
             db_name="lh",
         )
 
-        deployer._add_domain_substitutions(param_file, detector)
+        apply_domain_substitutions(param_file, detector)
 
         with open(param_file) as f:
             data = yaml.safe_load(f)
@@ -160,7 +142,7 @@ class TestAddDomainSubstitutions:
         assert appended["find_value"] == '.datawarehouse.fabric.microsoft.com","lh'
         assert appended["replace_value"]["fabdep"] == '.datawarehouse.pbidedicated.windows.net","lh'
 
-    def test_no_qualifying_params_leaves_file_unchanged(self, deployer, tmp_path):
+    def test_no_qualifying_params_leaves_file_unchanged(self, tmp_path):
         original = [
             {
                 "find_value": "anything",
@@ -175,18 +157,18 @@ class TestAddDomainSubstitutions:
             domain_type="datawarehouse", domain_suffix="fabric.microsoft.com"
         )
 
-        deployer._add_domain_substitutions(param_file, detector)
+        apply_domain_substitutions(param_file, detector)
 
         with open(param_file) as f:
             data = yaml.safe_load(f)
         assert data["find_replace"] == original
 
-    def test_param_without_db_name_is_skipped(self, deployer, tmp_path):
+    def test_param_without_db_name_is_skipped(self, tmp_path):
         param_file = self._seed_param_file(tmp_path, "HOST.database.fabric.microsoft.com")
         # database domain but no db_name → can't construct the rewrite.
         detector = self._detector_with(domain_type="database", db_name="")
 
-        deployer._add_domain_substitutions(param_file, detector)
+        apply_domain_substitutions(param_file, detector)
 
         with open(param_file) as f:
             data = yaml.safe_load(f)

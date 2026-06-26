@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from azure.core.credentials import TokenCredential
 
+from fabric_deploy.params import ParameterFile
 from fabric_deploy.scope import repo_items, validate_include_items
 from fabric_deploy.workspace import WorkspaceDeployer
 
@@ -223,9 +224,9 @@ class TestParameterFileWriter:
                 dynamic_variable="$items.Lakehouse.lh.$id",
             ),
         }
-        deployer._repo_dir_resolved = tmp_path
-
-        deployer._write_parameter_file()
+        ParameterFile(tmp_path, deployer.logger).write(
+            deployer._detector, FAKE_WORKSPACE_ID, 0, 0
+        )
 
         # Both detected entries survive — scope no longer filters auto-detected.
         assert set(deployer._detector.parameters) == {wsid, lhid}
@@ -245,9 +246,9 @@ class TestParameterFileWriter:
                 dynamic_variable="$workspace.$id",
             ),
         }
-        deployer._repo_dir_resolved = tmp_path
-
-        deployer._write_parameter_file()
+        ParameterFile(tmp_path, deployer.logger).write(
+            deployer._detector, FAKE_WORKSPACE_ID, 0, 0
+        )
 
         param_file = tmp_path / "parameter.yml"
         assert param_file.exists()
@@ -269,9 +270,9 @@ class TestParameterFileWriter:
                 dynamic_variable="$workspace.$id",
             ),
         }
-        deployer._repo_dir_resolved = tmp_path
-
-        deployer._write_parameter_file()
+        ParameterFile(tmp_path, deployer.logger).write(
+            deployer._detector, FAKE_WORKSPACE_ID, 0, 0
+        )
 
         param_file = tmp_path / "parameter.yml"
         data = yaml.safe_load(param_file.read_text())
