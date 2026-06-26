@@ -1,20 +1,24 @@
-"""Unit tests for workspace.py helpers that didn't have direct coverage:
-_resolve_item_scope and _add_domain_substitutions.
+"""Unit tests for scope.resolve_item_scope and the deployer's
+_add_domain_substitutions FQDN rewrite.
 
-Both are pure logic on inputs the deployer holds in memory, so the tests
-build a deployer via the standard fixtures, then call the methods directly.
+resolve_item_scope is a pure function (logger + inputs); _add_domain_substitutions
+is still a deployer method, so those tests build a deployer via the fixtures.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
 import yaml
 
 from fabric_deploy.detect import DetectedParameter, ParameterDetector
+from fabric_deploy.scope import resolve_item_scope
 from fabric_deploy.workspace import WorkspaceDeployer
+
+LOG = logging.getLogger("test.scope")
 
 
 def _seed(repo: Path) -> None:
@@ -32,56 +36,56 @@ def deployer(tmp_path: Path, mock_fabric_api) -> WorkspaceDeployer:
     return WorkspaceDeployer(tmp_path, branch_override="dev")
 
 
-# --- _resolve_item_scope --------------------------------------------------
+# --- resolve_item_scope ---------------------------------------------------
 
 
 class TestResolveItemScope:
-    def test_no_filters_returns_none(self, deployer):
-        assert deployer._resolve_item_scope(None, None, None) is None
+    def test_no_filters_returns_none(self):
+        assert resolve_item_scope(None, None, None, LOG) is None
 
-    def test_item_types_returned_directly(self, deployer):
-        scope = deployer._resolve_item_scope(["Notebook", "Report"], None, None)
-        assert scope == ["Notebook", "Report"]
+    def test_item_types_returned_directly(self):
+        assert resolve_item_scope(["Notebook", "Report"], None, None, LOG) == [
+            "Notebook",
+            "Report",
+        ]
 
-    def test_item_types_normalized_to_canonical_case(self, deployer):
-        scope = deployer._resolve_item_scope(["notebook", "REPORT"], None, None)
-        assert scope == ["Notebook", "Report"]
+    def test_item_types_normalized_to_canonical_case(self):
+        assert resolve_item_scope(["notebook", "REPORT"], None, None, LOG) == [
+            "Notebook",
+            "Report",
+        ]
 
-    def test_exclude_types_subtracts_from_accepted(self, deployer):
+    def test_exclude_types_subtracts_from_accepted(self):
         from fabric_cicd.constants import ACCEPTED_ITEM_TYPES
 
-        scope = deployer._resolve_item_scope(None, ["Notebook"], None)
+        scope = resolve_item_scope(None, ["Notebook"], None, LOG)
         assert "Notebook" not in scope
         assert "Report" in scope
         assert len(scope) == len(ACCEPTED_ITEM_TYPES) - 1
 
-    def test_item_types_takes_priority_over_exclude(self, deployer):
+    def test_item_types_takes_priority_over_exclude(self):
         """When both are given, --item-types wins."""
-        scope = deployer._resolve_item_scope(
-            ["Notebook"], ["Notebook", "Report"], None
-        )
-        assert scope == ["Notebook"]
+        assert resolve_item_scope(["Notebook"], ["Notebook", "Report"], None, LOG) == [
+            "Notebook"
+        ]
 
-    def test_include_items_derives_scope_from_suffixes(self, deployer):
-        scope = deployer._resolve_item_scope(
-            None, None, ["Foo.Notebook", "Bar.Report"]
-        )
+    def test_include_items_derives_scope_from_suffixes(self):
+        scope = resolve_item_scope(None, None, ["Foo.Notebook", "Bar.Report"], LOG)
         assert sorted(scope) == ["Notebook", "Report"]
 
-    def test_include_items_ignored_when_item_types_provided(self, deployer):
-        scope = deployer._resolve_item_scope(
-            ["SemanticModel"], None, ["Foo.Notebook"]
-        )
-        assert scope == ["SemanticModel"]
+    def test_include_items_ignored_when_item_types_provided(self):
+        assert resolve_item_scope(["SemanticModel"], None, ["Foo.Notebook"], LOG) == [
+            "SemanticModel"
+        ]
 
-    def test_unknown_item_type_logged_as_warning(self, deployer, caplog):
+    def test_unknown_item_type_logged_as_warning(self, caplog):
         with caplog.at_level("WARNING"):
-            deployer._resolve_item_scope(["Notebook", "BogusType"], None, None)
+            resolve_item_scope(["Notebook", "BogusType"], None, None, LOG)
         assert any("BogusType" in rec.message for rec in caplog.records)
 
-    def test_include_items_skips_entries_without_known_suffix(self, deployer):
-        scope = deployer._resolve_item_scope(
-            None, None, ["Foo.Notebook", "PlainName", "Bar.NotAType"]
+    def test_include_items_skips_entries_without_known_suffix(self):
+        scope = resolve_item_scope(
+            None, None, ["Foo.Notebook", "PlainName", "Bar.NotAType"], LOG
         )
         assert scope == ["Notebook"]
 

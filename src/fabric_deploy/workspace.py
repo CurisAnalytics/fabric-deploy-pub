@@ -18,7 +18,6 @@ from fabric_cicd import (
     unpublish_all_orphan_items,
 )
 from fabric_cicd._common._logging import log_header
-from fabric_cicd.constants import ACCEPTED_ITEM_TYPES
 
 from .client import (
     create_workspace,
@@ -30,6 +29,7 @@ from .detect import ParameterDetector
 from .git import current_branch
 from .identity import apply_tenant_pin, fabric_credential
 from .log import get_logger, is_transient_error, patch_fabric_cicd_logger
+from .scope import repo_item_types, resolve_item_scope, validate_include_items
 
 
 @dataclass
@@ -108,7 +108,7 @@ class WorkspaceDeployer:
         self._apply_tenant_pin()
         self._resolve_workspace_id()
         self._detect_parameters()
-        self.repo_item_types = self._get_repo_item_types()
+        self.repo_item_types = repo_item_types(self._repo_dir_resolved)
         self._detect_lakehouse()
 
     def _get_git_branch(self) -> str:
@@ -428,77 +428,6 @@ class WorkspaceDeployer:
             _ = backup_file.rename(param_file)
             self.logger.info("Restored original parameter.yml")
 
-    def _get_repo_item_types(self) -> set[str]:
-        """Return the set of accepted Fabric item types found in the repo."""
-        item_types = set()
-        for platform_file in self._repo_dir_resolved.rglob(".platform"):
-            # Items are stored as `<DisplayName>.<ItemType>/`.
-            if "." in platform_file.parent.name:
-                parts = platform_file.parent.name.rsplit(".", 1)
-                if len(parts) == 2 and parts[1] in ACCEPTED_ITEM_TYPES:
-                    item_types.add(parts[1])
-        return item_types
-
-    def _repo_items(self) -> dict[str, str]:
-        """Map '<displayName>.<ItemType>' -> item directory name for the repo.
-
-        Keyed on the `.platform` displayName — which is what fabric-cicd's
-        `items_to_include` matches on, NOT the directory name (the two can
-        differ, and that mismatch is exactly the `-i` silent no-op footgun).
-        """
-        items: dict[str, str] = {}
-        for platform_file in self._repo_dir_resolved.rglob(".platform"):
-            parent = platform_file.parent.name
-            if "." not in parent:
-                continue
-            item_type = parent.rsplit(".", 1)[1]
-            if item_type not in ACCEPTED_ITEM_TYPES:
-                continue
-            try:
-                meta = loads(platform_file.read_text())
-                display = meta["metadata"]["displayName"]
-            except Exception:
-                continue
-            items[f"{display}.{item_type}"] = parent
-        return items
-
-    def _validate_include_items(self, include_items: list[str]) -> list[str]:
-        """Resolve `--include-items` against the repo's display names.
-
-        fabric-cicd silently skips any `items_to_include` entry whose display
-        name isn't in the repo — so a single typo (or matching the directory
-        name instead of the displayName) means nothing publishes and orphan
-        cleanup is disabled, with no error. This makes that loud:
-
-        - Unmatched entries are warned about, with the available items listed.
-        - If NOTHING matches, raise instead of running a no-op deploy.
-
-        Returns the matched subset (what should actually be published).
-        """
-        index = self._repo_items()
-        matched = [it for it in include_items if it in index]
-        missing = [it for it in include_items if it not in index]
-
-        if missing:
-            self.logger.warning(
-                f"{len(missing)} requested item(s) not found by display name "
-                f"(fabric-cicd matches displayName, not directory name): "
-                f"{', '.join(missing)}"
-            )
-            self.logger.warning(
-                f"Available items: {', '.join(sorted(index)) or '(none)'}"
-            )
-
-        if not matched:
-            raise RuntimeError(
-                "--include-items matched no items by display name, so nothing "
-                "would deploy (the silent no-op fabdep used to hide). "
-                f"Requested: {', '.join(include_items)}. "
-                "Names are '<displayName>.<ItemType>' — check the displayName in "
-                "each item's .platform, not the folder name."
-            )
-        return matched
-
     def _detect_lakehouse(self) -> None:
         """Set self.lakehouse_name from the first *.Lakehouse/.platform file."""
         lakehouses = list(self._repo_dir_resolved.glob("*.Lakehouse"))
@@ -514,64 +443,6 @@ class WorkspaceDeployer:
         except Exception as e:
             raise RuntimeError(f"Failed to read lakehouse metadata: {e}") from e
         self.lakehouse_name = metadata["metadata"]["displayName"]
-
-    def _resolve_item_scope(
-        self,
-        item_types: list[str] | None,
-        exclude_types: list[str] | None,
-        include_items: list[str] | None,
-    ) -> list[str] | None:
-        """Normalize, validate, and combine item-type filters into a single scope.
-
-        Returns the list of item types that fabric-cicd should deploy, or None
-        if no scope filtering is requested. Logs warnings for unrecognized types.
-
-        Combines (in priority order):
-        1. Explicit `item_types` (after canonical-case normalization).
-        2. `exclude_types` → all ACCEPTED_ITEM_TYPES minus excludes.
-        3. `include_items` (e.g. "Foo.Notebook") → derive scope from suffixes
-           if no other scope was provided.
-        """
-        canonical = {t.lower(): t for t in ACCEPTED_ITEM_TYPES}
-
-        def _normalize(types: list[str] | None) -> list[str] | None:
-            if not types:
-                return types
-            return [canonical.get(t.lower(), t) for t in types]
-
-        def _warn_unknown(types: list[str] | None, label: str) -> None:
-            if not types:
-                return
-            invalid = [t for t in types if t not in ACCEPTED_ITEM_TYPES]
-            if invalid:
-                self.logger.warning(
-                    f"Unrecognized item types in {label}: {', '.join(invalid)}"
-                )
-                self.logger.warning(
-                    f"Supported types: {', '.join(ACCEPTED_ITEM_TYPES)}"
-                )
-
-        item_types = _normalize(item_types)
-        exclude_types = _normalize(exclude_types)
-        _warn_unknown(item_types, "filter")
-        _warn_unknown(exclude_types, "exclusion filter")
-
-        if item_types:
-            return item_types
-        if exclude_types:
-            return [t for t in ACCEPTED_ITEM_TYPES if t not in exclude_types]
-
-        # Derive scope from include_items (Name.Type format)
-        if include_items:
-            derived = {
-                item.rsplit(".", 1)[1]
-                for item in include_items
-                if "." in item and item.rsplit(".", 1)[1] in ACCEPTED_ITEM_TYPES
-            }
-            if derived:
-                return sorted(derived)
-
-        return None
 
     def deploy(
         self,
@@ -609,12 +480,12 @@ class WorkspaceDeployer:
                 "Orphan cleanup disabled when using --include-items for safety."
             )
             # Fail fast on a name mismatch instead of silently deploying nothing.
-            include_items = self._validate_include_items(include_items)
+            include_items = validate_include_items(
+                include_items, self._repo_dir_resolved, self.logger
+            )
 
-        item_type_in_scope = self._resolve_item_scope(
-            item_types=item_types,
-            exclude_types=exclude_types,
-            include_items=include_items,
+        item_type_in_scope = resolve_item_scope(
+            item_types, exclude_types, include_items, self.logger
         )
 
         if fail_on_stale and self._detector and self._detector.stale_attachments:

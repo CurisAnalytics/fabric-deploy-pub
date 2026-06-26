@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from azure.core.credentials import TokenCredential
 
+from fabric_deploy.scope import repo_items, validate_include_items
 from fabric_deploy.workspace import WorkspaceDeployer
 
 
@@ -146,24 +147,27 @@ class TestIncludeItemsValidation:
     instead of silently deploying zero items (fabric-cicd's old behavior)."""
 
     def test_repo_items_keys_on_display_name(self, deployer):
-        index = deployer._repo_items()
+        index = repo_items(deployer._repo_dir_resolved)
         # Keyed '<displayName>.<ItemType>' — note the space-containing names.
         assert "Fill Lakehouse.Notebook" in index
         assert "SQL DB.SemanticModel" in index
 
+    def _validate(self, deployer, items):
+        return validate_include_items(items, deployer._repo_dir_resolved, deployer.logger)
+
     def test_validate_returns_matched_subset(self, deployer):
-        matched = deployer._validate_include_items(["Fill Lakehouse.Notebook"])
-        assert matched == ["Fill Lakehouse.Notebook"]
+        assert self._validate(deployer, ["Fill Lakehouse.Notebook"]) == [
+            "Fill Lakehouse.Notebook"
+        ]
 
     def test_validate_drops_unmatched_but_keeps_matched(self, deployer):
-        matched = deployer._validate_include_items(
-            ["Fill Lakehouse.Notebook", "Ghost.Notebook"]
-        )
-        assert matched == ["Fill Lakehouse.Notebook"]
+        assert self._validate(
+            deployer, ["Fill Lakehouse.Notebook", "Ghost.Notebook"]
+        ) == ["Fill Lakehouse.Notebook"]
 
     def test_validate_raises_when_nothing_matches(self, deployer):
         with pytest.raises(RuntimeError, match="matched no items"):
-            deployer._validate_include_items(["Ghost.Notebook"])
+            self._validate(deployer, ["Ghost.Notebook"])
 
     def test_deploy_raises_before_publish_on_total_mismatch(self, deployer):
         with (
