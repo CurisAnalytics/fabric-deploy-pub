@@ -2,7 +2,7 @@
 
 A thin request layer: authenticated calls, status + header exposure for
 long-running operations, and the Fabric LRO poller. No knowledge of specific
-endpoints (that's the `api` client) and no auth logic (that's `identity`).
+endpoints (that's the `client` module) and no auth logic (that's `identity`).
 """
 
 import json

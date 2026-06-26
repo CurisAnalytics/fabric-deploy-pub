@@ -1,4 +1,4 @@
-"""Fabric / Power BI REST domain client (over transport, authed via identity)."""
+"""Fabric / Power BI REST domain client — endpoint calls over the transport layer."""
 
 import time
 import urllib.parse

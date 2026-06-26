@@ -1,7 +1,7 @@
 """Authentication: how fabdep acquires a token and as whom.
 
 This is the single home for credential acquisition — keeping auth logic out of
-the REST client (`api.py`) and the deployer. Two strategies:
+the REST client (`client.py`) and the deployer. Two strategies:
 
 - **Default:** `AzureCliCredential`, so whatever account `fabdep auth switch`
   selected is what we deploy as. It mints any requested scope on demand.
