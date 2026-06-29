@@ -12,7 +12,7 @@ from typing import ClassVar
 
 from fabric_cicd._common._color import Fore, Style
 
-from .auth import AzureAccount
+from .identity import AzureAccount
 
 __all__ = [
     "get_logger",

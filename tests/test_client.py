@@ -1,6 +1,6 @@
 """Unit tests for api.py: item lookup, pagination, LRO/refresh polling, scopes.
 
-Network is mocked at the `_http_request` / `_fabric_api_request` seam and
+Network is mocked at the `http_request` / `fabric_api_request` seam and
 `time.sleep` is stubbed, so these run with no Fabric access and no real waits.
 """
 
@@ -12,14 +12,13 @@ import time
 
 import pytest
 
-from fabric_deploy.api import (
-    _POWERBI_SCOPE,
-    _poll_fabric_lro,
+from fabric_deploy.client import (
     find_item_by_name,
-    get_access_token,
     list_workspace_items,
     refresh_semantic_model,
 )
+from fabric_deploy.identity import POWERBI_SCOPE, get_access_token
+from fabric_deploy.transport import poll_fabric_lro
 
 
 def _jwt(exp_offset: int = 3600) -> str:
@@ -48,7 +47,7 @@ def test_list_workspace_items_follows_continuation_token(monkeypatch):
         seen.append(endpoint)
         return pages[len(seen) - 1]
 
-    monkeypatch.setattr("fabric_deploy.api._fabric_api_request", fake_request)
+    monkeypatch.setattr("fabric_deploy.client.fabric_api_request", fake_request)
     items = list_workspace_items("ws", "SemanticModel")
 
     assert [i["id"] for i in items] == ["1", "2"]  # both pages merged
@@ -62,7 +61,7 @@ def test_list_workspace_items_follows_continuation_token(monkeypatch):
 
 def _items(monkeypatch, items):
     monkeypatch.setattr(
-        "fabric_deploy.api.list_workspace_items", lambda ws, t: items
+        "fabric_deploy.client.list_workspace_items", lambda ws, t: items
     )
 
 
@@ -88,11 +87,11 @@ def test_find_item_ambiguous_raises(monkeypatch):
         find_item_by_name("ws", "SemanticModel")
 
 
-# --- _poll_fabric_lro ----------------------------------------------------
+# --- poll_fabric_lro ----------------------------------------------------
 
 
 def test_poll_lro_runs_then_succeeds_and_fetches_result(monkeypatch):
-    monkeypatch.setattr("fabric_deploy.api.time.sleep", lambda _s: None)
+    monkeypatch.setattr("fabric_deploy.transport.time.sleep", lambda _s: None)
     state = {"polls": 0}
 
     def fake_http(url, method="GET", data=None, scope=None, error_context=""):
@@ -103,8 +102,8 @@ def test_poll_lro_runs_then_succeeds_and_fetches_result(monkeypatch):
             return 200, {"Retry-After": "1"}, {"status": "Running"}
         return 200, {}, {"status": "Succeeded"}
 
-    monkeypatch.setattr("fabric_deploy.api._http_request", fake_http)
-    result = _poll_fabric_lro(
+    monkeypatch.setattr("fabric_deploy.transport.http_request", fake_http)
+    result = poll_fabric_lro(
         {"Location": "https://x/op", "x-ms-operation-id": "op1", "Retry-After": "1"},
         "sync",
     )
@@ -113,26 +112,26 @@ def test_poll_lro_runs_then_succeeds_and_fetches_result(monkeypatch):
 
 
 def test_poll_lro_raises_on_failed(monkeypatch):
-    monkeypatch.setattr("fabric_deploy.api.time.sleep", lambda _s: None)
+    monkeypatch.setattr("fabric_deploy.transport.time.sleep", lambda _s: None)
 
     def fake_http(url, method="GET", data=None, scope=None, error_context=""):
         return 200, {}, {"status": "Failed", "error": {"message": "boom"}}
 
-    monkeypatch.setattr("fabric_deploy.api._http_request", fake_http)
+    monkeypatch.setattr("fabric_deploy.transport.http_request", fake_http)
     with pytest.raises(RuntimeError, match="Failed"):
-        _poll_fabric_lro({"Location": "https://x/op", "Retry-After": "1"}, "sync")
+        poll_fabric_lro({"Location": "https://x/op", "Retry-After": "1"}, "sync")
 
 
 def test_poll_lro_raises_when_no_location():
     with pytest.raises(RuntimeError, match="no Location"):
-        _poll_fabric_lro({}, "sync")
+        poll_fabric_lro({}, "sync")
 
 
 # --- refresh_semantic_model poll loop ------------------------------------
 
 
 def test_refresh_semantic_model_polls_until_completed(monkeypatch):
-    monkeypatch.setattr("fabric_deploy.api.time.sleep", lambda _s: None)
+    monkeypatch.setattr("fabric_deploy.client.time.sleep", lambda _s: None)
     gets = {"n": 0}
 
     def fake_http(url, method="GET", data=None, scope=None, error_context=""):
@@ -143,7 +142,7 @@ def test_refresh_semantic_model_polls_until_completed(monkeypatch):
             return 200, {}, {"status": "Unknown"}  # no endTime -> in progress
         return 200, {}, {"status": "Completed"}
 
-    monkeypatch.setattr("fabric_deploy.api._http_request", fake_http)
+    monkeypatch.setattr("fabric_deploy.client.http_request", fake_http)
     detail = refresh_semantic_model("ws", "ds", timeout_s=100, poll_s=1)
     assert detail["status"] == "Completed"
     assert gets["n"] == 2
@@ -161,4 +160,4 @@ def test_powerbi_scope_token_resolution(monkeypatch, set_powerbi: bool):
         monkeypatch.setenv("POWERBI_BEARER_TOKEN", pbi)
     else:
         monkeypatch.delenv("POWERBI_BEARER_TOKEN", raising=False)
-    assert get_access_token(_POWERBI_SCOPE) == (pbi if set_powerbi else fabric)
+    assert get_access_token(POWERBI_SCOPE) == (pbi if set_powerbi else fabric)

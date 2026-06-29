@@ -1,87 +1,73 @@
-"""Unit tests for workspace.py helpers that didn't have direct coverage:
-_resolve_item_scope and _add_domain_substitutions.
+"""Unit tests for scope.resolve_item_scope and params._apply_domain_substitutions.
 
-Both are pure logic on inputs the deployer holds in memory, so the tests
-build a deployer via the standard fixtures, then call the methods directly.
+Both are now pure functions (no deployer state), so the tests call them
+directly with a plain logger / inputs.
 """
 
 from __future__ import annotations
 
-import json
+import logging
 from pathlib import Path
 
-import pytest
 import yaml
 
 from fabric_deploy.detect import DetectedParameter, ParameterDetector
-from fabric_deploy.workspace import WorkspaceDeployer
+from fabric_deploy.params import _apply_domain_substitutions
+from fabric_deploy.scope import resolve_item_scope
+
+LOG = logging.getLogger("test.scope")
 
 
-def _seed(repo: Path) -> None:
-    lh = repo / "lh.Lakehouse"
-    lh.mkdir()
-    (lh / ".platform").write_text(
-        json.dumps({"metadata": {"displayName": "lh", "type": "Lakehouse"}})
-    )
-    (repo / "fabdep.yml").write_text('workspace_base_name: "ws"\n')
-
-
-@pytest.fixture
-def deployer(tmp_path: Path, mock_fabric_api) -> WorkspaceDeployer:
-    _seed(tmp_path)
-    return WorkspaceDeployer(tmp_path, branch_override="dev")
-
-
-# --- _resolve_item_scope --------------------------------------------------
+# --- resolve_item_scope ---------------------------------------------------
 
 
 class TestResolveItemScope:
-    def test_no_filters_returns_none(self, deployer):
-        assert deployer._resolve_item_scope(None, None, None) is None
+    def test_no_filters_returns_none(self):
+        assert resolve_item_scope(None, None, None, LOG) is None
 
-    def test_item_types_returned_directly(self, deployer):
-        scope = deployer._resolve_item_scope(["Notebook", "Report"], None, None)
-        assert scope == ["Notebook", "Report"]
+    def test_item_types_returned_directly(self):
+        assert resolve_item_scope(["Notebook", "Report"], None, None, LOG) == [
+            "Notebook",
+            "Report",
+        ]
 
-    def test_item_types_normalized_to_canonical_case(self, deployer):
-        scope = deployer._resolve_item_scope(["notebook", "REPORT"], None, None)
-        assert scope == ["Notebook", "Report"]
+    def test_item_types_normalized_to_canonical_case(self):
+        assert resolve_item_scope(["notebook", "REPORT"], None, None, LOG) == [
+            "Notebook",
+            "Report",
+        ]
 
-    def test_exclude_types_subtracts_from_accepted(self, deployer):
+    def test_exclude_types_subtracts_from_accepted(self):
         from fabric_cicd.constants import ACCEPTED_ITEM_TYPES
 
-        scope = deployer._resolve_item_scope(None, ["Notebook"], None)
+        scope = resolve_item_scope(None, ["Notebook"], None, LOG)
         assert "Notebook" not in scope
         assert "Report" in scope
         assert len(scope) == len(ACCEPTED_ITEM_TYPES) - 1
 
-    def test_item_types_takes_priority_over_exclude(self, deployer):
+    def test_item_types_takes_priority_over_exclude(self):
         """When both are given, --item-types wins."""
-        scope = deployer._resolve_item_scope(
-            ["Notebook"], ["Notebook", "Report"], None
-        )
-        assert scope == ["Notebook"]
+        assert resolve_item_scope(["Notebook"], ["Notebook", "Report"], None, LOG) == [
+            "Notebook"
+        ]
 
-    def test_include_items_derives_scope_from_suffixes(self, deployer):
-        scope = deployer._resolve_item_scope(
-            None, None, ["Foo.Notebook", "Bar.Report"]
-        )
+    def test_include_items_derives_scope_from_suffixes(self):
+        scope = resolve_item_scope(None, None, ["Foo.Notebook", "Bar.Report"], LOG)
         assert sorted(scope) == ["Notebook", "Report"]
 
-    def test_include_items_ignored_when_item_types_provided(self, deployer):
-        scope = deployer._resolve_item_scope(
-            ["SemanticModel"], None, ["Foo.Notebook"]
-        )
-        assert scope == ["SemanticModel"]
+    def test_include_items_ignored_when_item_types_provided(self):
+        assert resolve_item_scope(["SemanticModel"], None, ["Foo.Notebook"], LOG) == [
+            "SemanticModel"
+        ]
 
-    def test_unknown_item_type_logged_as_warning(self, deployer, caplog):
+    def test_unknown_item_type_logged_as_warning(self, caplog):
         with caplog.at_level("WARNING"):
-            deployer._resolve_item_scope(["Notebook", "BogusType"], None, None)
+            resolve_item_scope(["Notebook", "BogusType"], None, None, LOG)
         assert any("BogusType" in rec.message for rec in caplog.records)
 
-    def test_include_items_skips_entries_without_known_suffix(self, deployer):
-        scope = deployer._resolve_item_scope(
-            None, None, ["Foo.Notebook", "PlainName", "Bar.NotAType"]
+    def test_include_items_skips_entries_without_known_suffix(self):
+        scope = resolve_item_scope(
+            None, None, ["Foo.Notebook", "PlainName", "Bar.NotAType"], LOG
         )
         assert scope == ["Notebook"]
 
@@ -127,11 +113,11 @@ class TestAddDomainSubstitutions:
         }
         return d
 
-    def test_database_domain_appends_database_rewrite(self, deployer, tmp_path):
+    def test_database_domain_appends_database_rewrite(self, tmp_path):
         param_file = self._seed_param_file(tmp_path, "HOST.datawarehouse.fabric.microsoft.com")
         detector = self._detector_with(domain_type="database", db_name="mydb")
 
-        deployer._add_domain_substitutions(param_file, detector)
+        _apply_domain_substitutions(param_file, detector)
 
         with open(param_file) as f:
             data = yaml.safe_load(f)
@@ -140,7 +126,7 @@ class TestAddDomainSubstitutions:
         assert appended["replace_value"]["fabdep"] == '.database.fabric.microsoft.com","mydb'
         assert appended["item_type"] == ["SemanticModel"]
 
-    def test_pbidedicated_suffix_appends_suffix_rewrite(self, deployer, tmp_path):
+    def test_pbidedicated_suffix_appends_suffix_rewrite(self, tmp_path):
         param_file = self._seed_param_file(tmp_path, "HOST.datawarehouse.pbidedicated.windows.net")
         detector = self._detector_with(
             domain_type="datawarehouse",
@@ -148,7 +134,7 @@ class TestAddDomainSubstitutions:
             db_name="lh",
         )
 
-        deployer._add_domain_substitutions(param_file, detector)
+        _apply_domain_substitutions(param_file, detector)
 
         with open(param_file) as f:
             data = yaml.safe_load(f)
@@ -156,7 +142,7 @@ class TestAddDomainSubstitutions:
         assert appended["find_value"] == '.datawarehouse.fabric.microsoft.com","lh'
         assert appended["replace_value"]["fabdep"] == '.datawarehouse.pbidedicated.windows.net","lh'
 
-    def test_no_qualifying_params_leaves_file_unchanged(self, deployer, tmp_path):
+    def test_no_qualifying_params_leaves_file_unchanged(self, tmp_path):
         original = [
             {
                 "find_value": "anything",
@@ -171,18 +157,18 @@ class TestAddDomainSubstitutions:
             domain_type="datawarehouse", domain_suffix="fabric.microsoft.com"
         )
 
-        deployer._add_domain_substitutions(param_file, detector)
+        _apply_domain_substitutions(param_file, detector)
 
         with open(param_file) as f:
             data = yaml.safe_load(f)
         assert data["find_replace"] == original
 
-    def test_param_without_db_name_is_skipped(self, deployer, tmp_path):
+    def test_param_without_db_name_is_skipped(self, tmp_path):
         param_file = self._seed_param_file(tmp_path, "HOST.database.fabric.microsoft.com")
         # database domain but no db_name → can't construct the rewrite.
         detector = self._detector_with(domain_type="database", db_name="")
 
-        deployer._add_domain_substitutions(param_file, detector)
+        _apply_domain_substitutions(param_file, detector)
 
         with open(param_file) as f:
             data = yaml.safe_load(f)

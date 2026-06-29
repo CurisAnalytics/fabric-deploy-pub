@@ -3,8 +3,8 @@
 Covers four layers:
 - config parsing of the `tenant:` alias string into TenantPin
 - TenantPin.resolve() filling id/config_dir/require_spn from the machine-local
-  registry (written by the az-tenant-login helper)
-- auth.assert_active_tenant tenant/identity checks
+  registry (written by `fabdep auth login`)
+- identity.assert_active_tenant tenant/identity checks
 - WorkspaceDeployer wiring (alias resolved, AZURE_CONFIG_DIR set, assertion
   before any Fabric API call)
 """
@@ -18,15 +18,15 @@ from pathlib import Path
 
 import pytest
 
-from fabric_deploy.auth import (
+from fabric_deploy.auth import login_tenant
+from fabric_deploy.config import FabdepConfig, TenantPin
+from fabric_deploy.identity import (
     AzureAccount,
     TenantMismatchError,
     active_account,
     assert_active_tenant,
-    login_tenant,
     tenant_registry,
 )
-from fabric_deploy.config import FabdepConfig, TenantPin
 from fabric_deploy.workspace import WorkspaceDeployer
 
 
@@ -109,14 +109,14 @@ class TestTenantPinResolve:
 class TestActiveAccount:
     def test_returns_none_on_nonzero_exit(self, monkeypatch):
         monkeypatch.setattr(
-            "fabric_deploy.auth.subprocess.run",
+            "fabric_deploy.identity.subprocess.run",
             lambda *a, **k: subprocess.CompletedProcess(a, 1, stdout="", stderr="no login"),
         )
         assert active_account() is None
 
     def test_returns_none_on_garbage_stdout(self, monkeypatch):
         monkeypatch.setattr(
-            "fabric_deploy.auth.subprocess.run",
+            "fabric_deploy.identity.subprocess.run",
             lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout="not json", stderr=""),
         )
         assert active_account() is None
@@ -128,14 +128,14 @@ class TestActiveAccount:
 class TestAssertActiveTenant:
     def test_match_returns_account(self, monkeypatch):
         monkeypatch.setattr(
-            "fabric_deploy.auth.active_account", lambda config_dir=None: _acct(FABRIKAM)
+            "fabric_deploy.identity.active_account", lambda config_dir=None: _acct(FABRIKAM)
         )
         acct = assert_active_tenant(FABRIKAM)
         assert acct["tenantId"] == FABRIKAM
 
     def test_mismatch_raises(self, monkeypatch):
         monkeypatch.setattr(
-            "fabric_deploy.auth.active_account",
+            "fabric_deploy.identity.active_account",
             lambda config_dir=None: _acct("11111111-1111-1111-1111-111111111111"),
         )
         with pytest.raises(TenantMismatchError, match="pins"):
@@ -143,14 +143,14 @@ class TestAssertActiveTenant:
 
     def test_not_logged_in_raises(self, monkeypatch):
         monkeypatch.setattr(
-            "fabric_deploy.auth.active_account", lambda config_dir=None: None
+            "fabric_deploy.identity.active_account", lambda config_dir=None: None
         )
         with pytest.raises(TenantMismatchError, match="No active Azure login"):
             assert_active_tenant(FABRIKAM, config_dir="~/.azure-fabrikam")
 
     def test_require_spn_rejects_user(self, monkeypatch):
         monkeypatch.setattr(
-            "fabric_deploy.auth.active_account",
+            "fabric_deploy.identity.active_account",
             lambda config_dir=None: _acct(FABRIKAM, user_type="user"),
         )
         with pytest.raises(TenantMismatchError, match="requires a service principal"):
@@ -158,7 +158,7 @@ class TestAssertActiveTenant:
 
     def test_require_spn_accepts_spn(self, monkeypatch):
         monkeypatch.setattr(
-            "fabric_deploy.auth.active_account",
+            "fabric_deploy.identity.active_account",
             lambda config_dir=None: _acct(FABRIKAM, user_type="servicePrincipal"),
         )
         assert assert_active_tenant(FABRIKAM, require_spn=True)["tenantId"] == FABRIKAM
@@ -182,8 +182,8 @@ class TestDeployerTenantPin:
             calls.update(id=tenant_id, config_dir=config_dir, require_spn=require_spn)
             return _acct(FABRIKAM)
 
-        monkeypatch.setattr("fabric_deploy.workspace.tenant_registry", lambda: REGISTRY)
-        monkeypatch.setattr("fabric_deploy.workspace.assert_active_tenant", _spy)
+        monkeypatch.setattr("fabric_deploy.identity.tenant_registry", lambda: REGISTRY)
+        monkeypatch.setattr("fabric_deploy.identity.assert_active_tenant", _spy)
         monkeypatch.delenv("AZURE_CONFIG_DIR", raising=False)
         monkeypatch.delenv("FABRIC_BEARER_TOKEN", raising=False)
 
@@ -203,8 +203,8 @@ class TestDeployerTenantPin:
             calls.update(require_spn=require_spn)
             return _acct(FABRIKAM)
 
-        monkeypatch.setattr("fabric_deploy.workspace.tenant_registry", lambda: reg)
-        monkeypatch.setattr("fabric_deploy.workspace.assert_active_tenant", _spy)
+        monkeypatch.setattr("fabric_deploy.identity.tenant_registry", lambda: reg)
+        monkeypatch.setattr("fabric_deploy.identity.assert_active_tenant", _spy)
         monkeypatch.delenv("FABRIC_BEARER_TOKEN", raising=False)
 
         WorkspaceDeployer(tmp_path, branch_override="dev")
@@ -215,9 +215,9 @@ class TestDeployerTenantPin:
         self, tmp_path: Path, monkeypatch, mock_fabric_api
     ):
         self._write(tmp_path, "tenant: fabrikam\n")
-        monkeypatch.setattr("fabric_deploy.workspace.tenant_registry", lambda: REGISTRY)
+        monkeypatch.setattr("fabric_deploy.identity.tenant_registry", lambda: REGISTRY)
         monkeypatch.setattr(
-            "fabric_deploy.workspace.assert_active_tenant",
+            "fabric_deploy.identity.assert_active_tenant",
             lambda *a, **k: _acct(FABRIKAM),
         )
         monkeypatch.setenv("AZURE_CONFIG_DIR", "/some/other/dir")
@@ -231,9 +231,9 @@ class TestDeployerTenantPin:
         self, tmp_path: Path, monkeypatch, mock_fabric_api
     ):
         self._write(tmp_path, "tenant: fabrikam\n")
-        monkeypatch.setattr("fabric_deploy.workspace.tenant_registry", lambda: REGISTRY)
+        monkeypatch.setattr("fabric_deploy.identity.tenant_registry", lambda: REGISTRY)
         monkeypatch.setattr(
-            "fabric_deploy.workspace.assert_active_tenant",
+            "fabric_deploy.identity.assert_active_tenant",
             lambda *a, **k: _acct(FABRIKAM),
         )
         monkeypatch.setenv("AZURE_CONFIG_DIR", os.path.expanduser("~/.azure-fabrikam"))
@@ -245,7 +245,7 @@ class TestDeployerTenantPin:
 
     def test_unknown_alias_propagates(self, tmp_path: Path, monkeypatch, mock_fabric_api):
         self._write(tmp_path, "tenant: bogus\n")
-        monkeypatch.setattr("fabric_deploy.workspace.tenant_registry", lambda: REGISTRY)
+        monkeypatch.setattr("fabric_deploy.identity.tenant_registry", lambda: REGISTRY)
         monkeypatch.delenv("FABRIC_BEARER_TOKEN", raising=False)
 
         with pytest.raises(ValueError, match="Unknown tenant alias 'bogus'"):
@@ -257,8 +257,8 @@ class TestDeployerTenantPin:
         def _boom(tenant_id, *, config_dir=None, require_spn=False):
             raise TenantMismatchError("wrong tenant")
 
-        monkeypatch.setattr("fabric_deploy.workspace.tenant_registry", lambda: REGISTRY)
-        monkeypatch.setattr("fabric_deploy.workspace.assert_active_tenant", _boom)
+        monkeypatch.setattr("fabric_deploy.identity.tenant_registry", lambda: REGISTRY)
+        monkeypatch.setattr("fabric_deploy.identity.assert_active_tenant", _boom)
         monkeypatch.delenv("FABRIC_BEARER_TOKEN", raising=False)
 
         with pytest.raises(TenantMismatchError, match="wrong tenant"):
@@ -270,7 +270,7 @@ class TestDeployerTenantPin:
         def _fail(*a, **k):
             raise AssertionError("assert_active_tenant must not be called without a pin")
 
-        monkeypatch.setattr("fabric_deploy.workspace.assert_active_tenant", _fail)
+        monkeypatch.setattr("fabric_deploy.identity.assert_active_tenant", _fail)
         WorkspaceDeployer(tmp_path, branch_override="dev")  # must not raise
 
     def test_bearer_token_skips_assertion_but_sets_config_dir(
@@ -281,8 +281,8 @@ class TestDeployerTenantPin:
         def _fail(*a, **k):
             raise AssertionError("assertion must be skipped under FABRIC_BEARER_TOKEN")
 
-        monkeypatch.setattr("fabric_deploy.workspace.tenant_registry", lambda: REGISTRY)
-        monkeypatch.setattr("fabric_deploy.workspace.assert_active_tenant", _fail)
+        monkeypatch.setattr("fabric_deploy.identity.tenant_registry", lambda: REGISTRY)
+        monkeypatch.setattr("fabric_deploy.identity.assert_active_tenant", _fail)
         monkeypatch.setenv("FABRIC_BEARER_TOKEN", "tok")
         monkeypatch.delenv("AZURE_CONFIG_DIR", raising=False)
 
@@ -297,7 +297,7 @@ class TestLoginTenant:
     @pytest.fixture
     def profile(self, tmp_path, monkeypatch):
         p = tmp_path / "azureProfile.fabdep.json"
-        monkeypatch.setattr("fabric_deploy.auth.FABDEP_PROFILE_PATH", p)
+        monkeypatch.setattr("fabric_deploy.profile.FABDEP_PROFILE_PATH", p)
         return p
 
     @staticmethod

@@ -17,7 +17,7 @@ import logging
 from json import loads
 from pathlib import Path
 
-from .api import (
+from .client import (
     find_item_by_name,
     get_workspace_id_by_name,
     list_workspace_items,
@@ -26,7 +26,7 @@ from .api import (
 )
 from .config import FabdepConfig
 from .log import get_logger
-from .workspace import apply_tenant_pin
+from .identity import apply_tenant_pin
 
 __all__ = [
     "extract_refresh_error",

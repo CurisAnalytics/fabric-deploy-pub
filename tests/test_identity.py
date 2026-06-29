@@ -1,4 +1,4 @@
-"""Tests for FABRIC_BEARER_TOKEN token-relay path in fabric_deploy.api."""
+"""Tests for the credential layer in fabric_deploy.identity (incl. relay path)."""
 
 import base64
 import json
@@ -8,7 +8,7 @@ import pytest
 from azure.core.exceptions import ClientAuthenticationError
 from azure.identity import AzureCliCredential
 
-from fabric_deploy.api import (
+from fabric_deploy.identity import (
     StaticTokenCredential,
     _BEARER_ENV,
     _jwt_exp,
