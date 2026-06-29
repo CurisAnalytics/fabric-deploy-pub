@@ -6,11 +6,11 @@ from typing import TypedDict
 
 from .identity import FABRIC_SCOPE, POWERBI_SCOPE
 from .transport import (
-    _FABRIC_HOST,
-    _POWERBI_HOST,
-    _fabric_api_request,
-    _http_request,
-    _poll_fabric_lro,
+    FABRIC_HOST,
+    POWERBI_HOST,
+    fabric_api_request,
+    http_request,
+    poll_fabric_lro,
 )
 
 
@@ -55,7 +55,7 @@ def list_workspaces() -> list[FabricWorkspaceInfo]:
     Raises:
         RuntimeError: If API call fails
     """
-    data = _fabric_api_request("/v1/workspaces", error_context="list Fabric workspaces")
+    data = fabric_api_request("/v1/workspaces", error_context="list Fabric workspaces")
     return data.get("value", [])
 
 
@@ -74,7 +74,7 @@ def list_capacities() -> list[dict]:
     Raises:
         RuntimeError: If API call fails
     """
-    data = _fabric_api_request("/v1/capacities", error_context="list Fabric capacities")
+    data = fabric_api_request("/v1/capacities", error_context="list Fabric capacities")
     return data.get("value", [])
 
 
@@ -200,7 +200,7 @@ def create_workspace(
     if description:
         payload["description"] = description
 
-    data = _fabric_api_request(
+    data = fabric_api_request(
         "/v1/workspaces",
         method="POST",
         data=payload,
@@ -236,7 +236,7 @@ def list_workspace_items(
         if token:
             query.append(f"continuationToken={urllib.parse.quote(token)}")
         endpoint = base + ("?" + "&".join(query) if query else "")
-        data = _fabric_api_request(endpoint, error_context=ctx)
+        data = fabric_api_request(endpoint, error_context=ctx)
         items.extend(data.get("value", []))
         # The items API paginates; a model/endpoint on page 2+ would otherwise
         # be invisible and resolve as "not found".
@@ -305,14 +305,14 @@ def refresh_sql_endpoint_metadata(
     Returns:
         Per-table sync statuses: `[{tableName, status, error?}, ...]`.
     """
-    status, headers, body = _http_request(
-        f"{_FABRIC_HOST}/v1/workspaces/{workspace_id}/sqlEndpoints/{sql_endpoint_id}/refreshMetadata",
+    status, headers, body = http_request(
+        f"{FABRIC_HOST}/v1/workspaces/{workspace_id}/sqlEndpoints/{sql_endpoint_id}/refreshMetadata",
         method="POST",
         scope=FABRIC_SCOPE,
         error_context="refresh SQL endpoint metadata",
     )
     if status == 202:
-        body = _poll_fabric_lro(
+        body = poll_fabric_lro(
             headers, error_context="SQL endpoint metadata sync", timeout_s=timeout_s
         )
     return body.get("value", []) if isinstance(body, dict) else []
@@ -336,8 +336,8 @@ def refresh_semantic_model(
         `serviceExceptionJson` / `messages`.
     """
     body = {"type": "automatic", "commitMode": "transactional", "objects": []}
-    _status, headers, _resp = _http_request(
-        f"{_POWERBI_HOST}/v1.0/myorg/groups/{workspace_id}/datasets/{dataset_id}/refreshes",
+    _status, headers, _resp = http_request(
+        f"{POWERBI_HOST}/v1.0/myorg/groups/{workspace_id}/datasets/{dataset_id}/refreshes",
         method="POST",
         data=body,
         scope=POWERBI_SCOPE,
@@ -347,17 +347,17 @@ def refresh_semantic_model(
     location = headers.get("Location") or headers.get("location")
     request_id = headers.get("x-ms-request-id") or headers.get("RequestId")
     if location and location.startswith("/"):
-        location = f"{_POWERBI_HOST}{location}"
+        location = f"{POWERBI_HOST}{location}"
     if not location:
         location = (
-            f"{_POWERBI_HOST}/v1.0/myorg/groups/{workspace_id}"
+            f"{POWERBI_HOST}/v1.0/myorg/groups/{workspace_id}"
             f"/datasets/{dataset_id}/refreshes/{request_id}"
         )
 
     waited = 0
     detail: dict = {}
     while True:
-        _s, _h, detail = _http_request(
+        _s, _h, detail = http_request(
             location, scope=POWERBI_SCOPE, error_context="poll semantic model refresh"
         )
         status = detail.get("status")

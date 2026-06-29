@@ -1,4 +1,4 @@
-"""Unit tests for scope.resolve_item_scope and params.apply_domain_substitutions.
+"""Unit tests for scope.resolve_item_scope and params._apply_domain_substitutions.
 
 Both are now pure functions (no deployer state), so the tests call them
 directly with a plain logger / inputs.
@@ -12,7 +12,7 @@ from pathlib import Path
 import yaml
 
 from fabric_deploy.detect import DetectedParameter, ParameterDetector
-from fabric_deploy.params import apply_domain_substitutions
+from fabric_deploy.params import _apply_domain_substitutions
 from fabric_deploy.scope import resolve_item_scope
 
 LOG = logging.getLogger("test.scope")
@@ -117,7 +117,7 @@ class TestAddDomainSubstitutions:
         param_file = self._seed_param_file(tmp_path, "HOST.datawarehouse.fabric.microsoft.com")
         detector = self._detector_with(domain_type="database", db_name="mydb")
 
-        apply_domain_substitutions(param_file, detector)
+        _apply_domain_substitutions(param_file, detector)
 
         with open(param_file) as f:
             data = yaml.safe_load(f)
@@ -134,7 +134,7 @@ class TestAddDomainSubstitutions:
             db_name="lh",
         )
 
-        apply_domain_substitutions(param_file, detector)
+        _apply_domain_substitutions(param_file, detector)
 
         with open(param_file) as f:
             data = yaml.safe_load(f)
@@ -157,7 +157,7 @@ class TestAddDomainSubstitutions:
             domain_type="datawarehouse", domain_suffix="fabric.microsoft.com"
         )
 
-        apply_domain_substitutions(param_file, detector)
+        _apply_domain_substitutions(param_file, detector)
 
         with open(param_file) as f:
             data = yaml.safe_load(f)
@@ -168,7 +168,7 @@ class TestAddDomainSubstitutions:
         # database domain but no db_name → can't construct the rewrite.
         detector = self._detector_with(domain_type="database", db_name="")
 
-        apply_domain_substitutions(param_file, detector)
+        _apply_domain_substitutions(param_file, detector)
 
         with open(param_file) as f:
             data = yaml.safe_load(f)

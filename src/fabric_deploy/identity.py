@@ -27,7 +27,7 @@ from azure.core.credentials import AccessToken, TokenCredential
 from azure.core.exceptions import ClientAuthenticationError
 from azure.identity import AzureCliCredential
 
-from .profile import _read_fabdep_profile
+from .profile import read_fabdep_profile
 
 if TYPE_CHECKING:
     from .config import TenantPin, TenantRegistryEntry
@@ -267,7 +267,7 @@ def tenant_registry() -> dict[str, TenantRegistryEntry]:
     machine-specific config_dir or a bare tenant GUID. Written by `fabdep auth
     login` (the single source of truth); empty when none are registered.
     """
-    return _read_fabdep_profile().get("tenants", {})
+    return read_fabdep_profile().get("tenants", {})
 
 
 def apply_tenant_pin(pin: TenantPin | None, logger: logging.Logger) -> None:

@@ -15,7 +15,6 @@ from fabric_cicd.constants import ACCEPTED_ITEM_TYPES
 
 __all__ = [
     "repo_item_types",
-    "repo_items",
     "resolve_item_scope",
     "validate_include_items",
 ]
@@ -33,7 +32,7 @@ def repo_item_types(repo_dir: Path) -> set[str]:
     return item_types
 
 
-def repo_items(repo_dir: Path) -> dict[str, str]:
+def _repo_items(repo_dir: Path) -> dict[str, str]:
     """Map '<displayName>.<ItemType>' -> item directory name for the repo.
 
     Keyed on the `.platform` displayName — which is what fabric-cicd's
@@ -127,7 +126,7 @@ def validate_include_items(
 
     Returns the matched subset (what should actually be published).
     """
-    index = repo_items(repo_dir)
+    index = _repo_items(repo_dir)
     matched = [it for it in include_items if it in index]
     missing = [it for it in include_items if it not in index]
 

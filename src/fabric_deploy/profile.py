@@ -11,18 +11,18 @@ so neither has to import the other for it.
 import json
 from pathlib import Path
 
-__all__ = ["FABDEP_PROFILE_PATH"]
+__all__ = ["FABDEP_PROFILE_PATH", "read_fabdep_profile", "write_fabdep_profile"]
 
 FABDEP_PROFILE_PATH = Path.home() / ".azure" / "azureProfile.fabdep.json"
 
 
-def _read_fabdep_profile() -> dict:
+def read_fabdep_profile() -> dict:
     """Read the fabdep profile, returning an empty structure if missing."""
     if not FABDEP_PROFILE_PATH.exists():
         return {"accounts": [], "aliases": {}}
     return json.loads(FABDEP_PROFILE_PATH.read_text(encoding="utf-8"))
 
 
-def _write_fabdep_profile(profile: dict) -> None:
+def write_fabdep_profile(profile: dict) -> None:
     """Write the fabdep profile."""
     FABDEP_PROFILE_PATH.write_text(json.dumps(profile, indent=2), encoding="utf-8")

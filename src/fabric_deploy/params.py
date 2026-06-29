@@ -17,7 +17,7 @@ import yaml
 if TYPE_CHECKING:
     from .detect import ParameterDetector
 
-__all__ = ["ParameterFile", "apply_manual_overrides", "apply_domain_substitutions"]
+__all__ = ["ParameterFile", "apply_manual_overrides"]
 
 
 def apply_manual_overrides(
@@ -81,7 +81,7 @@ def apply_manual_overrides(
     return count
 
 
-def apply_domain_substitutions(param_file: Path, detector: ParameterDetector) -> None:
+def _apply_domain_substitutions(param_file: Path, detector: ParameterDetector) -> None:
     """Append a second-pass domain rewrite for non-default SemanticModel connections.
 
     fabric-cicd 1.0's `$items.Lakehouse.<name>.$sqlendpoint` always returns
@@ -207,7 +207,7 @@ class ParameterFile:
             skip_empty=True,
         )
         self.created = True
-        apply_domain_substitutions(param_file, detector)
+        _apply_domain_substitutions(param_file, detector)
 
         external_count = max(total - dyns, 0)
         external_part = (

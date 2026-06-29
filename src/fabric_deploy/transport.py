@@ -12,16 +12,24 @@ import urllib.request
 
 from .identity import FABRIC_SCOPE, get_access_token
 
+__all__ = [
+    "FABRIC_HOST",
+    "POWERBI_HOST",
+    "http_request",
+    "fabric_api_request",
+    "poll_fabric_lro",
+]
+
 # pyright: reportMissingTypeArgument=false
 # pyright: reportUnknownMemberType=false
 # pyright: reportUnknownParameterType=false
 # pyright: reportUnknownVariableType=false
 
-_FABRIC_HOST = "https://api.fabric.microsoft.com"
-_POWERBI_HOST = "https://api.powerbi.com"
+FABRIC_HOST = "https://api.fabric.microsoft.com"
+POWERBI_HOST = "https://api.powerbi.com"
 
 
-def _http_request(
+def http_request(
     url: str,
     method: str = "GET",
     data: dict | None = None,
@@ -30,7 +38,7 @@ def _http_request(
 ) -> tuple[int, dict[str, str], dict]:
     """Make an authenticated HTTP request and return (status, headers, body).
 
-    Unlike `_fabric_api_request`, this exposes the status code and response
+    Unlike `fabric_api_request`, this exposes the status code and response
     headers — needed to follow long-running operations (202 + `Location` /
     `Retry-After`). An empty response body parses to `{}`.
 
@@ -80,7 +88,7 @@ def _http_request(
         ) from e
 
 
-def _fabric_api_request(
+def fabric_api_request(
     endpoint: str,
     method: str = "GET",
     data: dict | None = None,
@@ -101,8 +109,8 @@ def _fabric_api_request(
     Raises:
         RuntimeError: If API call fails
     """
-    _status, _headers, body = _http_request(
-        f"{_FABRIC_HOST}{endpoint}",
+    _status, _headers, body = http_request(
+        f"{FABRIC_HOST}{endpoint}",
         method=method,
         data=data,
         scope=FABRIC_SCOPE,
@@ -111,7 +119,7 @@ def _fabric_api_request(
     return body
 
 
-def _poll_fabric_lro(
+def poll_fabric_lro(
     headers: dict[str, str],
     error_context: str,
     timeout_s: int = 600,
@@ -140,15 +148,15 @@ def _poll_fabric_lro(
         sleep_for = min(retry_after, max(1, timeout_s - waited))
         time.sleep(sleep_for)
         waited += sleep_for
-        _status, hdrs, body = _http_request(
+        _status, hdrs, body = http_request(
             location, scope=FABRIC_SCOPE, error_context=f"poll {error_context}"
         )
         op_status = body.get("status")
         if op_status in ("Succeeded", "Completed"):
             if op_id:
                 try:
-                    _s, _h, result = _http_request(
-                        f"{_FABRIC_HOST}/v1/operations/{op_id}/result",
+                    _s, _h, result = http_request(
+                        f"{FABRIC_HOST}/v1/operations/{op_id}/result",
                         scope=FABRIC_SCOPE,
                         error_context=f"fetch {error_context} result",
                     )

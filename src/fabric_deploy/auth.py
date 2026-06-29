@@ -14,7 +14,7 @@ import subprocess
 from typing import TYPE_CHECKING
 
 from .identity import AzureAccount, active_account, tenant_registry
-from .profile import _read_fabdep_profile, _write_fabdep_profile
+from .profile import read_fabdep_profile, write_fabdep_profile
 
 if TYPE_CHECKING:
     from .config import TenantRegistryEntry
@@ -22,7 +22,6 @@ if TYPE_CHECKING:
 
 __all__ = [
     "list_accounts",
-    "get_current_account",
     "switch_account",
     "rename_subscription",
     "login_tenant",
@@ -99,25 +98,25 @@ def login_tenant(
         entry["require_spn"] = require_spn
 
     # Upsert the alias into the `tenants` registry, preserving everything else.
-    profile = _read_fabdep_profile()
+    profile = read_fabdep_profile()
     profile.setdefault("tenants", {})[alias] = entry
-    _write_fabdep_profile(profile)
+    write_fabdep_profile(profile)
     return entry
 
 
 def _persist_spn(account: AzureAccount) -> None:
     """Save an SPN account entry to the fabdep profile if not already there."""
-    profile = _read_fabdep_profile()
+    profile = read_fabdep_profile()
     accounts: list[dict] = profile.setdefault("accounts", [])
 
     for i, existing in enumerate(accounts):
         if existing.get("id") == account["id"]:
             accounts[i] = dict(account)
-            _write_fabdep_profile(profile)
+            write_fabdep_profile(profile)
             return
 
     accounts.append(dict(account))
-    _write_fabdep_profile(profile)
+    write_fabdep_profile(profile)
 
 
 def list_accounts() -> list[AzureAccount]:
@@ -135,7 +134,7 @@ def list_accounts() -> list[AzureAccount]:
     )
     az_accounts: list[AzureAccount] = json.loads(result.stdout)
 
-    fabdep_profile = _read_fabdep_profile()
+    fabdep_profile = read_fabdep_profile()
     aliases: dict[str, str] = fabdep_profile.get("aliases", {})
     spn_accounts: list[AzureAccount] = fabdep_profile.get("accounts", [])
     az_ids = {a["id"] for a in az_accounts}
@@ -156,15 +155,6 @@ def list_accounts() -> list[AzureAccount]:
             acct["name"] = alias
 
     return az_accounts
-
-
-def get_current_account() -> AzureAccount | None:
-    """
-    Get currently active account.
-    Returns: Current account or None if no account is set
-    """
-    accounts = list_accounts()
-    return next((a for a in accounts if a.get("isDefault")), None)
 
 
 def switch_account(account: str) -> None:
@@ -220,7 +210,7 @@ def rename_subscription(subscription_id: str, new_name: str) -> None:
             "Run 'fabdep auth list' to see available accounts."
         )
 
-    profile = _read_fabdep_profile()
+    profile = read_fabdep_profile()
     aliases: dict[str, str] = profile.setdefault("aliases", {})
     aliases[subscription_id] = new_name
-    _write_fabdep_profile(profile)
+    write_fabdep_profile(profile)
