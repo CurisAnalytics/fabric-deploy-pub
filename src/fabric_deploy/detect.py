@@ -90,6 +90,17 @@ class ParameterDetector:
         "Lakehouse SQL Analytics Endpoint Item ID",
     }
 
+    # Maps `known_warehouses[].type` from notebook metadata to a parameter
+    # description (which drives the dynamic-variable mapping). The GUID in
+    # all three cases is a SQLEndpoint *item id* — for Lakewarehouse the
+    # lakehouse's SQL analytics endpoint, for MountedWarehouse the SQL
+    # database's endpoint. Datawarehouse attaches by the Warehouse item id.
+    WAREHOUSE_ATTACHMENT_DESCRIPTIONS: dict[str, str] = {
+        "lakewarehouse": "Lakehouse SQL Analytics Endpoint Item ID",
+        "mountedwarehouse": "SQL Database SQL Endpoint Item ID",
+        "datawarehouse": "Warehouse ID",
+    }
+
     UUID_PATTERN: regex = re.compile(
         r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE
     )
@@ -129,11 +140,21 @@ class ParameterDetector:
         self.parameters: dict[str, DetectedParameter] = {}
         self._lakehouse_names: list[str] = []
         self._sqldatabase_names: list[str] = []
+        self._warehouse_names: list[str] = []
         # (source_file, [stale_ids]) for each notebook with >1 known_lakehouse.
         # Populated alongside the inline warning so the caller (e.g. deploy
         # with --fail-on-stale) can promote it to a fatal error.
         self.stale_attachments: list[tuple[str, list[str]]] = []
+        # (source_file, guid, type) for each notebook warehouse attachment
+        # that has no replacement mapping — the source-workspace GUID would
+        # deploy verbatim. Same promote-to-fatal contract as stale_attachments.
+        self.unresolved_warehouse_bindings: list[tuple[str, str, str]] = []
         self.logger: logging.Logger = get_logger(logger_name or __name__)
+
+    @property
+    def sqldatabase_names(self) -> list[str]:
+        """Display names of .SQLDatabase items found in the repo."""
+        return list(self._sqldatabase_names)
 
     def _log_file_warning(
         self, file_path: Path, error: Exception, context: str = ""
@@ -153,10 +174,12 @@ class ParameterDetector:
         "Detect all parameters from workspace files."
         self.parameters = {}
         self.stale_attachments = []
+        self.unresolved_warehouse_bindings = []
 
         # Item names must be resolved before _generate_dynamic_variable runs.
         self._detect_lakehouse_names()
         self._detect_sqldatabase_names()
+        self._detect_warehouse_names()
 
         # Notebook content is `.py` (Python/PySpark), `.sql` (T-SQL), etc.
         # Metadata block is identical JSON-in-comments — the prefix differs
@@ -191,7 +214,13 @@ class ParameterDetector:
             List of display names found for items of this type
         """
         names: list[str] = []
-        item_dirs = self.repo_dir.glob(f"*.{item_type}")
+        # Recursive: items can live in workspace subfolders (e.g.
+        # `ERP/northwind_sql_db.SQLDatabase`). Shallower paths sort first so a
+        # top-level item stays the primary for first-match resolution.
+        item_dirs = sorted(
+            self.repo_dir.glob(f"**/*.{item_type}"),
+            key=lambda p: (len(p.relative_to(self.repo_dir).parts), str(p)),
+        )
         for item_dir in item_dirs:
             platform_file = item_dir / ".platform"
             if not platform_file.exists():
@@ -212,6 +241,10 @@ class ParameterDetector:
     def _detect_sqldatabase_names(self) -> None:
         """Detect SQL Database names from .SQLDatabase/.platform files."""
         self._sqldatabase_names = self._detect_item_names("SQLDatabase")
+
+    def _detect_warehouse_names(self) -> None:
+        """Detect Warehouse names from .Warehouse/.platform files."""
+        self._warehouse_names = self._detect_item_names("Warehouse")
 
     def _process_files(
         self, glob_pattern: str, extract_func, parse_json: bool = False
@@ -301,6 +334,17 @@ class ParameterDetector:
             # so this requires a manual_parameters entry.
             if "sql database name" in desc_lower:
                 return ""
+            # fabric-cicd has no $sqlendpointid attribute for SQLDatabase
+            # (only Lakehouse), so this can't be a dynamic variable — the
+            # deployer resolves it to a literal GUID from the target
+            # workspace (see params.resolve_warehouse_endpoint_params).
+            if "sql database sql endpoint item id" in desc_lower:
+                return ""
+
+        if self._warehouse_names:
+            warehouse_name = self._warehouse_names[0]
+            if "warehouse id" in desc_lower:
+                return f"$items.Warehouse.{warehouse_name}.$id"
 
         # External connection IDs are tenant-wide; not resolvable from repo.
         if "connection id" in desc_lower:
@@ -318,7 +362,66 @@ class ParameterDetector:
         for lakehouse_id in self.LAKEHOUSE_ID_PATTERN.findall(content):
             _ = self._add_parameter(lakehouse_id, source_file, "Lakehouse ID")
 
+        self._extract_warehouse_attachments(source_file, content)
         self._warn_on_stale_lakehouse_attachments(source_file, content)
+
+    def _extract_warehouse_attachments(self, source_file: str, content: str) -> None:
+        """Detect `dependencies.warehouse` bindings from notebook metadata.
+
+        T-SQL notebooks attach to a lakehouse SQL analytics endpoint
+        (`type: Lakewarehouse`) or a SQL database's endpoint
+        (`type: MountedWarehouse`) via `default_warehouse`/`known_warehouses`.
+        These GUIDs are environment-specific just like `default_lakehouse` —
+        left unreplaced, the deployed notebook stays wired to the *source*
+        workspace's endpoint (visible as a cross-workspace link in lineage).
+        """
+        for block in _iter_meta_blocks(content):
+            try:
+                data = json.loads(block)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(data, dict):
+                continue
+            warehouse_meta = data.get("dependencies", {}).get("warehouse", {})
+            if not isinstance(warehouse_meta, dict):
+                continue
+
+            known = warehouse_meta.get("known_warehouses") or []
+            types_by_id: dict[str, str] = {
+                k["id"]: (k.get("type") or "")
+                for k in known
+                if isinstance(k, dict) and k.get("id")
+            }
+            default_wh = warehouse_meta.get("default_warehouse")
+            if default_wh:
+                types_by_id.setdefault(default_wh, "")
+
+            for wh_id, wh_type in types_by_id.items():
+                if not self.UUID_PATTERN.fullmatch(wh_id):
+                    continue
+                description = self.WAREHOUSE_ATTACHMENT_DESCRIPTIONS.get(
+                    wh_type.lower(), "Notebook warehouse attachment"
+                )
+                param = self._add_parameter(wh_id, source_file, description)
+
+                # MountedWarehouse is resolved to a literal at deploy time —
+                # but only if the repo has a SQLDatabase item to resolve from.
+                resolvable_later = (
+                    description == "SQL Database SQL Endpoint Item ID"
+                    and bool(self._sqldatabase_names)
+                )
+                if not param.dynamic_variable and not resolvable_later:
+                    self.unresolved_warehouse_bindings.append(
+                        (source_file, wh_id, wh_type)
+                    )
+                    self.logger.warning(
+                        f"{source_file}: warehouse attachment {wh_id} "
+                        f"(type={wh_type or 'unknown'}) has no replacement mapping — "
+                        f"the source-workspace GUID will deploy verbatim and the "
+                        f"target notebook will stay bound to the source endpoint. "
+                        f"Add the matching item to the repo or a manual_parameters "
+                        f"entry in fabdep.yml."
+                    )
 
     def _warn_on_stale_lakehouse_attachments(
         self, source_file: str, content: str
@@ -622,6 +725,12 @@ class ParameterDetector:
             self.logger.info(f"    Source value: {param.find_value}")
             if param.dynamic_variable:
                 self.logger.info(f"    Dynamic variable: {param.dynamic_variable}")
+            elif param.description == "SQL Database SQL Endpoint Item ID":
+                # No fabric-cicd dynamic exists — the deployer fills in a
+                # literal from the target workspace (resolve_warehouse_endpoint_params).
+                self.logger.info(
+                    "    Dynamic variable: (resolved from target workspace at deploy time)"
+                )
             else:
                 self.logger.info("    Dynamic variable: (skipped - requires manual setup)")
             if param.item_types:

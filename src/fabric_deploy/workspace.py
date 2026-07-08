@@ -28,7 +28,11 @@ from .detect import ParameterDetector
 from .git import current_branch
 from .identity import apply_tenant_pin, fabric_credential
 from .log import get_logger, is_transient_error, patch_fabric_cicd_logger
-from .params import ParameterFile, apply_manual_overrides
+from .params import (
+    ParameterFile,
+    apply_manual_overrides,
+    resolve_warehouse_endpoint_params,
+)
 from .scope import repo_item_types, resolve_item_scope, validate_include_items
 
 
@@ -200,6 +204,15 @@ class WorkspaceDeployer:
         self._manual_count = apply_manual_overrides(
             detector, self.config.manual_parameters, self.logger
         )
+
+        # MountedWarehouse bindings need a literal GUID from the target
+        # workspace (no fabric-cicd dynamic exists). Manual overrides above
+        # win; same-workspace deploys skip replacement entirely.
+        if not detector.should_skip_replacement(self.workspace_id):
+            _ = resolve_warehouse_endpoint_params(
+                detector, self.workspace_id, self.logger
+            )
+
         self._detector = detector
 
     def _detect_lakehouse(self) -> None:
@@ -235,8 +248,9 @@ class WorkspaceDeployer:
             exclude_types: Item types to exclude from deployment
             include_items: Include only specific items (format: "ItemName.ItemType")
             fail_on_stale: Raise instead of warning when a notebook has multiple
-                lakehouses attached. Intended for CI / autonomous agent loops
-                where the inline warning would get buried in logs.
+                lakehouses attached, or a warehouse attachment that can't be
+                remapped to the target workspace. Intended for CI / autonomous
+                agent loops where the inline warning would get buried in logs.
         """
 
         from . import __version__
@@ -268,6 +282,21 @@ class WorkspaceDeployer:
                 f"--fail-on-stale: {len(self._detector.stale_attachments)} "
                 f"notebook(s) have multiple lakehouses attached: {files}. "
                 f"See warnings above for stale IDs."
+            )
+
+        if (
+            fail_on_stale
+            and self._detector
+            and self._detector.unresolved_warehouse_bindings
+        ):
+            files = ", ".join(
+                sorted({f for f, _, _ in self._detector.unresolved_warehouse_bindings})
+            )
+            raise RuntimeError(
+                f"--fail-on-stale: "
+                f"{len(self._detector.unresolved_warehouse_bindings)} warehouse "
+                f"attachment(s) would deploy with source-workspace GUIDs: {files}. "
+                f"See warnings above."
             )
 
         if self._detector is not None:

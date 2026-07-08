@@ -17,7 +17,11 @@ import yaml
 if TYPE_CHECKING:
     from .detect import ParameterDetector
 
-__all__ = ["ParameterFile", "apply_manual_overrides"]
+__all__ = [
+    "ParameterFile",
+    "apply_manual_overrides",
+    "resolve_warehouse_endpoint_params",
+]
 
 
 def apply_manual_overrides(
@@ -79,6 +83,60 @@ def apply_manual_overrides(
             logged_warnings.add(find_value)
 
     return count
+
+
+def resolve_warehouse_endpoint_params(
+    detector: ParameterDetector, workspace_id: str, logger: logging.Logger
+) -> int:
+    """Resolve MountedWarehouse notebook bindings to literal target GUIDs.
+
+    A notebook attached to a SQL database binds `default_warehouse` to the
+    database's SQLEndpoint *item id*. fabric-cicd has no `$sqlendpointid`
+    attribute for SQLDatabase items (only Lakehouse), so this can't be a
+    dynamic variable — instead look up the target workspace's SQLEndpoint by
+    the repo's SQL database display name and emit the GUID as a literal
+    replace_value. Manual overrides win (already-resolved params are skipped).
+
+    Returns the number of parameters resolved.
+    """
+    pending = [
+        p
+        for p in detector.parameters.values()
+        if p.description == "SQL Database SQL Endpoint Item ID"
+        and not p.dynamic_variable
+    ]
+    if not pending:
+        return 0
+
+    db_names = detector.sqldatabase_names
+    if not db_names:
+        return 0  # already warned as unresolved during detection
+
+    from .client import find_item_by_name
+
+    try:
+        # First-name convention, same as _generate_dynamic_variable.
+        endpoint = find_item_by_name(workspace_id, "SQLEndpoint", db_names[0])
+    except (ValueError, RuntimeError) as e:
+        logger.warning(
+            f"Could not resolve SQLEndpoint for SQL database '{db_names[0]}' "
+            f"in the target workspace — {len(pending)} warehouse binding(s) "
+            f"will deploy with source GUIDs: {e}"
+        )
+        detector.unresolved_warehouse_bindings.extend(
+            (sorted(p.source_files)[0], p.find_value, "MountedWarehouse")
+            for p in pending
+        )
+        return 0
+
+    for p in pending:
+        p.dynamic_variable = endpoint["id"]
+        p.source_files.add("resolved from target workspace SQLEndpoint")
+        logger.debug(
+            f"Resolved warehouse binding {p.find_value} -> {endpoint['id']} "
+            f"(SQLEndpoint '{db_names[0]}')"
+        )
+    return len(pending)
 
 
 def _apply_domain_substitutions(param_file: Path, detector: ParameterDetector) -> None:

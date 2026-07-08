@@ -2,6 +2,9 @@
 
 One-line status per release. Newest first. Dates are release/commit dates.
 
+## [1.6.1] — Unreleased
+Remap notebook `dependencies.warehouse` bindings (T-SQL `Lakewarehouse` → lakehouse `$sqlendpointid`, `MountedWarehouse` → target-workspace SQLEndpoint literal, `Datawarehouse` → Warehouse `$id`); recursive item-name detection so nested `.SQLDatabase`/`.Lakehouse` folders resolve; warn (and `--fail-on-stale`) when a warehouse attachment would deploy with a source-workspace GUID.
+
 ## [1.6.0] — Unreleased
 Internal layered-architecture refactor — **no public API or CLI change** (the only declared export, `WorkspaceDeployer`, keeps its exact interface). The two god-modules split into focused layers: `identity` (credential/token/tenant-pin), `transport` (HTTP + LRO polling), `client` (Fabric/Power BI domain calls, was `api.py`), `profile` (fabdep-profile I/O), `scope` (repo item introspection + deploy-scope), `params` (parameter.yml lifecycle). `WorkspaceDeployer` slimmed 781→380 lines into an orchestrator. The relay auth is now a labeled fallback inside `identity` rather than smeared through the REST module.
 

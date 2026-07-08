@@ -523,3 +523,146 @@ class TestGenerateDynamicVariable:
         d = ParameterDetector(tmp_path)
         d._detect_sqldatabase_names()
         assert d._generate_dynamic_variable("SQL Database Name") == ""
+
+
+# --- warehouse attachments (dependencies.warehouse) ------------------------
+
+WAREHOUSE_EP_ID = "66666666-6666-6666-6666-666666666666"
+
+
+def _warehouse_meta(prefix: str, wh_id: str, wh_type: str) -> str:
+    p = prefix
+    return (
+        f'{p} META {{\n'
+        f'{p} META   "dependencies": {{\n'
+        f'{p} META     "warehouse": {{\n'
+        f'{p} META       "default_warehouse": "{wh_id}",\n'
+        f'{p} META       "known_warehouses": [\n'
+        f'{p} META         {{"id": "{wh_id}", "type": "{wh_type}"}}\n'
+        f'{p} META       ]\n'
+        f'{p} META     }}\n'
+        f'{p} META   }}\n'
+        f'{p} META }}\n'
+    )
+
+
+def _make_item(repo: Path, name: str, item_type: str, subdir: str = "") -> None:
+    parent = repo / subdir if subdir else repo
+    item = parent / f"{name}.{item_type}"
+    item.mkdir(parents=True)
+    (item / ".platform").write_text(
+        json.dumps({"metadata": {"displayName": name, "type": item_type}})
+    )
+
+
+class TestWarehouseAttachmentExtraction:
+    @pytest.mark.parametrize("prefix,ext", [("#", "py"), ("--", "sql")])
+    def test_lakewarehouse_maps_to_lakehouse_sqlendpointid(
+        self, tmp_path: Path, prefix: str, ext: str
+    ):
+        """T-SQL notebooks bound to the lakehouse SQL analytics endpoint."""
+        _make_lakehouse(tmp_path, "lh")
+        _make_notebook(
+            tmp_path, "n1", _warehouse_meta(prefix, WAREHOUSE_EP_ID, "Lakewarehouse"), ext=ext
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert WAREHOUSE_EP_ID in d.parameters
+        p = d.parameters[WAREHOUSE_EP_ID]
+        assert p.description == "Lakehouse SQL Analytics Endpoint Item ID"
+        assert p.dynamic_variable == "$items.Lakehouse.lh.$sqlendpointid"
+        assert d.unresolved_warehouse_bindings == []
+
+    def test_mountedwarehouse_deferred_when_sqldb_in_repo(self, tmp_path: Path):
+        """MountedWarehouse resolves at deploy time — no dynamic, no warning."""
+        _make_lakehouse(tmp_path, "lh")
+        _make_item(tmp_path, "mydb", "SQLDatabase", subdir="ERP")  # nested on purpose
+        _make_notebook(
+            tmp_path, "n1", _warehouse_meta("#", WAREHOUSE_EP_ID, "MountedWarehouse")
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        p = d.parameters[WAREHOUSE_EP_ID]
+        assert p.description == "SQL Database SQL Endpoint Item ID"
+        assert p.dynamic_variable == ""  # literal filled in by the deployer
+        assert d.unresolved_warehouse_bindings == []
+        # The nested .SQLDatabase must be visible to name detection.
+        assert d.sqldatabase_names == ["mydb"]
+
+    def test_mountedwarehouse_warns_without_sqldb_item(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        _make_lakehouse(tmp_path, "lh")
+        _make_notebook(
+            tmp_path, "n1", _warehouse_meta("#", WAREHOUSE_EP_ID, "MountedWarehouse")
+        )
+        d = ParameterDetector(tmp_path)
+        with caplog.at_level("WARNING", logger="fabric_deploy.detect"):
+            d.detect_all()
+
+        assert len(d.unresolved_warehouse_bindings) == 1
+        assert d.unresolved_warehouse_bindings[0][1] == WAREHOUSE_EP_ID
+        assert any(WAREHOUSE_EP_ID in r.message for r in caplog.records)
+
+    def test_datawarehouse_maps_to_warehouse_id(self, tmp_path: Path):
+        _make_lakehouse(tmp_path, "lh")
+        _make_item(tmp_path, "wh", "Warehouse")
+        _make_notebook(
+            tmp_path, "n1", _warehouse_meta("#", WAREHOUSE_EP_ID, "Datawarehouse")
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        p = d.parameters[WAREHOUSE_EP_ID]
+        assert p.description == "Warehouse ID"
+        assert p.dynamic_variable == "$items.Warehouse.wh.$id"
+        assert d.unresolved_warehouse_bindings == []
+
+    def test_unknown_attachment_type_warns(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        _make_lakehouse(tmp_path, "lh")
+        _make_notebook(
+            tmp_path, "n1", _warehouse_meta("#", WAREHOUSE_EP_ID, "SomethingNew")
+        )
+        d = ParameterDetector(tmp_path)
+        with caplog.at_level("WARNING", logger="fabric_deploy.detect"):
+            d.detect_all()
+
+        assert d.parameters[WAREHOUSE_EP_ID].dynamic_variable == ""
+        assert len(d.unresolved_warehouse_bindings) == 1
+        assert d.unresolved_warehouse_bindings[0][2] == "SomethingNew"
+
+    def test_default_warehouse_without_known_list_warns(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        """A bare default_warehouse with no known_warehouses entry has no type."""
+        _make_lakehouse(tmp_path, "lh")
+        _make_notebook(
+            tmp_path,
+            "n1",
+            '# META {\n'
+            '# META   "dependencies": {\n'
+            '# META     "warehouse": {\n'
+            f'# META       "default_warehouse": "{WAREHOUSE_EP_ID}"\n'
+            '# META     }\n'
+            '# META   }\n'
+            '# META }\n',
+        )
+        d = ParameterDetector(tmp_path)
+        with caplog.at_level("WARNING", logger="fabric_deploy.detect"):
+            d.detect_all()
+
+        assert WAREHOUSE_EP_ID in d.parameters
+        assert len(d.unresolved_warehouse_bindings) == 1
+
+
+class TestNestedItemNameDetection:
+    def test_nested_items_detected_top_level_first(self, tmp_path: Path):
+        """Items in subfolders are found; top-level item stays primary."""
+        _make_item(tmp_path, "nested_lh", "Lakehouse", subdir="SUB")
+        _make_lakehouse(tmp_path, "top_lh")
+        d = ParameterDetector(tmp_path)
+        assert d._detect_item_names("Lakehouse") == ["top_lh", "nested_lh"]

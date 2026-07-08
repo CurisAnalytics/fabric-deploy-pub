@@ -1,6 +1,6 @@
 [project]
 name = "fabric-deploy"
-version = "1.6.0"
+version = "1.6.1"
 description = "CLI tool for Microsoft Fabric workspace deployments"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -174,3 +174,67 @@ class TestAddDomainSubstitutions:
             data = yaml.safe_load(f)
         # Only the seeded entry, no appended rewrite.
         assert len(data["find_replace"]) == 1
+
+
+# --- resolve_warehouse_endpoint_params -------------------------------------
+
+
+class TestResolveWarehouseEndpointParams:
+    EP_GUID = "66666666-6666-6666-6666-666666666666"
+    TARGET_EP = "77777777-7777-7777-7777-777777777777"
+    WS = "00000000-0000-0000-0000-000000000001"
+
+    def _detector_with_binding(self, tmp_path: Path) -> ParameterDetector:
+        d = ParameterDetector(tmp_path)
+        d._sqldatabase_names = ["mydb"]
+        d.parameters = {
+            self.EP_GUID: DetectedParameter(
+                find_value=self.EP_GUID,
+                description="SQL Database SQL Endpoint Item ID",
+                source_files={"n1.Notebook/notebook-content.py"},
+            )
+        }
+        return d
+
+    def test_resolves_literal_from_target_workspace(self, tmp_path: Path, monkeypatch):
+        from fabric_deploy import params as params_mod
+
+        d = self._detector_with_binding(tmp_path)
+
+        def fake_find(workspace_id, item_type, name):
+            assert (workspace_id, item_type, name) == (self.WS, "SQLEndpoint", "mydb")
+            return {"id": self.TARGET_EP, "displayName": name, "type": item_type}
+
+        monkeypatch.setattr("fabric_deploy.client.find_item_by_name", fake_find)
+        count = params_mod.resolve_warehouse_endpoint_params(d, self.WS, LOG)
+
+        assert count == 1
+        assert d.parameters[self.EP_GUID].dynamic_variable == self.TARGET_EP
+        assert d.unresolved_warehouse_bindings == []
+
+    def test_manual_override_wins(self, tmp_path: Path, monkeypatch):
+        from fabric_deploy import params as params_mod
+
+        d = self._detector_with_binding(tmp_path)
+        d.parameters[self.EP_GUID].dynamic_variable = "manually-set"
+
+        def boom(*a, **k):
+            raise AssertionError("should not hit the API for resolved params")
+
+        monkeypatch.setattr("fabric_deploy.client.find_item_by_name", boom)
+        assert params_mod.resolve_warehouse_endpoint_params(d, self.WS, LOG) == 0
+        assert d.parameters[self.EP_GUID].dynamic_variable == "manually-set"
+
+    def test_lookup_failure_records_unresolved(self, tmp_path: Path, monkeypatch):
+        from fabric_deploy import params as params_mod
+
+        d = self._detector_with_binding(tmp_path)
+
+        def fail(*a, **k):
+            raise ValueError("No SQLEndpoint matching 'mydb' found")
+
+        monkeypatch.setattr("fabric_deploy.client.find_item_by_name", fail)
+        assert params_mod.resolve_warehouse_endpoint_params(d, self.WS, LOG) == 0
+        assert d.parameters[self.EP_GUID].dynamic_variable == ""
+        assert len(d.unresolved_warehouse_bindings) == 1
+        assert d.unresolved_warehouse_bindings[0][1] == self.EP_GUID
