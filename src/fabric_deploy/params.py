@@ -256,12 +256,7 @@ class ParameterFile:
             _ = param_file.rename(backup_file)
             summary.append(f"Backed up existing parameter.yml to {backup_file.name}")
 
-        detector.save_parameter_yml(
-            output_path=param_file,
-            use_dynamic=True,
-            environment="fabdep",
-            skip_empty=True,
-        )
+        detector.save_parameter_yml(output_path=param_file, environment="fabdep")
         self.created = True
         _apply_domain_substitutions(param_file, detector)
 

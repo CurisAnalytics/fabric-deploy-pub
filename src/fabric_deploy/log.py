@@ -8,7 +8,6 @@ and Azure account information display utilities.
 import logging
 import re
 from collections.abc import Sequence
-from typing import ClassVar
 
 from fabric_cicd._common._color import Fore, Style
 
@@ -101,35 +100,43 @@ def error_hint(error_msg: str) -> str | None:
     return None
 
 
+# ANSI escape code pattern for calculating visual length.
+_ANSI_RE: re.Pattern[str] = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+_LEVEL_COLORS: dict[str, str] = {
+    "DEBUG": Fore.BLACK,
+    "INFO": Fore.WHITE + Style.BRIGHT,
+    "WARNING": Fore.YELLOW,
+    "ERROR": Fore.RED,
+    "CRITICAL": Style.BRIGHT + Fore.RED,
+}
+
+_LEVEL_NAMES: dict[str, str] = {
+    "WARNING": "warn",
+    "DEBUG": "debug",
+    "INFO": "info",
+    "ERROR": "error",
+    "CRITICAL": "crit",
+}
+
+
+def _level_prefix(record: logging.LogRecord) -> str:
+    """Colored, width-padded '[level] ' prefix; empty for INFO."""
+    if record.levelname == "INFO":
+        return ""
+    color = _LEVEL_COLORS.get(record.levelname, "")
+    level_name = f"{color}[{_LEVEL_NAMES.get(record.levelname, 'unknown')}]"
+    # Pad based on visual width (after stripping ANSI escapes).
+    padding = " " * max(0, 8 - len(_ANSI_RE.sub("", level_name)))
+    return f"{level_name}{padding} "
+
+
 class CustomFormatter(logging.Formatter):
-    LEVEL_COLORS: ClassVar[dict[str, str]] = {
-        "DEBUG": Fore.BLACK,
-        "INFO": Fore.WHITE + Style.BRIGHT,
-        "WARNING": Fore.YELLOW,
-        "ERROR": Fore.RED,
-        "CRITICAL": Style.BRIGHT + Fore.RED,
-    }
-
     def format(self, record: logging.LogRecord) -> str:  # pyright: ignore[reportImplicitOverride]
-        level_color = self.LEVEL_COLORS.get(record.levelname, "")
-        level_name = {
-            "WARNING": "warn",
-            "DEBUG": "debug",
-            "INFO": "info",
-            "ERROR": "error",
-            "CRITICAL": "crit",
-        }.get(record.levelname, "unknown")
-        level_name = f"{level_color}[{level_name}]"
         message = f"{record.getMessage()}{Style.RESET_ALL}"
-
         if record.levelname == "INFO":
             return message
-
-        # Pad based on visual width (after stripping ANSI escapes).
-        ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
-        visual_level_length = len(ansi_escape.sub("", level_name))
-        padding = " " * max(0, 8 - visual_level_length)
-        return f"{level_name}{padding} {message}"
+        return f"{_level_prefix(record)}{message}"
 
 
 class FabricCicdFormatter(logging.Formatter):
@@ -140,37 +147,12 @@ class FabricCicdFormatter(logging.Formatter):
     for operational timing information.
     """
 
-    LEVEL_COLORS: ClassVar[dict[str, str]] = CustomFormatter.LEVEL_COLORS
-
-    # ANSI escape code pattern for calculating visual length
-    _ANSI_RE: ClassVar[re.Pattern[str]] = re.compile(
-        r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])"
-    )
-
-    def _format_level(self, record: logging.LogRecord) -> tuple[str, str]:
-        """Return (colored_level_name, padding) for a log record."""
-        if record.levelname == "INFO":
-            return "", ""
-        level_color = self.LEVEL_COLORS.get(record.levelname, "")
-        level_name = {
-            "WARNING": "warn",
-            "DEBUG": "debug",
-            "INFO": "info",
-            "ERROR": "error",
-            "CRITICAL": "crit",
-        }.get(record.levelname, "unknown")
-        level_name = f"{level_color}[{level_name}]"
-        visual_length = len(self._ANSI_RE.sub("", level_name))
-        padding = " " * max(0, 8 - visual_length)
-        return level_name, padding
-
     def format(self, record: logging.LogRecord) -> str:  # pyright: ignore[reportImplicitOverride]
         raw_message = record.getMessage()
         message = f"{raw_message}{Style.RESET_ALL}"
-        stripped = self._ANSI_RE.sub("", raw_message).strip()
+        stripped = _ANSI_RE.sub("", raw_message).strip()
 
-        level_name, padding = self._format_level(record)
-        prefix = f"{level_name}{padding} " if level_name else ""
+        prefix = _level_prefix(record)
 
         # Header lines (####) and blank separators get no timestamp.
         if "####" in stripped or stripped == "":

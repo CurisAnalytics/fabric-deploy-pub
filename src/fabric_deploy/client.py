@@ -170,18 +170,13 @@ def get_workspace_id_by_name(workspace_name: str) -> str:
     )
 
 
-def create_workspace(
-    workspace_name: str,
-    capacity_id: str,
-    description: str | None = None,
-) -> str:
+def create_workspace(workspace_name: str, capacity_id: str) -> str:
     """
     Create a new Fabric workspace.
 
     Args:
         workspace_name: Display name for the new workspace
         capacity_id: Fabric capacity ID (GUID)
-        description: Optional workspace description
 
     Returns:
         Workspace ID (GUID) of the created workspace
@@ -197,8 +192,6 @@ def create_workspace(
         "displayName": workspace_name,
         "capacityId": capacity_id,
     }
-    if description:
-        payload["description"] = description
 
     data = fabric_api_request(
         "/v1/workspaces",

@@ -529,13 +529,13 @@ class TestGenerateDynamicVariable:
     ):
         _make_lakehouse(tmp_path, "lh")
         d = ParameterDetector(tmp_path)
-        d._detect_lakehouse_names()
+        d._lakehouse_names = d._detect_item_names("Lakehouse")
         assert d._generate_dynamic_variable(description) == expected
 
     def test_sqldatabase_item_id_uses_db_name(self, tmp_path: Path):
         _make_sqldb(tmp_path, "mydb")
         d = ParameterDetector(tmp_path)
-        d._detect_sqldatabase_names()
+        d._sqldatabase_names = d._detect_item_names("SQLDatabase")
         assert (
             d._generate_dynamic_variable("SQL Database Item ID")
             == "$items.SQLDatabase.mydb.$id"
@@ -551,7 +551,7 @@ class TestGenerateDynamicVariable:
         """
         _make_sqldb(tmp_path, "mydb")
         d = ParameterDetector(tmp_path)
-        d._detect_sqldatabase_names()
+        d._sqldatabase_names = d._detect_item_names("SQLDatabase")
         assert (
             d._generate_dynamic_variable("SQL Database Connection String")
             == "$items.SQLDatabase.mydb.$sqlendpoint"
@@ -561,7 +561,7 @@ class TestGenerateDynamicVariable:
         """SQL Database Name has no native fabric-cicd attribute → still empty."""
         _make_sqldb(tmp_path, "mydb")
         d = ParameterDetector(tmp_path)
-        d._detect_sqldatabase_names()
+        d._sqldatabase_names = d._detect_item_names("SQLDatabase")
         assert d._generate_dynamic_variable("SQL Database Name") == ""
 
 

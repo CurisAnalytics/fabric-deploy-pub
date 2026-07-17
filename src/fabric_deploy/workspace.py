@@ -25,7 +25,6 @@ from .client import (
 )
 from .config import FabdepConfig
 from .detect import ParameterDetector
-from .git import current_branch
 from .identity import apply_tenant_pin, fabric_credential
 from .log import get_logger, is_transient_error, patch_fabric_cicd_logger
 from .params import (
@@ -111,10 +110,6 @@ class WorkspaceDeployer:
         self._detect_parameters()
         self.repo_item_types = repo_item_types(self._repo_dir_resolved)
         self._detect_lakehouse()
-
-    def _get_git_branch(self) -> str:
-        """Thin wrapper around `git.current_branch` for testing/mockability."""
-        return current_branch(self._repo_dir_resolved)
 
     def _apply_tenant_pin(self) -> None:
         """Honor fabdep.yml's `tenant:` block before any Fabric API call."""

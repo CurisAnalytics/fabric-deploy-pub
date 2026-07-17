@@ -33,7 +33,7 @@ def mock_fabric_api(monkeypatch):
     def _get_default_capacity_id() -> str:
         return handle.capacity_id
 
-    def _create_workspace(workspace_name: str, capacity_id: str, description=None) -> str:
+    def _create_workspace(workspace_name: str, capacity_id: str) -> str:
         return handle.workspace_id
 
     # Patch the call sites in workspace.py (imported by name)

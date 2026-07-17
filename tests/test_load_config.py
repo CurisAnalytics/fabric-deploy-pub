@@ -94,15 +94,18 @@ class TestLoadConfig:
     def test_branch_override_skips_git(
         self, tmp_path: Path, monkeypatch, mock_fabric_api
     ):
-        """When branch_override is set, _get_git_branch must not be called."""
+        """When branch_override is set, git must not be consulted at all."""
         _seed_workspace(tmp_path)
         _write_fabdep_yml(tmp_path, 'workspace_base_name: "ws"\n')
 
-        # If _get_git_branch is invoked, this raises and the test fails.
-        def _boom(self):
-            raise AssertionError("_get_git_branch should not be called when branch_override is set")
+        # config.py resolves the branch via git.current_branch — if it's
+        # invoked despite the override, this raises and the test fails.
+        def _boom(repo_dir):
+            raise AssertionError(
+                "current_branch should not be called when branch_override is set"
+            )
 
-        monkeypatch.setattr(WorkspaceDeployer, "_get_git_branch", _boom)
+        monkeypatch.setattr("fabric_deploy.config.current_branch", _boom)
 
         d = WorkspaceDeployer(tmp_path, branch_override="staging")
 

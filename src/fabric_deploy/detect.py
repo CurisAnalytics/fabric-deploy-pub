@@ -55,12 +55,11 @@ class DetectedParameter:
     dynamic_variable: str = ""
     metadata: dict = field(default_factory=dict)  # e.g. domain_type, db_name
 
-    def to_dict(self, use_dynamic: bool = True, environment: str = "prod") -> dict:
+    def to_dict(self, environment: str = "prod") -> dict:
         """
         Convert to parameter entry format for auto-detect mode.
 
         Args:
-            use_dynamic: Use dynamic variables in replace_value (default: True)
             environment: Environment name (default: "prod")
 
         Returns:
@@ -72,10 +71,7 @@ class DetectedParameter:
 
         # fabric-cicd requires replace_value to be an env-keyed dict, even
         # though we only emit one environment ("fabdep") in practice.
-        if use_dynamic and self.dynamic_variable:
-            entry["replace_value"] = {environment: self.dynamic_variable}  # pyright: ignore[reportArgumentType]
-        else:
-            entry["replace_value"] = {environment: ""}  # pyright: ignore[reportArgumentType]
+        entry["replace_value"] = {environment: self.dynamic_variable}  # pyright: ignore[reportArgumentType]
 
         return entry
 
@@ -183,9 +179,9 @@ class ParameterDetector:
         self.unresolved_warehouse_bindings = []
 
         # Item names must be resolved before _generate_dynamic_variable runs.
-        self._detect_lakehouse_names()
-        self._detect_sqldatabase_names()
-        self._detect_warehouse_names()
+        self._lakehouse_names = self._detect_item_names("Lakehouse")
+        self._sqldatabase_names = self._detect_item_names("SQLDatabase")
+        self._warehouse_names = self._detect_item_names("Warehouse")
 
         # Notebook content is `.py` (Python/PySpark), `.sql` (T-SQL), etc.
         # Metadata block is identical JSON-in-comments — the prefix differs
@@ -258,18 +254,6 @@ class ParameterDetector:
             for _, meta in self._platform_items(item_type)
             if meta.get("displayName")
         ]
-
-    def _detect_lakehouse_names(self) -> None:
-        """Detect lakehouse names from .Lakehouse/.platform files."""
-        self._lakehouse_names = self._detect_item_names("Lakehouse")
-
-    def _detect_sqldatabase_names(self) -> None:
-        """Detect SQL Database names from .SQLDatabase/.platform files."""
-        self._sqldatabase_names = self._detect_item_names("SQLDatabase")
-
-    def _detect_warehouse_names(self) -> None:
-        """Detect Warehouse names from .Warehouse/.platform files."""
-        self._warehouse_names = self._detect_item_names("Warehouse")
 
     def _process_files(
         self, files, extract_func, parse_json: bool = False
@@ -603,23 +587,15 @@ class ParameterDetector:
         if not self.parameters:
             self.detect_all()
 
-    def generate_parameter_yml(
-        self,
-        use_dynamic: bool = True,
-        environment: str = "prod",
-        include_descriptions: bool = False,
-        skip_empty: bool = True,
-    ) -> dict:
+    def generate_parameter_yml(self, environment: str = "prod") -> dict:
         """
         Generate parameter structure with detected parameters for auto-detect mode.
 
         Uses dynamic variables that are resolved at deploy time by fabric-cicd.
+        Parameters without a dynamic variable are skipped.
 
         Args:
-            use_dynamic: Use dynamic variables in replace_value (default: True)
             environment: Environment name (default: "prod")
-            include_descriptions: Include comments with descriptions
-            skip_empty: Skip parameters without dynamic variables (default: True)
 
         Returns:
             Dictionary with find_replace entries using dynamic variables
@@ -640,44 +616,30 @@ class ParameterDetector:
             return (priority, param.description)
 
         for param in sorted(self.parameters.values(), key=_get_sort_key):
-            if skip_empty and use_dynamic and not param.dynamic_variable:
+            if not param.dynamic_variable:
                 continue
-            entry = param.to_dict(use_dynamic=use_dynamic, environment=environment)
-            if include_descriptions and param.description:
-                entry["_comment"] = param.description
-            find_replace.append(entry)
+            find_replace.append(param.to_dict(environment=environment))
 
         return {"find_replace": find_replace}
 
     def save_parameter_yml(
-        self,
-        output_path: Path | str,
-        use_dynamic: bool = True,
-        environment: str = "prod",
-        skip_empty: bool = True,
+        self, output_path: Path | str, environment: str = "prod"
     ) -> None:
         """
         Generate and save parameter file with dynamic variables for auto-detect mode.
 
         Args:
             output_path: Path to save parameter file
-            use_dynamic: Use dynamic variables in replace_value (default: True)
             environment: Environment name (default: "prod")
-            skip_empty: Skip parameters without dynamic variables (default: True)
         """
-        param_dict = self.generate_parameter_yml(
-            use_dynamic=use_dynamic, environment=environment, skip_empty=skip_empty
-        )
+        param_dict = self.generate_parameter_yml(environment=environment)
 
-        # Hand-rolled YAML emit so we can interleave description comments
-        # above each entry — yaml.dump can't.
+        # Hand-rolled YAML emit so every value stays quoted — dynamic
+        # variables ($workspace.$id) and GUIDs read unambiguously.
         output_path = Path(output_path)
         with open(output_path, "w", encoding="utf-8") as f:
             _ = f.write("find_replace:\n")
             for entry in param_dict["find_replace"]:
-                comment = entry.pop("_comment", None)
-                if comment:
-                    _ = f.write(f"  # {comment}\n")
                 _ = f.write(f'  - find_value: "{entry["find_value"]}"\n')
                 if "item_type" in entry:
                     _ = f.write(f"    item_type: {entry['item_type']}\n")
@@ -773,14 +735,3 @@ class ParameterDetector:
             self.logger.info(
                 "These typically require external setup (e.g., connection IDs) and don't change between deployments."
             )
-
-    def count_connection_guids(self) -> int:
-        "Returns the number of connection GUIDs detected"
-        self._ensure_detected()
-
-        connection_count = 0
-        for param in self.parameters.values():
-            description = param.description or ""
-            if "connection" in description.lower() and not param.dynamic_variable:
-                connection_count += 1
-        return connection_count
