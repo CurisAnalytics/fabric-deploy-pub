@@ -9,6 +9,7 @@ keeping ~200 lines of file-wrangling out of WorkspaceDeployer.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -140,31 +141,30 @@ def resolve_warehouse_endpoint_params(
 
 
 def _apply_domain_substitutions(param_file: Path, detector: ParameterDetector) -> None:
-    """Append a second-pass domain rewrite for non-default SemanticModel connections.
+    """Append a second-pass domain rewrite for pbidedicated SemanticModel connections.
 
-    fabric-cicd 1.0's `$items.Lakehouse.<name>.$sqlendpoint` always returns
-    `.datawarehouse.fabric.microsoft.com` form, but SemanticModels can reference
-    `.database.fabric.microsoft.com` (SQL Database endpoints) or
-    `.pbidedicated.windows.net` (older workspaces). fabric-cicd has no callback,
-    no multi-pass templating, and no equivalent dynamic for those forms — so we
-    let fabric-cicd do the first pass and append a second find_replace that
-    rewrites the resulting FQDN. Targeting includes the database name and is
-    scoped to SemanticModel.
+    fabric-cicd 1.0's `$items.Lakehouse.<name>.$sqlendpoint` always returns the
+    `.datawarehouse.fabric.microsoft.com` form, but SemanticModels in older
+    workspaces reference `.pbidedicated.windows.net`. fabric-cicd has no
+    callback, no multi-pass templating, and no equivalent dynamic for that form
+    — so we let fabric-cicd do the first pass and append a second find_replace
+    that rewrites the resulting FQDN suffix. Targeting includes the database
+    name and is scoped to SemanticModel.
+
+    SQL Database endpoints (`.database.fabric.microsoft.com`) need no rewrite:
+    their dynamic `$items.SQLDatabase.<name>.$sqlendpoint` resolves to
+    serverFqdn, which is already the operational `.database` host.
 
     TODO: revisit if fabric-cicd grows native multi-domain support.
     """
-    connections_needing_substitution = []
-    for param in detector.parameters.values():
-        domain_suffix = param.metadata.get("domain_suffix", "").lower()
-        domain_type = param.metadata.get("domain_type", "").lower()
-        if not param.metadata.get("db_name"):
-            continue
-        if domain_type == "database":
-            connections_needing_substitution.append(("database_type", param))
-        elif domain_suffix == "pbidedicated.windows.net":
-            connections_needing_substitution.append(("pbidedicated_suffix", param))
-
-    if not connections_needing_substitution:
+    pbidedicated_params = [
+        param
+        for param in detector.parameters.values()
+        if param.metadata.get("domain_suffix", "").lower()
+        == "pbidedicated.windows.net"
+        and param.metadata.get("db_name")
+    ]
+    if not pbidedicated_params:
         return
 
     with open(param_file) as f:
@@ -173,24 +173,22 @@ def _apply_domain_substitutions(param_file: Path, detector: ParameterDetector) -
     if not param_data or "find_replace" not in param_data:
         return
 
-    for substitution_type, param in connections_needing_substitution:
-        db_name = param.metadata.get("db_name")
-        if not db_name:
-            continue
-
-        if substitution_type == "database_type":
-            targeted_find = f'.datawarehouse.fabric.microsoft.com","{db_name}'
-            targeted_replace = f'.database.fabric.microsoft.com","{db_name}'
-        elif substitution_type == "pbidedicated_suffix":
-            domain_type = param.metadata.get("domain_type", "datawarehouse")
-            targeted_find = f'.{domain_type}.fabric.microsoft.com","{db_name}'
-            targeted_replace = f'.{domain_type}.pbidedicated.windows.net","{db_name}'
-        else:
-            continue
+    for param in pbidedicated_params:
+        db_name = param.metadata["db_name"]
+        domain_type = param.metadata.get("domain_type", "datawarehouse")
+        # TMDL serializes the args as `", "` or `","` depending on the writer,
+        # so match with `\s*,\s*`. fabric-cicd's regex mode (is_regex) replaces
+        # ONLY the single captured group — the suffix — leaving the rest of the
+        # first-pass output intact.
+        targeted_find = (
+            rf"\.{re.escape(domain_type)}\.(fabric\.microsoft\.com)\""
+            rf"\s*,\s*\"{re.escape(db_name)}"
+        )
 
         param_data["find_replace"].append({
             "find_value": targeted_find,
-            "replace_value": {"fabdep": targeted_replace},
+            "replace_value": {"fabdep": "pbidedicated.windows.net"},
+            "is_regex": "true",
             "item_type": ["SemanticModel"],
         })
 
