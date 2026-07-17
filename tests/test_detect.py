@@ -150,6 +150,22 @@ class TestNotebookExtraction:
             "lakehouses attached" in r.message for r in caplog.records
         )
 
+    def test_skips_null_uuid_workspace_and_lakehouse(self, tmp_path: Path):
+        """An unattached notebook carries the 00000000-… sentinel — emitting a
+        rule for it would clobber fabric-cicd-managed placeholders globally."""
+        _make_lakehouse(tmp_path, "lh")
+        null = ParameterDetector.NULL_UUID
+        _make_notebook(
+            tmp_path,
+            "n1",
+            f'"default_lakehouse_workspace_id": "{null}"\n'
+            f'"default_lakehouse": "{null}"\n',
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert null not in d.parameters
+
     def test_dynamic_variable_for_workspace_and_lakehouse(self, tmp_path: Path):
         _make_lakehouse(tmp_path, "lh")
         _make_notebook(

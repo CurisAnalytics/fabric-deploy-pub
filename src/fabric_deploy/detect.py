@@ -105,6 +105,12 @@ class ParameterDetector:
         r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE
     )
 
+    # Fabric's "unattached / placeholder" sentinel. Appears as workspaceId in
+    # TridentNotebook pipeline activities (fabric-cicd's _replace_workspace_ids
+    # handles those itself) and as default_lakehouse_workspace_id in notebooks
+    # that were never attached. Never emit a find_replace rule for it.
+    NULL_UUID = "00000000-0000-0000-0000-000000000000"
+
     # Sql.Database("HOST-SQLSTRING.{datawarehouse|database}.{fabric.microsoft.com|pbidedicated.windows.net}", "DB-NAME" or "DB-NAME-UUID")
     # Groups: (1) host prefix, (2) sql endpoint string, (3) domain type, (4) domain suffix, (5) db name, (6) optional UUID suffix
     SQL_DATABASE_PATTERN: regex = re.compile(
@@ -356,10 +362,17 @@ class ParameterDetector:
         """Extract workspace and lakehouse IDs from notebook metadata."""
         source_file = str(file_path.relative_to(self.repo_dir))
 
+        # Unattached notebooks carry the null-UUID sentinel. Emitting a rule
+        # for it would globally rewrite every placeholder fabric-cicd manages
+        # itself (e.g. TridentNotebook workspaceIds in pipeline JSON).
         for workspace_id in self.WORKSPACE_ID_PATTERN.findall(content):
+            if workspace_id == self.NULL_UUID:
+                continue
             _ = self._add_parameter(workspace_id, source_file, "Workspace ID")
 
         for lakehouse_id in self.LAKEHOUSE_ID_PATTERN.findall(content):
+            if lakehouse_id == self.NULL_UUID:
+                continue
             _ = self._add_parameter(lakehouse_id, source_file, "Lakehouse ID")
 
         self._extract_warehouse_attachments(source_file, content)
@@ -512,10 +525,6 @@ class ParameterDetector:
         """Extract connection IDs from pipeline JSON."""
         source_file = str(file_path.relative_to(self.repo_dir))
         self._extract_connections_recursive(data, source_file)
-
-    # TridentNotebook activities use this placeholder; fabric-cicd's
-    # _replace_workspace_ids handles them directly, so don't double-substitute.
-    NULL_UUID = "00000000-0000-0000-0000-000000000000"
 
     def _extract_connections_recursive(self, obj, source_file: str) -> None:
         """Recursively extract connection IDs from nested JSON structures."""
