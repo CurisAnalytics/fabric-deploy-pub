@@ -20,39 +20,46 @@ __all__ = [
 ]
 
 
+def _platform_meta(platform_file: Path) -> tuple[str, str] | None:
+    """Return (displayName, type) from a .platform file, or None if unreadable."""
+    try:
+        meta = loads(platform_file.read_text())["metadata"]
+        return meta["displayName"], meta["type"]
+    except Exception:
+        return None
+
+
 def repo_item_types(repo_dir: Path) -> set[str]:
-    """Return the set of accepted Fabric item types found in the repo."""
+    """Return the set of accepted Fabric item types found in the repo.
+
+    Keyed on the `.platform` metadata `type` — how fabric-cicd discovers
+    items — NOT the directory suffix. The two can differ: Synapse-migrated
+    notebooks sit in `*.SynapseNotebook/` dirs whose .platform says
+    `type: Notebook`.
+    """
     item_types: set[str] = set()
     for platform_file in repo_dir.rglob(".platform"):
-        # Items are stored as `<DisplayName>.<ItemType>/`.
-        if "." in platform_file.parent.name:
-            parts = platform_file.parent.name.rsplit(".", 1)
-            if len(parts) == 2 and parts[1] in ACCEPTED_ITEM_TYPES:
-                item_types.add(parts[1])
+        meta = _platform_meta(platform_file)
+        if meta and meta[1] in ACCEPTED_ITEM_TYPES:
+            item_types.add(meta[1])
     return item_types
 
 
 def _repo_items(repo_dir: Path) -> dict[str, str]:
     """Map '<displayName>.<ItemType>' -> item directory name for the repo.
 
-    Keyed on the `.platform` displayName — which is what fabric-cicd's
-    `items_to_include` matches on, NOT the directory name (the two can differ,
-    and that mismatch is exactly the `-i` silent no-op footgun).
+    Keyed on the `.platform` displayName and type — which is what
+    fabric-cicd's `items_to_include` matches on, NOT the directory name (the
+    two can differ, and that mismatch is exactly the `-i` silent no-op
+    footgun; a `*.SynapseNotebook/` dir is addressed as `<name>.Notebook`).
     """
     items: dict[str, str] = {}
     for platform_file in repo_dir.rglob(".platform"):
-        parent = platform_file.parent.name
-        if "." not in parent:
+        meta = _platform_meta(platform_file)
+        if not meta or meta[1] not in ACCEPTED_ITEM_TYPES:
             continue
-        item_type = parent.rsplit(".", 1)[1]
-        if item_type not in ACCEPTED_ITEM_TYPES:
-            continue
-        try:
-            meta = loads(platform_file.read_text())
-            display = meta["metadata"]["displayName"]
-        except Exception:
-            continue
-        items[f"{display}.{item_type}"] = parent
+        display, item_type = meta
+        items[f"{display}.{item_type}"] = platform_file.parent.name
     return items
 
 

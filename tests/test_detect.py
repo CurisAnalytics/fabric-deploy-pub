@@ -35,9 +35,16 @@ def _make_sqldb(repo: Path, name: str) -> None:
     )
 
 
-def _make_notebook(repo: Path, name: str, body: str, ext: str = "py") -> None:
-    nb = repo / f"{name}.Notebook"
+def _make_notebook(
+    repo: Path, name: str, body: str, ext: str = "py", dir_suffix: str = "Notebook"
+) -> None:
+    # dir_suffix can differ from the .platform type: Synapse-migrated
+    # notebooks live in `*.SynapseNotebook/` dirs but are `type: Notebook`.
+    nb = repo / f"{name}.{dir_suffix}"
     nb.mkdir()
+    (nb / ".platform").write_text(
+        json.dumps({"metadata": {"displayName": name, "type": "Notebook"}})
+    )
     (nb / f"notebook-content.{ext}").write_text(body)
 
 
@@ -149,6 +156,23 @@ class TestNotebookExtraction:
         assert not any(
             "lakehouses attached" in r.message for r in caplog.records
         )
+
+    def test_synapse_notebook_dir_is_detected(self, tmp_path: Path):
+        """A `*.SynapseNotebook/` dir whose .platform says `type: Notebook`
+        must be scanned like any other notebook (fabric-cicd deploys it)."""
+        _make_lakehouse(tmp_path, "lh")
+        _make_notebook(
+            tmp_path,
+            "n1",
+            f'"default_lakehouse_workspace_id": "{WORKSPACE_ID}"\n'
+            f'"default_lakehouse": "{LAKEHOUSE_ID}"\n',
+            dir_suffix="SynapseNotebook",
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert WORKSPACE_ID in d.parameters
+        assert LAKEHOUSE_ID in d.parameters
 
     def test_skips_null_uuid_workspace_and_lakehouse(self, tmp_path: Path):
         """An unattached notebook carries the 00000000-… sentinel — emitting a

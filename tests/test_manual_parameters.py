@@ -30,6 +30,9 @@ def _build_repo(repo: Path, fabdep_yml: str, detected_uuid: str = DETECTED_UUID)
 
     nb = repo / "n1.Notebook"
     nb.mkdir()
+    (nb / ".platform").write_text(
+        json.dumps({"metadata": {"displayName": "n1", "type": "Notebook"}})
+    )
     (nb / "notebook-content.py").write_text(
         f'"default_lakehouse_workspace_id": "{detected_uuid}"\n'
     )

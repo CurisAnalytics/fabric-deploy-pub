@@ -13,7 +13,12 @@ import yaml
 
 from fabric_deploy.detect import DetectedParameter, ParameterDetector
 from fabric_deploy.params import _apply_domain_substitutions
-from fabric_deploy.scope import resolve_item_scope
+from fabric_deploy.scope import (
+    _repo_items,
+    repo_item_types,
+    resolve_item_scope,
+    validate_include_items,
+)
 
 LOG = logging.getLogger("test.scope")
 
@@ -70,6 +75,43 @@ class TestResolveItemScope:
             None, None, ["Foo.Notebook", "PlainName", "Bar.NotAType"], LOG
         )
         assert scope == ["Notebook"]
+
+
+# --- .platform-driven item discovery ---------------------------------------
+
+
+def _make_item(repo: Path, dir_name: str, display: str, platform_type: str) -> None:
+    import json
+
+    item = repo / dir_name
+    item.mkdir(parents=True)
+    (item / ".platform").write_text(
+        json.dumps({"metadata": {"displayName": display, "type": platform_type}})
+    )
+
+
+class TestPlatformTypeDiscovery:
+    """Item types come from .platform metadata, not the directory suffix —
+    a `*.SynapseNotebook/` dir with `type: Notebook` is a Notebook."""
+
+    def test_repo_item_types_uses_platform_type(self, tmp_path: Path):
+        _make_item(tmp_path, "foo.SynapseNotebook", "foo", "Notebook")
+        assert repo_item_types(tmp_path) == {"Notebook"}
+
+    def test_repo_items_keys_on_platform_type(self, tmp_path: Path):
+        _make_item(tmp_path, "foo.SynapseNotebook", "foo", "Notebook")
+        assert _repo_items(tmp_path) == {"foo.Notebook": "foo.SynapseNotebook"}
+
+    def test_include_items_resolves_synapse_notebook(self, tmp_path: Path):
+        _make_item(tmp_path, "foo.SynapseNotebook", "foo", "Notebook")
+        assert validate_include_items(["foo.Notebook"], tmp_path, LOG) == [
+            "foo.Notebook"
+        ]
+
+    def test_unaccepted_platform_type_is_ignored(self, tmp_path: Path):
+        _make_item(tmp_path, "foo.Notebook", "foo", "NotARealType")
+        assert repo_item_types(tmp_path) == set()
+        assert _repo_items(tmp_path) == {}
 
 
 # --- _add_domain_substitutions -------------------------------------------

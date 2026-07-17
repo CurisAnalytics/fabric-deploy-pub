@@ -190,28 +190,62 @@ class ParameterDetector:
         # Notebook content is `.py` (Python/PySpark), `.sql` (T-SQL), etc.
         # Metadata block is identical JSON-in-comments — the prefix differs
         # (`# META` vs `-- META`) but the find_replace patterns don't anchor on it.
-        for ext in ("py", "sql"):
-            self._process_files(
-                f"**/*.Notebook/notebook-content.{ext}", self._extract_from_notebook
-            )
+        # Discovered via .platform type, not directory suffix: Synapse-migrated
+        # notebooks live in `*.SynapseNotebook/` dirs but are type Notebook.
+        notebook_files = [
+            content_file
+            for item_dir, _ in self._platform_items("Notebook")
+            for ext in ("py", "sql")
+            if (content_file := item_dir / f"notebook-content.{ext}").exists()
+        ]
+        self._process_files(notebook_files, self._extract_from_notebook)
         self._process_files(
-            "**/*.SemanticModel/definition/**/*.tmdl",
+            self.repo_dir.glob("**/*.SemanticModel/definition/**/*.tmdl"),
             self._extract_from_semantic_model,
         )
         self._process_files(
-            "**/*.DataPipeline/pipeline-content.json",
+            self.repo_dir.glob("**/*.DataPipeline/pipeline-content.json"),
             self._extract_from_pipeline,
             parse_json=True,
         )
         self._process_files(
-            "**/*.CopyJob/copyjob-content.json",
+            self.repo_dir.glob("**/*.CopyJob/copyjob-content.json"),
             self._extract_from_copyjob,
             parse_json=True,
         )
 
+    def _platform_items(self, item_type: str) -> list[tuple[Path, dict]]:
+        """(item_dir, .platform metadata) pairs for repo items of `item_type`.
+
+        Matches on the .platform `metadata.type` — which is how fabric-cicd
+        discovers items — NOT the directory suffix. The two can differ:
+        Synapse-migrated notebooks sit in `*.SynapseNotebook/` dirs whose
+        .platform says `type: Notebook`.
+
+        Recursive: items can live in workspace subfolders (e.g.
+        `ERP/northwind_sql_db.SQLDatabase`). Shallower paths sort first so a
+        top-level item stays the primary for first-match resolution.
+        """
+        items: list[tuple[Path, dict]] = []
+        platform_files = sorted(
+            self.repo_dir.glob("**/.platform"),
+            key=lambda p: (len(p.relative_to(self.repo_dir).parts), str(p)),
+        )
+        for platform_file in platform_files:
+            try:
+                metadata = json.loads(
+                    platform_file.read_text(encoding="utf-8")
+                ).get("metadata", {})
+            except Exception as e:
+                self._log_file_warning(platform_file, e, "item metadata")
+                continue
+            if metadata.get("type") == item_type:
+                items.append((platform_file.parent, metadata))
+        return items
+
     def _detect_item_names(self, item_type: str) -> list[str]:
         """
-        Detect item names from .{item_type}/.platform files.
+        Detect item names from .platform files of the given item type.
 
         Args:
             item_type: Fabric item type (e.g., "Lakehouse", "SQLDatabase")
@@ -219,26 +253,11 @@ class ParameterDetector:
         Returns:
             List of display names found for items of this type
         """
-        names: list[str] = []
-        # Recursive: items can live in workspace subfolders (e.g.
-        # `ERP/northwind_sql_db.SQLDatabase`). Shallower paths sort first so a
-        # top-level item stays the primary for first-match resolution.
-        item_dirs = sorted(
-            self.repo_dir.glob(f"**/*.{item_type}"),
-            key=lambda p: (len(p.relative_to(self.repo_dir).parts), str(p)),
-        )
-        for item_dir in item_dirs:
-            platform_file = item_dir / ".platform"
-            if not platform_file.exists():
-                continue
-            try:
-                metadata = json.loads(platform_file.read_text(encoding="utf-8"))
-                display_name = metadata.get("metadata", {}).get("displayName", "")
-                if display_name:
-                    names.append(display_name)
-            except Exception as e:
-                self._log_file_warning(platform_file, e, f"{item_type} metadata")
-        return names
+        return [
+            meta["displayName"]
+            for _, meta in self._platform_items(item_type)
+            if meta.get("displayName")
+        ]
 
     def _detect_lakehouse_names(self) -> None:
         """Detect lakehouse names from .Lakehouse/.platform files."""
@@ -253,17 +272,16 @@ class ParameterDetector:
         self._warehouse_names = self._detect_item_names("Warehouse")
 
     def _process_files(
-        self, glob_pattern: str, extract_func, parse_json: bool = False
+        self, files, extract_func, parse_json: bool = False
     ) -> None:
         """
-        Generic file processor that handles glob, iteration, reading, and error handling.
+        Generic file processor that handles iteration, reading, and error handling.
 
         Args:
-            glob_pattern: Glob pattern to match files
+            files: Iterable of file paths to process
             extract_func: Callback function that receives (file_path, content_or_data)
             parse_json: If True, parse content as JSON before passing to extract_func
         """
-        files = self.repo_dir.glob(glob_pattern)
         for file_path in files:
             try:
                 content = file_path.read_text(encoding="utf-8")
