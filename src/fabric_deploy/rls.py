@@ -217,9 +217,16 @@ def _semantic_model_dirs(repo_dir: Path) -> dict[str, Path]:
     return out
 
 
-def _remote_roles(workspace_id: str, model_name: str) -> dict[str, Role]:
-    """Fetch the target model's live RLS role definitions."""
-    item = find_item_by_name(workspace_id, "SemanticModel", model_name)
+def _remote_roles(workspace_id: str, model_name: str) -> dict[str, Role] | None:
+    """Fetch the target model's live RLS role definitions.
+
+    Returns None when the model does not exist in the target yet (a first-time
+    deploy) — there is no live RLS to protect or pull in that case.
+    """
+    try:
+        item = find_item_by_name(workspace_id, "SemanticModel", model_name)
+    except ValueError:
+        return None  # model not present in the target workspace
     parts = get_semantic_model_definition(workspace_id, item["id"])
     return roles_from_parts(parts)
 
@@ -272,6 +279,13 @@ def guard_deploy_rls(
             continue  # repo has no RLS for this model -> nothing to guard
 
         remote = _remote_roles(workspace_id, name)
+        if remote is None:
+            log.info(
+                f"RLS check: '{name}' is not in the target yet — first deploy, "
+                "no live RLS to protect."
+            )
+            continue
+
         diff = diff_roles(local, remote)
         if not diff.changed:
             log.info(f"RLS check: '{name}' — repo matches target ({len(local)} role(s)).")
@@ -408,6 +422,10 @@ def pull_rls(
     for name, model_dir in sorted(dirs.items()):
         local = read_local_roles(model_dir)
         remote = _remote_roles(workspace_id, name)
+        if remote is None:
+            log.info(f"'{name}': not present in the target workspace — skipping.")
+            continue
+
         diff = diff_roles(local, remote)
 
         if not diff.changed:

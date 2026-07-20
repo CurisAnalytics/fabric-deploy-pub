@@ -176,6 +176,13 @@ def test_guard_allows_drift_with_flag(tmp_path, monkeypatch):
     guard_deploy_rls("ws", tmp_path, model_names=None, allow_change=True)
 
 
+def test_guard_skips_when_model_absent_in_target(tmp_path, monkeypatch):
+    """First deploy: the model isn't in the target yet -> nothing to protect."""
+    _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS})
+    monkeypatch.setattr("fabric_deploy.rls._remote_roles", lambda ws, name: None)
+    guard_deploy_rls("ws", tmp_path, model_names=None, allow_change=False)
+
+
 def test_guard_blocks_on_wipe(tmp_path, monkeypatch):
     """Repo has a role the target lost track of? No — repo drops one the target has."""
     _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS})
@@ -245,6 +252,12 @@ def test_pull_write_syncs_working_tree(tmp_path, monkeypatch, patch_pull_env):
     assert "ref role RLS" in model
     assert "ref role fs_rls" in model
     assert "ref role stale" not in model
+
+
+def test_pull_skips_absent_model(tmp_path, monkeypatch, patch_pull_env):
+    _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS})
+    monkeypatch.setattr("fabric_deploy.rls._remote_roles", lambda ws, name: None)
+    assert pull_rls(tmp_path) is False
 
 
 def test_pull_requires_a_model(tmp_path, patch_pull_env):
