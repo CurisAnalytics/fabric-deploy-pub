@@ -246,6 +246,14 @@ def parse_args() -> argparse.Namespace:
         help="After deploy, frame the Direct Lake model(s): sync SQL endpoint "
         "-> refresh -> poll -> surface the first framing error",
     )
+    _ = deploy_parser.add_argument(
+        "--allow-rls-change",
+        action="store_true",
+        help="Permit a deploy to change a model's live row-level security. "
+        "By default, if the repo carries RLS and the target's live RLS differs, "
+        "the deploy is blocked (someone may have edited RLS directly in the "
+        "target). Role memberships are never read or changed.",
+    )
 
     refresh_parser = subparsers.add_parser(
         "refresh",
@@ -284,10 +292,50 @@ def parse_args() -> argparse.Namespace:
         help="Per-model refresh poll timeout in seconds (default: 900)",
     )
 
+    rls_parser = subparsers.add_parser(
+        "rls",
+        help="Inspect/reconcile row-level security (role definitions) vs the target",
+        description="Read a semantic model's live RLS role definitions and compare "
+        "them to the repo. Definitions only — role memberships are Service state "
+        "and are never read or changed.",
+    )
+    rls_subparsers = rls_parser.add_subparsers(
+        dest="rls_command", required=True, help="RLS actions"
+    )
+    rls_pull_parser = rls_subparsers.add_parser(
+        "pull",
+        help="Diff the target's RLS roles against the repo; --write to adopt them",
+    )
+    _ = rls_pull_parser.add_argument(
+        "directory",
+        nargs="?",
+        default=".",
+        type=Path,
+        help="Workspace directory (defaults to current directory)",
+    )
+    _ = rls_pull_parser.add_argument(
+        "--include-items",
+        "-i",
+        nargs="+",
+        help="Semantic model display name(s) to check (default: all in repo); "
+        "a trailing '.SemanticModel' is tolerated to match deploy -i",
+    )
+    _ = rls_pull_parser.add_argument(
+        "--branch",
+        "-b",
+        help="Override git branch for workspace resolution",
+    )
+    _ = rls_pull_parser.add_argument(
+        "--write",
+        action="store_true",
+        help="Overwrite the working tree's roles to match the target "
+        "(for review + commit); default is diff-only (exit non-zero on drift)",
+    )
+
     # argparse can't natively pick a default subparser or treat unknown
     # leading args as a subcommand's options — so resolve it ourselves
     # and feed argparse a normalized argv.
-    known_commands = {"auth", "deploy", "rename", "detect", "refresh"}
+    known_commands = {"auth", "deploy", "rename", "detect", "refresh", "rls"}
     help_flags = {"-h", "--help", "-V", "--version"}
 
     raw = sys.argv[1:]
@@ -428,6 +476,7 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
             exclude_types=args.exclude_types,
             include_items=args.include_items,
             fail_on_stale=args.fail_on_stale,
+            allow_rls_change=bool(args.allow_rls_change),
         )
     except Exception as e:
         handle_command_error(e, "Deployment")
@@ -474,6 +523,31 @@ def handle_refresh_command(args: argparse.Namespace) -> None:
         handle_command_error(e, "Framing")
 
 
+def handle_rls_command(args: argparse.Namespace) -> None:
+    """Handle rls subcommand execution (RLS definition round-trip)."""
+    from .rls import pull_rls
+
+    if args.rls_command == "pull":
+        try:
+            changed = pull_rls(
+                repo_dir=args.directory,
+                branch_override=args.branch,
+                models=args.include_items,
+                write=bool(args.write),
+            )
+        except FileNotFoundError as e:
+            print_error(f"\n{e}\n")
+            sys.exit(1)
+        except Exception as e:
+            handle_command_error(e, "RLS pull")
+        # Diff-only run that found drift exits non-zero so CI can gate on it.
+        if changed and not args.write:  # pyright: ignore[reportPossiblyUnboundVariable]
+            sys.exit(1)
+    else:
+        print_error(f"Unknown rls command: {args.rls_command}")
+        sys.exit(1)
+
+
 def main() -> None:
     """CLI entry point - routes to appropriate command handler."""
     args = parse_args()
@@ -486,6 +560,8 @@ def main() -> None:
         handle_detect_command(args)
     elif args.command == "refresh":
         handle_refresh_command(args)
+    elif args.command == "rls":
+        handle_rls_command(args)
     elif args.command == "deploy":
         handle_deploy_command(args)
     else:

@@ -226,6 +226,39 @@ class WorkspaceDeployer:
             raise RuntimeError(f"Failed to read lakehouse metadata: {e}") from e
         self.lakehouse_name = metadata["metadata"]["displayName"]
 
+    def _guard_rls(
+        self,
+        item_type_in_scope: list[str] | None,
+        include_items: list[str] | None,
+        allow_rls_change: bool,
+    ) -> None:
+        """Block a deploy that would change a target model's live RLS.
+
+        Resolves which SemanticModels are in deploy scope and delegates to
+        `guard_deploy_rls`, which no-ops (no API call) for any model the repo
+        carries no RLS for.
+        """
+        from .rls import guard_deploy_rls
+
+        if include_items:
+            models = [
+                it.rsplit(".", 1)[0]
+                for it in include_items
+                if it.endswith(".SemanticModel")
+            ]
+        elif item_type_in_scope is None or "SemanticModel" in item_type_in_scope:
+            models = None  # every SemanticModel in the repo is in scope
+        else:
+            models = []  # SemanticModel not in scope -> skip the guard
+
+        guard_deploy_rls(
+            workspace_id=self.workspace_id,
+            repo_dir=self._repo_dir_resolved,
+            model_names=models,
+            allow_change=allow_rls_change,
+            logger=self.logger,
+        )
+
     def deploy(
         self,
         no_cleanup: bool = False,
@@ -233,6 +266,7 @@ class WorkspaceDeployer:
         exclude_types: list[str] | None = None,
         include_items: list[str] | None = None,
         fail_on_stale: bool = False,
+        allow_rls_change: bool = False,
     ) -> None:
         """
         Deploy Fabric workspace items.
@@ -246,6 +280,10 @@ class WorkspaceDeployer:
                 lakehouses attached, or a warehouse attachment that can't be
                 remapped to the target workspace. Intended for CI / autonomous
                 agent loops where the inline warning would get buried in logs.
+            allow_rls_change: Permit a deploy to change a model's live row-level
+                security. By default, if the repo carries RLS and the target's
+                live RLS differs, the deploy is blocked (someone may have edited
+                RLS directly in the target).
         """
 
         from . import __version__
@@ -293,6 +331,11 @@ class WorkspaceDeployer:
                 f"attachment(s) would deploy with source-workspace GUIDs: {files}. "
                 f"See warnings above."
             )
+
+        # Guard live RLS before any write: only models the repo actually carries
+        # RLS for are checked (no roles in repo -> no API call), and any drift
+        # from the target's live roles blocks the deploy unless explicitly allowed.
+        self._guard_rls(item_type_in_scope, include_items, allow_rls_change)
 
         if self._detector is not None:
             self._paramfile.write(

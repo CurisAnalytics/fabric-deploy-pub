@@ -1,5 +1,6 @@
 """Fabric / Power BI REST domain client — endpoint calls over the transport layer."""
 
+import base64
 import time
 import urllib.parse
 from typing import TypedDict
@@ -42,6 +43,7 @@ __all__ = [
     "find_item_by_name",
     "refresh_sql_endpoint_metadata",
     "refresh_semantic_model",
+    "get_semantic_model_definition",
 ]
 
 
@@ -367,3 +369,50 @@ def refresh_semantic_model(
         sleep_for = min(poll_s, max(1, timeout_s - waited))
         time.sleep(sleep_for)
         waited += sleep_for
+
+
+# --- Item definition read ------------------------------------------------
+
+
+def get_semantic_model_definition(
+    workspace_id: str, item_id: str, timeout_s: int = 300
+) -> dict[str, str]:
+    """Fetch a semantic model's definition as `{part_path: decoded_text}`.
+
+    Uses the Fabric getDefinition API in TMDL format (POST -> 202 LRO -> parts
+    as InlineBase64). Only definition parts (roles, model.tmdl, tables, …) are
+    returned — RLS *role memberships* are engine state and are NOT present here,
+    so this can never read or round-trip who is assigned to a role.
+
+    Args:
+        workspace_id: Workspace GUID.
+        item_id: Semantic model item GUID.
+        timeout_s: LRO poll timeout.
+
+    Returns:
+        Mapping of definition part path (e.g. "definition/roles/RLS.tmdl") to
+        its UTF-8-decoded text.
+    """
+    status, headers, body = http_request(
+        f"{FABRIC_HOST}/v1/workspaces/{workspace_id}/semanticModels/{item_id}"
+        "/getDefinition?format=TMDL",
+        method="POST",
+        scope=FABRIC_SCOPE,
+        error_context="get semantic model definition",
+    )
+    if status == 202:
+        body = poll_fabric_lro(
+            headers, error_context="semantic model getDefinition", timeout_s=timeout_s
+        )
+
+    parts = (body or {}).get("definition", {}).get("parts", [])
+    result: dict[str, str] = {}
+    for part in parts:
+        path = part.get("path")
+        payload = part.get("payload")
+        if not path or payload is None:
+            continue
+        if part.get("payloadType", "InlineBase64") != "InlineBase64":
+            continue
+        result[path] = base64.b64decode(payload).decode("utf-8")
+    return result

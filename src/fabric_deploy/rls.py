@@ -1,0 +1,429 @@
+"""Row-level security (RLS) round-trip: read prod role definitions, diff, guard.
+
+RLS on a Fabric semantic model is two separate things in two stores:
+
+* **Role definitions** (role names + DAX `tablePermission` filters) live *in*
+  the model definition (`definition/roles/*.tmdl`, wired via `ref role` in
+  `model.tmdl`). A from-git deploy **overwrites** these — this is the real
+  clobber risk when someone edits RLS live in prod for speed.
+* **Role memberships** (which users/groups are assigned) are engine/Service
+  state. They are NOT in the deploy payload, `getDefinition` cannot read them,
+  and a deploy never changes them. Manage them via Entra security groups.
+
+This module handles definitions only — the thing a deploy can silently destroy.
+It powers two entry points:
+
+* ``fabdep rls pull`` — read the target model's live roles, diff against the
+  repo, and (with ``--write``) pull them into the working tree for review.
+* the deploy guard — before ``fabdep deploy`` publishes a semantic model that
+  carries RLS *in the repo*, compare the repo's roles to the target's live
+  roles and **block** the deploy on any difference unless ``--allow-rls-change``
+  is passed. If the repo has no roles for a model, the guard makes no API call
+  (most workspaces have no RLS, so this stays free).
+"""
+
+from __future__ import annotations
+
+import difflib
+import json
+import logging
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
+from .client import (
+    find_item_by_name,
+    get_semantic_model_definition,
+    get_workspace_id_by_name,
+)
+from .config import FabdepConfig
+from .identity import apply_tenant_pin
+from .log import get_logger
+
+__all__ = [
+    "MEMBERS_NOTE",
+    "Role",
+    "RlsDiff",
+    "diff_roles",
+    "read_local_roles",
+    "roles_from_parts",
+    "guard_deploy_rls",
+    "pull_rls",
+]
+
+MEMBERS_NOTE = (
+    "Note: this compares role DEFINITIONS only. Role MEMBERSHIPS (who is "
+    "assigned to each role) are Service state — never in the deploy payload, "
+    "not readable here, and never changed by a deploy. Manage them via Entra "
+    "security groups."
+)
+
+_ROLE_DECL = re.compile(r"^\s*role\s+(.+?)\s*$")
+_REF_ROLE = re.compile(r"^(\s*)ref\s+role\s+(.+?)\s*$")
+# A TMDL name is bare when it is a simple identifier; otherwise it is quoted.
+_BARE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _normalize_tmdl(text: str) -> str:
+    """Normalize TMDL for comparison: LF endings, no trailing/edge blank lines.
+
+    Deliberately conservative — only cosmetic serialization noise (line
+    endings, trailing whitespace, surrounding blank lines) is folded away.
+    Indentation and DAX bodies are left intact so a real edit is never masked
+    as "unchanged" (a false match would let a deploy silently clobber prod).
+    """
+    lines = [ln.rstrip() for ln in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+    return "\n".join(lines)
+
+
+def _unquote_name(raw: str) -> str:
+    """Strip TMDL single-quote quoting from a role name."""
+    raw = raw.strip()
+    if len(raw) >= 2 and raw[0] == "'" and raw[-1] == "'":
+        return raw[1:-1].replace("''", "'")
+    return raw
+
+
+def _quote_name(name: str) -> str:
+    """Quote a role name for a TMDL `ref role` line if it isn't a bare id."""
+    if _BARE_NAME.match(name):
+        return name
+    return "'" + name.replace("'", "''") + "'"
+
+
+def _role_name_from_tmdl(text: str, fallback: str) -> str:
+    """Parse the `role <name>` declaration; fall back to the file stem."""
+    for line in text.splitlines():
+        m = _ROLE_DECL.match(line)
+        if m:
+            return _unquote_name(m.group(1))
+    return fallback
+
+
+@dataclass(frozen=True)
+class Role:
+    """One RLS role definition, as stored in the model definition."""
+
+    name: str
+    filename: str  # basename within definition/roles/, e.g. "RLS.tmdl"
+    raw: str  # original TMDL text (written verbatim on pull --write)
+
+    @property
+    def body(self) -> str:
+        """Normalized text used for equality comparison."""
+        return _normalize_tmdl(self.raw)
+
+
+@dataclass
+class RlsDiff:
+    """Neutral difference between two role sets: `local` (repo) vs `remote` (target).
+
+    Callers phrase the direction — the deploy guard reads it as "what the deploy
+    would do to the target"; `rls pull` reads it as "what pulling would do to the
+    working tree".
+    """
+
+    only_local: list[str]  # role names present only in the repo
+    only_remote: list[str]  # role names present only in the target
+    modified: list[str]  # names present in both, definitions differ
+    unchanged: list[str]  # names present in both, definitions identical
+    local: dict[str, Role]
+    remote: dict[str, Role]
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.only_local or self.only_remote or self.modified)
+
+
+def roles_from_parts(parts: dict[str, str]) -> dict[str, Role]:
+    """Extract RLS roles from a `getDefinition` part map (`{path: text}`)."""
+    roles: dict[str, Role] = {}
+    for path, text in parts.items():
+        norm = path.replace("\\", "/")
+        if "/roles/" not in norm or not norm.endswith(".tmdl"):
+            continue
+        filename = norm.rsplit("/", 1)[-1]
+        name = _role_name_from_tmdl(text, filename[: -len(".tmdl")])
+        roles[name] = Role(name=name, filename=filename, raw=text)
+    return roles
+
+
+def read_local_roles(model_dir: Path) -> dict[str, Role]:
+    """Read RLS roles from a `.SemanticModel` repo directory."""
+    roles_dir = model_dir / "definition" / "roles"
+    if not roles_dir.is_dir():
+        return {}
+    roles: dict[str, Role] = {}
+    for f in sorted(roles_dir.glob("*.tmdl")):
+        text = f.read_text(encoding="utf-8")
+        name = _role_name_from_tmdl(text, f.stem)
+        roles[name] = Role(name=name, filename=f.name, raw=text)
+    return roles
+
+
+def diff_roles(local: dict[str, Role], remote: dict[str, Role]) -> RlsDiff:
+    """Compare two role sets by normalized definition text."""
+    lk, rk = set(local), set(remote)
+    both = lk & rk
+    return RlsDiff(
+        only_local=sorted(lk - rk),
+        only_remote=sorted(rk - lk),
+        modified=sorted(n for n in both if local[n].body != remote[n].body),
+        unchanged=sorted(n for n in both if local[n].body == remote[n].body),
+        local=local,
+        remote=remote,
+    )
+
+
+def _render_diff(diff: RlsDiff, add_label: str, remove_label: str, change_label: str) -> str:
+    """Render a role diff as a human-readable block with unified DAX diffs."""
+    out: list[str] = []
+    for name in diff.only_local:
+        out.append(f"  [{add_label}] role '{name}'")
+    for name in diff.only_remote:
+        out.append(f"  [{remove_label}] role '{name}'")
+    for name in diff.modified:
+        out.append(f"  [{change_label}] role '{name}':")
+        udiff = difflib.unified_diff(
+            diff.remote[name].body.splitlines(),
+            diff.local[name].body.splitlines(),
+            fromfile=f"{name} (target)",
+            tofile=f"{name} (repo)",
+            lineterm="",
+        )
+        out.extend("      " + ln for ln in udiff)
+    return "\n".join(out)
+
+
+# --- shared collection ---------------------------------------------------
+
+
+def _semantic_model_dirs(repo_dir: Path) -> dict[str, Path]:
+    """Map SemanticModel display name -> its `.SemanticModel` repo directory."""
+    out: dict[str, Path] = {}
+    for platform_file in repo_dir.rglob(".platform"):
+        parent = platform_file.parent
+        if not parent.name.endswith(".SemanticModel"):
+            continue
+        try:
+            meta = json.loads(platform_file.read_text())["metadata"]
+            out[meta["displayName"]] = parent
+        except Exception:
+            continue
+    return out
+
+
+def _remote_roles(workspace_id: str, model_name: str) -> dict[str, Role]:
+    """Fetch the target model's live RLS role definitions."""
+    item = find_item_by_name(workspace_id, "SemanticModel", model_name)
+    parts = get_semantic_model_definition(workspace_id, item["id"])
+    return roles_from_parts(parts)
+
+
+# --- deploy guard --------------------------------------------------------
+
+
+def guard_deploy_rls(
+    workspace_id: str,
+    repo_dir: Path | str,
+    model_names: list[str] | None,
+    allow_change: bool,
+    logger: logging.Logger | None = None,
+) -> None:
+    """Block a deploy that would change a target model's live RLS definitions.
+
+    Only models that carry RLS *in the repo* are checked — a model with no
+    `definition/roles/` folder is skipped without any API call. For each model
+    that does, the target's live roles are fetched and compared; any difference
+    (added, removed, or modified role) blocks the deploy unless `allow_change`.
+
+    Assumes auth / tenant pin is already applied (the deployer does this).
+
+    Args:
+        workspace_id: Target workspace GUID (whatever this deploy targets).
+        repo_dir: Workspace repo directory.
+        model_names: SemanticModel display names in deploy scope; None = every
+            model in the repo. Pass an empty list to skip the guard entirely.
+        allow_change: When True, permit an RLS change (warn instead of block).
+        logger: Logger to use.
+
+    Raises:
+        RuntimeError: If a deploy would change RLS and `allow_change` is False.
+    """
+    log = logger or get_logger(__name__)
+    repo_dir = Path(repo_dir).resolve()
+
+    if model_names is not None and not model_names:
+        return  # no semantic models in scope
+
+    dirs = _semantic_model_dirs(repo_dir)
+    if model_names is not None:
+        wanted = {m.removesuffix(".SemanticModel") for m in model_names}
+        dirs = {n: d for n, d in dirs.items() if n in wanted}
+
+    blocked: list[str] = []
+    for name, model_dir in sorted(dirs.items()):
+        local = read_local_roles(model_dir)
+        if not local:
+            continue  # repo has no RLS for this model -> nothing to guard
+
+        remote = _remote_roles(workspace_id, name)
+        diff = diff_roles(local, remote)
+        if not diff.changed:
+            log.info(f"RLS check: '{name}' — repo matches target ({len(local)} role(s)).")
+            continue
+
+        rendering = _render_diff(
+            diff, add_label="deploy ADDS", remove_label="deploy WIPES", change_label="deploy CHANGES"
+        )
+        if allow_change:
+            log.warning(
+                f"RLS change permitted for '{name}' (--allow-rls-change):\n{rendering}"
+            )
+        else:
+            log.error(f"RLS drift for '{name}' — deploy would change live RLS:\n{rendering}")
+            blocked.append(name)
+
+    if blocked:
+        raise RuntimeError(
+            "Deploy blocked: it would change row-level security on "
+            f"{len(blocked)} model(s): {', '.join(blocked)}.\n"
+            "The target's live RLS differs from the repo (someone may have "
+            "edited it directly). Reconcile with `fabdep rls pull` (--write to "
+            "adopt the target's roles), or re-run deploy with --allow-rls-change "
+            "to intentionally overwrite it.\n" + MEMBERS_NOTE
+        )
+    if any(read_local_roles(d) for d in dirs.values()):
+        log.info(MEMBERS_NOTE)
+
+
+# --- rls pull ------------------------------------------------------------
+
+
+def _reconcile_ref_roles(model_tmdl: str, desired: set[str]) -> str:
+    """Rewrite `ref role` lines in model.tmdl to exactly `desired`.
+
+    Drops `ref role` lines for roles no longer present and appends any missing
+    ones next to the existing block (or at end of file if there is none),
+    preserving the indentation style already in use.
+    """
+    lines = model_tmdl.replace("\r\n", "\n").split("\n")
+    kept: list[str] = []
+    ref_indent = ""
+    last_ref_idx = -1
+    present: set[str] = set()
+    for line in lines:
+        m = _REF_ROLE.match(line)
+        if m:
+            ref_indent = m.group(1)
+            name = _unquote_name(m.group(2))
+            if name not in desired:
+                continue  # drop a stale ref role
+            present.add(name)
+            last_ref_idx = len(kept)
+        kept.append(line)
+
+    missing = sorted(desired - present)
+    if not missing:
+        return "\n".join(kept)
+
+    new_lines = [f"{ref_indent}ref role {_quote_name(n)}" for n in missing]
+    if last_ref_idx >= 0:
+        kept[last_ref_idx + 1 : last_ref_idx + 1] = new_lines
+    else:
+        if kept and kept[-1] != "":
+            kept.append("")
+        kept.extend(new_lines)
+    return "\n".join(kept)
+
+
+def _apply_pull(model_dir: Path, diff: RlsDiff, log: logging.Logger) -> None:
+    """Overwrite the working tree so its RLS matches the target (remote)."""
+    roles_dir = model_dir / "definition" / "roles"
+    roles_dir.mkdir(parents=True, exist_ok=True)
+
+    for name in diff.only_local:  # target no longer has it -> delete locally
+        f = roles_dir / diff.local[name].filename
+        if f.exists():
+            f.unlink()
+            log.info(f"  deleted {f.relative_to(model_dir)}")
+
+    for name in diff.only_remote + diff.modified:  # write target's version
+        role = diff.remote[name]
+        f = roles_dir / role.filename
+        f.write_text(role.raw if role.raw.endswith("\n") else role.raw + "\n", encoding="utf-8")
+        log.info(f"  wrote {f.relative_to(model_dir)}")
+
+    model_tmdl = model_dir / "definition" / "model.tmdl"
+    if model_tmdl.exists():
+        rewritten = _reconcile_ref_roles(model_tmdl.read_text(encoding="utf-8"), set(diff.remote))
+        model_tmdl.write_text(rewritten, encoding="utf-8")
+
+
+def pull_rls(
+    repo_dir: Path | str,
+    branch_override: str | None = None,
+    models: list[str] | None = None,
+    write: bool = False,
+    logger: logging.Logger | None = None,
+) -> bool:
+    """Read the target's RLS role definitions, diff against the repo, optionally pull.
+
+    Args:
+        repo_dir: Workspace repo directory (for fabdep.yml + model discovery).
+        branch_override: Override the git branch for workspace resolution.
+        models: SemanticModel display names to check; default = all in the repo.
+        write: Overwrite the working tree's roles to match the target.
+        logger: Logger to use.
+
+    Returns:
+        True if any model's RLS differed from the target (before any --write).
+
+    Raises:
+        ValueError: If no semantic model can be resolved.
+    """
+    log = logger or get_logger(__name__)
+    repo_dir = Path(repo_dir).resolve()
+
+    config = FabdepConfig.from_path(repo_dir, branch_override=branch_override)
+    apply_tenant_pin(config.tenant, log)
+    workspace_id = get_workspace_id_by_name(config.workspace_name)
+    log.info(f"Workspace: '{config.workspace_name}' ({workspace_id})")
+
+    dirs = _semantic_model_dirs(repo_dir)
+    if models:
+        wanted = {m.removesuffix(".SemanticModel") for m in models}
+        dirs = {n: d for n, d in dirs.items() if n in wanted}
+    if not dirs:
+        raise ValueError(
+            "No semantic model to check. Pass -i '<displayName>' or run from a "
+            "repo that contains a .SemanticModel item."
+        )
+
+    any_changed = False
+    for name, model_dir in sorted(dirs.items()):
+        local = read_local_roles(model_dir)
+        remote = _remote_roles(workspace_id, name)
+        diff = diff_roles(local, remote)
+
+        if not diff.changed:
+            log.info(f"'{name}': RLS in sync ({len(remote)} role(s)).")
+            continue
+
+        any_changed = True
+        rendering = _render_diff(
+            diff, add_label="pull DELETES", remove_label="pull ADDS", change_label="pull UPDATES"
+        )
+        log.info(f"'{name}': RLS differs from target —\n{rendering}")
+        if write:
+            _apply_pull(model_dir, diff, log)
+            log.info(f"'{name}': working tree updated to match target — review and commit.")
+
+    log.info(MEMBERS_NOTE)
+    if any_changed and not write:
+        log.info("Re-run with --write to pull the target's roles into the working tree.")
+    return any_changed
