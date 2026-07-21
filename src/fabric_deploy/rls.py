@@ -62,17 +62,30 @@ _ROLE_DECL = re.compile(r"^\s*role\s+(.+?)\s*$")
 _REF_ROLE = re.compile(r"^(\s*)ref\s+role\s+(.+?)\s*$")
 # A TMDL name is bare when it is a simple identifier; otherwise it is quoted.
 _BARE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# PBI_Id is a per-object GUID Power BI regenerates in each environment — two
+# roles with identical security rules get different PBI_Ids across dev/prod,
+# so it is drift-detection noise and is dropped before comparison.
+_PBI_ID_ANNOTATION = re.compile(r"^\s*annotation\s+PBI_Id\s*=")
 
 
 def _normalize_tmdl(text: str) -> str:
     """Normalize TMDL for comparison: LF endings, no trailing/edge blank lines.
 
     Deliberately conservative — only cosmetic serialization noise (line
-    endings, trailing whitespace, surrounding blank lines) is folded away.
-    Indentation and DAX bodies are left intact so a real edit is never masked
-    as "unchanged" (a false match would let a deploy silently clobber prod).
+    endings, trailing whitespace, surrounding blank lines) and the environment-
+    specific `annotation PBI_Id` GUID are folded away. Indentation and DAX
+    bodies are left intact so a real edit is never masked as "unchanged" (a
+    false match would let a deploy silently clobber prod).
+
+    `annotation PBI_Id` is dropped because Power BI regenerates that GUID per
+    environment; keeping it would flag two roles with identical security rules
+    as drift and block a legitimate dev->prod deploy.
     """
-    lines = [ln.rstrip() for ln in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    lines = [
+        ln.rstrip()
+        for ln in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        if not _PBI_ID_ANNOTATION.match(ln)
+    ]
     while lines and not lines[0]:
         lines.pop(0)
     while lines and not lines[-1]:

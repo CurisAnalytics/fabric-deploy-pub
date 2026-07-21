@@ -93,6 +93,29 @@ def test_diff_ignores_cosmetic_whitespace():
     assert not diff_roles(local, remote).changed
 
 
+def test_diff_ignores_pbi_id_annotation():
+    """Identical security rule, different per-env PBI_Id GUID -> not drift.
+
+    Mirrors the real Woodgrove dev-vs-prod case: same tablePermission, different
+    annotation PBI_Id. Must read as unchanged so a legit deploy isn't blocked.
+    """
+    base = (
+        'role GOTHAM\n\tmodelPermission: read\n\n'
+        '\ttablePermission V_REGIONS = [region] == "GOTHAM CITY"\n\n'
+        "\tannotation PBI_Id = "
+    )
+    local = _role("GOTHAM", base + "0123456789abcdef0123456789abcdef")
+    remote = _role("GOTHAM", base + "fedcba9876543210fedcba9876543210")
+    assert not diff_roles(local, remote).changed
+
+
+def test_diff_detects_real_rule_change_despite_pbi_id():
+    """A genuine DAX change is still caught even with PBI_Id stripped."""
+    a = _role("GOTHAM", 'role GOTHAM\n\ttablePermission t = [x] == "A"\n\tannotation PBI_Id = 1\n')
+    b = _role("GOTHAM", 'role GOTHAM\n\ttablePermission t = [x] == "B"\n\tannotation PBI_Id = 2\n')
+    assert diff_roles(a, b).modified == ["GOTHAM"]
+
+
 def test_diff_detects_modified():
     d = diff_roles(_role("RLS", ROLE_RLS), _role("RLS", ROLE_RLS_EDITED))
     assert d.modified == ["RLS"]
