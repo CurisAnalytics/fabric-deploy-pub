@@ -285,12 +285,23 @@ def guard_deploy_rls(
         wanted = {m.removesuffix(".SemanticModel") for m in model_names}
         dirs = {n: d for n, d in dirs.items() if n in wanted}
 
-    blocked: list[str] = []
-    for name, model_dir in sorted(dirs.items()):
-        local = read_local_roles(model_dir)
-        if not local:
-            continue  # repo has no RLS for this model -> nothing to guard
+    # Only models that carry RLS in the repo cost anything to guard.
+    guarded = {
+        name: (model_dir, local)
+        for name, model_dir in sorted(dirs.items())
+        if (local := read_local_roles(model_dir))
+    }
+    if not guarded:
+        return
 
+    log.info(
+        f"RLS guard: reading live role definitions for {len(guarded)} model(s) "
+        "from the target — this can take ~30s per model..."
+    )
+
+    blocked: list[str] = []
+    change_permitted = False
+    for name, (model_dir, local) in guarded.items():
         remote = _remote_roles(workspace_id, name)
         if remote is None:
             log.info(
@@ -308,6 +319,7 @@ def guard_deploy_rls(
             diff, add_label="deploy ADDS", remove_label="deploy WIPES", change_label="deploy CHANGES"
         )
         if allow_change:
+            change_permitted = True
             log.warning(
                 f"RLS change permitted for '{name}' (--allow-rls-change):\n{rendering}"
             )
@@ -324,7 +336,9 @@ def guard_deploy_rls(
             "adopt the target's roles), or re-run deploy with --allow-rls-change "
             "to intentionally overwrite it.\n" + MEMBERS_NOTE
         )
-    if any(read_local_roles(d) for d in dirs.values()):
+    # The definitions-vs-memberships distinction only matters when the deploy
+    # is actually about to change RLS; a clean check stays quiet.
+    if change_permitted:
         log.info(MEMBERS_NOTE)
 
 

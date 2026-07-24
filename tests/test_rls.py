@@ -8,6 +8,7 @@ network surface (`_remote_roles`) mocked.
 from __future__ import annotations
 
 import json
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -204,6 +205,64 @@ def test_guard_skips_when_model_absent_in_target(tmp_path, monkeypatch):
     _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS})
     monkeypatch.setattr("fabric_deploy.rls._remote_roles", lambda ws, name: None)
     guard_deploy_rls("ws", tmp_path, model_names=None, allow_change=False)
+
+
+def test_guard_announces_fetch_cost_before_reading_target(tmp_path, monkeypatch, caplog):
+    """The live-definition read is slow (~30s/model) — say so before starting."""
+    _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS})
+    monkeypatch.setattr(
+        "fabric_deploy.rls._remote_roles",
+        lambda ws, name: read_local_roles(tmp_path / "M.SemanticModel"),
+    )
+    with caplog.at_level(logging.INFO, logger="test_rls_guard"):
+        guard_deploy_rls(
+            "ws", tmp_path, model_names=None, allow_change=False,
+            logger=logging.getLogger("test_rls_guard"),
+        )
+    assert any("can take" in r.message for r in caplog.records)
+
+
+def test_guard_clean_check_omits_members_note(tmp_path, monkeypatch, caplog):
+    """When repo matches target there is no RLS change afoot — skip the note."""
+    _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS})
+    monkeypatch.setattr(
+        "fabric_deploy.rls._remote_roles",
+        lambda ws, name: read_local_roles(tmp_path / "M.SemanticModel"),
+    )
+    with caplog.at_level(logging.INFO, logger="test_rls_guard"):
+        guard_deploy_rls(
+            "ws", tmp_path, model_names=None, allow_change=False,
+            logger=logging.getLogger("test_rls_guard"),
+        )
+    assert not any(MEMBERS_NOTE in r.message for r in caplog.records)
+
+
+def test_guard_permitted_change_logs_members_note(tmp_path, monkeypatch, caplog):
+    _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS_EDITED})
+    monkeypatch.setattr(
+        "fabric_deploy.rls._remote_roles", lambda ws, name: _role("RLS", ROLE_RLS)
+    )
+    with caplog.at_level(logging.INFO, logger="test_rls_guard"):
+        guard_deploy_rls(
+            "ws", tmp_path, model_names=None, allow_change=True,
+            logger=logging.getLogger("test_rls_guard"),
+        )
+    assert any(MEMBERS_NOTE in r.message for r in caplog.records)
+
+
+def test_guard_no_local_rls_stays_silent(tmp_path, monkeypatch, caplog):
+    """No repo RLS -> no API call, so no fetch-cost announcement either."""
+    _make_model(tmp_path, name="M", roles=None)
+    monkeypatch.setattr(
+        "fabric_deploy.rls._remote_roles",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no call")),
+    )
+    with caplog.at_level(logging.INFO, logger="test_rls_guard"):
+        guard_deploy_rls(
+            "ws", tmp_path, model_names=None, allow_change=False,
+            logger=logging.getLogger("test_rls_guard"),
+        )
+    assert not caplog.records
 
 
 def test_guard_blocks_on_wipe(tmp_path, monkeypatch):
