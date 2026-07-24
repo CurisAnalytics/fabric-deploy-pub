@@ -2,6 +2,12 @@
 
 One-line status per release. Newest first. Dates are release/commit dates.
 
+## [1.7.0] — Unreleased
+`fabdep rls` (pull/diff live RLS role definitions) + deploy guard that blocks a deploy from silently changing a target model's live RLS. Guard UX: announce the slow live-definition read before it starts, and keep a clean check quiet (definitions-vs-memberships note only prints when a change is actually permitted/blocked). Auth UX: definitively-expired credentials (AADSTS7000222 secret expiry, refresh-token expiry codes) print a rotate/re-login hint instead of the account list.
+
+## [1.6.2] — 2026-07-21
+Null-UUID guard, `.platform`-typed item discovery, domain-rule fixes.
+
 ## [1.6.1] — Unreleased
 Remap notebook `dependencies.warehouse` bindings (T-SQL `Lakewarehouse` → lakehouse `$sqlendpointid`, `MountedWarehouse` → target-workspace SQLEndpoint literal, `Datawarehouse` → Warehouse `$id`); recursive item-name detection so nested `.SQLDatabase`/`.Lakehouse` folders resolve; warn (and `--fail-on-stale`) when a warehouse attachment would deploy with a source-workspace GUID.
 
