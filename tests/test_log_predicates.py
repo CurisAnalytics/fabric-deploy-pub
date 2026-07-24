@@ -12,6 +12,7 @@ from fabric_deploy.log import (
     error_hint,
     is_auth_error,
     is_connection_error,
+    is_expired_credential_error,
     is_transient_error,
 )
 
@@ -49,6 +50,40 @@ def test_is_auth_error_true(msg: str):
 )
 def test_is_auth_error_false(msg: str):
     assert is_auth_error(msg) is False
+
+
+# --- is_expired_credential_error ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
+        # Verbatim shape of the live failure that motivated this predicate.
+        (
+            "ERROR: AADSTS7000222: The provided client secret keys for app "
+            "'bbbbbbbb-...' are expired. Visit the Azure portal to create new keys."
+        ),
+        "AADSTS700082: The refresh token has expired due to inactivity.",
+        "AADSTS70043: The refresh token has expired or is invalid.",
+        "AADSTS50173: The provided grant has expired due to it being revoked.",
+    ],
+)
+def test_is_expired_credential_error_true(msg: str):
+    assert is_expired_credential_error(msg) is True
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "401 Unauthorized",  # auth, but not definitively an expired credential
+        "Token has expired",  # no AADSTS code — could be a stale relay token
+        "AADSTS700016: Application not found in the directory",
+        "Internal server error",
+        "",
+    ],
+)
+def test_is_expired_credential_error_false(msg: str):
+    assert is_expired_credential_error(msg) is False
 
 
 # --- is_connection_error -------------------------------------------------

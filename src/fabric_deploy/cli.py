@@ -19,6 +19,7 @@ from .log import (
     format_auth_error_message,
     is_auth_error,
     is_connection_error,
+    is_expired_credential_error,
     print_error,
 )
 from .rename import rename_items_by_display_name
@@ -69,6 +70,14 @@ def handle_command_error(error: Exception, context: str) -> None:
             """
         )
         print_error(connection_help)
+    elif is_expired_credential_error(error_msg):
+        # The credential itself is expired — switching accounts can't fix it,
+        # so the account list is noise. The AADSTS text above says what to do.
+        print_error(
+            "The active credential has expired. Rotate the SPN secret/cert "
+            "(or `az login` again for a user account) — switching accounts "
+            "won't help.\n"
+        )
     elif is_auth_error(error_msg):
         all_accounts = list_accounts()
         auth_help = format_auth_error_message(all_accounts)

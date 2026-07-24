@@ -20,6 +20,7 @@ __all__ = [
     "format_auth_error_message",
     "format_account_list",
     "is_auth_error",
+    "is_expired_credential_error",
     "is_connection_error",
     "is_transient_error",
     "error_hint",
@@ -342,3 +343,29 @@ def is_auth_error(error_msg: str) -> bool:
     ]
 
     return any(pattern in error_lower for pattern in auth_patterns)
+
+
+def is_expired_credential_error(error_msg: str) -> bool:
+    """
+    Check if error message definitively means the active credential is expired.
+
+    These AADSTS codes identify an expired secret/cert or auth grant on the
+    *current* identity — switching accounts cannot fix them, so callers should
+    skip the account list and point at rotation / re-login instead.
+
+    Args:
+        error_msg: Error message string to check
+
+    Returns:
+        True if the credential is definitively expired, False otherwise
+    """
+    error_lower = error_msg.lower()
+
+    expired_codes = [
+        "aadsts7000222",  # client secret keys for the app are expired
+        "aadsts700082",  # refresh token expired due to inactivity
+        "aadsts70043",  # refresh token expired or revoked
+        "aadsts50173",  # grant expired — fresh sign-in required
+    ]
+
+    return any(code in error_lower for code in expired_codes)
