@@ -18,11 +18,50 @@ from azure.core.credentials import TokenCredential
 
 from fabric_deploy.params import ParameterFile
 from fabric_deploy.scope import _repo_items, validate_include_items
-from fabric_deploy.workspace import WorkspaceDeployer
+from fabric_deploy.workspace import WorkspaceDeployer, format_deploy_options
 
 
 TEST_WS_DIR = Path(__file__).parent / "test-wkspc"
 FAKE_WORKSPACE_ID = "00000000-0000-0000-0000-000000000001"
+
+
+class TestFormatDeployOptions:
+    def test_defaults(self):
+        assert format_deploy_options() == "Options: (defaults)"
+
+    def test_scoped_cross_branch_deploy(self):
+        """The Woodgrove-style invocation: fabdep -t SemanticModel -b prod."""
+        line = format_deploy_options(
+            branch_override="prod", item_types=["SemanticModel"]
+        )
+        assert line == "Options: --branch prod --item-types SemanticModel"
+
+    def test_all_flags(self):
+        line = format_deploy_options(
+            branch_override="prod",
+            new_workspace=True,
+            skip_lakehouse=True,
+            max_retries=3,
+            no_cleanup=True,
+            item_types=["Notebook", "DataPipeline"],
+            exclude_types=["Report"],
+            include_items=["My Model.SemanticModel"],
+            fail_on_stale=True,
+            allow_rls_change=True,
+        )
+        for needle in (
+            "--branch prod",
+            "--new-workspace",
+            "--skip-lakehouse",
+            "--max-retries 3",
+            "--no-cleanup",
+            "--item-types Notebook DataPipeline",
+            "--exclude-types Report",
+            "--include-items 'My Model.SemanticModel'",
+            "--fail-on-stale",
+            "--allow-rls-change",
+        ):
+            assert needle in line
 
 
 @pytest.fixture

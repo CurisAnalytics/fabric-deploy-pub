@@ -35,6 +35,47 @@ from .params import (
 from .scope import repo_item_types, resolve_item_scope, validate_include_items
 
 
+def format_deploy_options(
+    branch_override: str | None = None,
+    new_workspace: bool = False,
+    skip_lakehouse: bool = False,
+    max_retries: int = 1,
+    no_cleanup: bool = False,
+    item_types: list[str] | None = None,
+    exclude_types: list[str] | None = None,
+    include_items: list[str] | None = None,
+    fail_on_stale: bool = False,
+    allow_rls_change: bool = False,
+) -> str:
+    """One-line record of every non-default deploy option, in CLI-flag form.
+
+    Printed under the version banner so a run's scrollback says which flags
+    were in effect without reconstructing the command line.
+    """
+    opts: list[str] = []
+    if branch_override:
+        opts.append(f"--branch {branch_override}")
+    if new_workspace:
+        opts.append("--new-workspace")
+    if skip_lakehouse:
+        opts.append("--skip-lakehouse")
+    if max_retries != 1:
+        opts.append(f"--max-retries {max_retries}")
+    if no_cleanup:
+        opts.append("--no-cleanup")
+    if item_types:
+        opts.append(f"--item-types {' '.join(item_types)}")
+    if exclude_types:
+        opts.append(f"--exclude-types {' '.join(exclude_types)}")
+    if include_items:
+        opts.append(f"--include-items {' '.join(repr(i) for i in include_items)}")
+    if fail_on_stale:
+        opts.append("--fail-on-stale")
+    if allow_rls_change:
+        opts.append("--allow-rls-change")
+    return f"Options: {' '.join(opts) if opts else '(defaults)'}"
+
+
 @dataclass
 class WorkspaceDeployer:
     """
@@ -289,6 +330,20 @@ class WorkspaceDeployer:
         from . import __version__
 
         log_header(self.logger, f"Fabric CI/CD v{__version__}")
+        self.logger.info(
+            format_deploy_options(
+                branch_override=self.branch_override,
+                new_workspace=self.new_workspace,
+                skip_lakehouse=self.skip_lakehouse,
+                max_retries=self.max_retries,
+                no_cleanup=no_cleanup,
+                item_types=item_types,
+                exclude_types=exclude_types,
+                include_items=include_items,
+                fail_on_stale=fail_on_stale,
+                allow_rls_change=allow_rls_change,
+            )
+        )
 
         if include_items:
             append_feature_flag("enable_experimental_features")
