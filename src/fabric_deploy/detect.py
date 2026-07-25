@@ -114,6 +114,15 @@ class ParameterDetector:
         re.IGNORECASE,
     )
 
+    # Sql.Databases("HOST-SQLSTRING.{datawarehouse|database}.{...}") — the
+    # server-level navigation form (Power Query picks the database by name in
+    # a later step). One argument, so there is no db-name/item-id to capture;
+    # only the hostname needs remapping.
+    SQL_DATABASES_PATTERN: regex = re.compile(
+        r'Sql\.Databases\(\s*"([^"]+)-([A-Z0-9]+)\.(datawarehouse|database)\.(fabric\.microsoft\.com|pbidedicated\.windows\.net)"',
+        re.IGNORECASE,
+    )
+
     WORKSPACE_ID_PATTERN: regex = re.compile(
         r'"default_lakehouse_workspace_id":\s*"([0-9a-f-]+)"', re.IGNORECASE
     )
@@ -476,6 +485,25 @@ class ParameterDetector:
         for workspace_id, lakehouse_id in self.ONELAKE_DFS_PATTERN.findall(content):
             self._add_uuid_parameter(workspace_id, source_file, "Workspace ID")
             self._add_uuid_parameter(lakehouse_id, source_file, "Lakehouse ID")
+
+        for (
+            host_prefix,
+            sql_string,
+            domain_type,
+            domain_suffix,
+        ) in self.SQL_DATABASES_PATTERN.findall(content):
+            hostname_param = self._add_parameter(
+                f"{host_prefix}-{sql_string}.{domain_type}.{domain_suffix}",
+                source_file,
+                "SQL Database Connection String"
+                if domain_type.lower() == "database"
+                else "SQL Analytics Endpoint Connection String",
+            )
+            # setdefault: a two-arg Sql.Database elsewhere may have already
+            # recorded richer metadata (db_name) for the same hostname.
+            hostname_param.metadata.setdefault("domain_type", domain_type.lower())
+            hostname_param.metadata.setdefault("domain_suffix", domain_suffix.lower())
+            hostname_param.metadata.setdefault("host_prefix", host_prefix)
 
         for (
             host_prefix,

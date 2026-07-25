@@ -320,6 +320,51 @@ class TestSemanticModelExtraction:
         assert len(d.parameters[WORKSPACE_ID].source_files) == 2
         assert len(d.parameters[LAKEHOUSE_ID].source_files) == 2
 
+    def test_extracts_sql_databases_navigation_form(self, tmp_path: Path):
+        """`Sql.Databases("host")` (plural, one arg) — the database is picked
+        by name downstream, so only the hostname parameter is expected. This
+        form drove the Woodgrove prod deploy that kept its dev endpoint."""
+        _make_lakehouse(tmp_path, "lh")
+        body = (
+            "\t\t\t\tlet\n"
+            '\t\t\t\t    Source = Sql.Databases("HOST-XXXX.datawarehouse.fabric.microsoft.com"),\n'
+            '\t\t\t\t    lh = Source{[Name="lh"]}[Data],\n'
+            '\t\t\t\t    dbo_fact = lh{[Schema="dbo",Item="fact"]}[Data]\n'
+            "\t\t\t\tin\n"
+            "\t\t\t\t    dbo_fact"
+        )
+        _make_semantic_model(tmp_path, "sm", body)
+
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        host = "HOST-XXXX.datawarehouse.fabric.microsoft.com"
+        assert host in d.parameters
+        host_param = d.parameters[host]
+        assert host_param.description == "SQL Analytics Endpoint Connection String"
+        assert host_param.dynamic_variable == "$items.Lakehouse.lh.$sqlendpoint"
+        assert host_param.metadata["domain_type"] == "datawarehouse"
+        # One-arg form carries no db name / endpoint item id — nothing else
+        # should be detected from this model.
+        assert len(d.parameters) == 1
+
+    def test_sql_databases_merges_with_two_arg_form(self, tmp_path: Path):
+        """The same hostname via Sql.Databases and Sql.Database dedupes into
+        one parameter, keeping the two-arg form's richer db_name metadata."""
+        _make_lakehouse(tmp_path, "lh")
+        body = (
+            'Source = Sql.Databases("HOST-XXXX.datawarehouse.fabric.microsoft.com")\n'
+            f'Other = Sql.Database("HOST-XXXX.datawarehouse.fabric.microsoft.com", "lh-{ENDPOINT_ID}")'
+        )
+        _make_semantic_model(tmp_path, "sm", body)
+
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        host = "HOST-XXXX.datawarehouse.fabric.microsoft.com"
+        assert d.parameters[host].metadata["db_name"] == "lh"
+        assert ENDPOINT_ID in d.parameters
+
     def test_pbidedicated_domain_metadata(self, tmp_path: Path):
         _make_lakehouse(tmp_path, "lh")
         body = (
