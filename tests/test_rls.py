@@ -192,12 +192,49 @@ def test_guard_blocks_on_drift(tmp_path, monkeypatch):
 
 
 def test_guard_allows_drift_with_flag(tmp_path, monkeypatch):
+    """--allow-rls-change skips the check outright — no live read, no block.
+
+    The flag already decides the outcome (overwrite), so paying ~30s/model to
+    diff the roles could only produce a warning about a settled decision.
+    """
     _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS_EDITED})
-    monkeypatch.setattr(
-        "fabric_deploy.rls._remote_roles", lambda ws, name: _role("RLS", ROLE_RLS)
-    )
-    # Should not raise when the change is explicitly permitted.
+
+    def _boom(*a, **k):
+        raise AssertionError("remote roles should not be fetched")
+
+    monkeypatch.setattr("fabric_deploy.rls._remote_roles", _boom)
     guard_deploy_rls("ws", tmp_path, model_names=None, allow_change=True)
+
+
+def test_guard_with_allow_change_announces_the_skip(tmp_path, monkeypatch, caplog):
+    """Skipping is still reported — silence would read as 'checked, and clean'."""
+    _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS})
+    monkeypatch.setattr(
+        "fabric_deploy.rls._remote_roles",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no call")),
+    )
+    with caplog.at_level(logging.INFO, logger="test_rls_guard"):
+        guard_deploy_rls(
+            "ws", tmp_path, model_names=None, allow_change=True,
+            logger=logging.getLogger("test_rls_guard"),
+        )
+    assert any("skipped" in r.message for r in caplog.records)
+    assert not any("can take" in r.message for r in caplog.records)
+
+
+def test_guard_with_allow_change_silent_without_repo_rls(tmp_path, monkeypatch, caplog):
+    """No RLS in the repo -> nothing is being overwritten, so say nothing."""
+    _make_model(tmp_path, name="M", roles=None)
+    monkeypatch.setattr(
+        "fabric_deploy.rls._remote_roles",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no call")),
+    )
+    with caplog.at_level(logging.INFO, logger="test_rls_guard"):
+        guard_deploy_rls(
+            "ws", tmp_path, model_names=None, allow_change=True,
+            logger=logging.getLogger("test_rls_guard"),
+        )
+    assert not caplog.records
 
 
 def test_guard_skips_when_model_absent_in_target(tmp_path, monkeypatch):

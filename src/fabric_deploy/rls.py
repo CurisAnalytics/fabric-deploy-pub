@@ -17,9 +17,10 @@ It powers two entry points:
   repo, and (with ``--write``) pull them into the working tree for review.
 * the deploy guard — before ``fabdep deploy`` publishes a semantic model that
   carries RLS *in the repo*, compare the repo's roles to the target's live
-  roles and **block** the deploy on any difference unless ``--allow-rls-change``
-  is passed. If the repo has no roles for a model, the guard makes no API call
-  (most workspaces have no RLS, so this stays free).
+  roles and **block** the deploy on any difference. If the repo has no roles
+  for a model, the guard makes no API call (most workspaces have no RLS, so
+  this stays free); ``--allow-rls-change`` skips the comparison entirely, since
+  it declares the overwrite intentional before the check would run.
 """
 
 from __future__ import annotations
@@ -259,7 +260,11 @@ def guard_deploy_rls(
     Only models that carry RLS *in the repo* are checked — a model with no
     `definition/roles/` folder is skipped without any API call. For each model
     that does, the target's live roles are fetched and compared; any difference
-    (added, removed, or modified role) blocks the deploy unless `allow_change`.
+    (added, removed, or modified role) blocks the deploy.
+
+    `allow_change` skips the comparison outright: the operator has already
+    decided to overwrite the target's roles, so the live read (~30s per model)
+    can only produce a warning about a decision already made.
 
     Assumes auth / tenant pin is already applied (the deployer does this).
 
@@ -268,7 +273,8 @@ def guard_deploy_rls(
         repo_dir: Workspace repo directory.
         model_names: SemanticModel display names in deploy scope; None = every
             model in the repo. Pass an empty list to skip the guard entirely.
-        allow_change: When True, permit an RLS change (warn instead of block).
+        allow_change: When True, skip the check — the deploy is permitted to
+            overwrite the target's live role definitions.
         logger: Logger to use.
 
     Raises:
@@ -287,11 +293,21 @@ def guard_deploy_rls(
 
     # Only models that carry RLS in the repo cost anything to guard.
     guarded = {
-        name: (model_dir, local)
+        name: local
         for name, model_dir in sorted(dirs.items())
         if (local := read_local_roles(model_dir))
     }
     if not guarded:
+        return
+
+    # --allow-rls-change is the operator saying "overwrite the target's roles".
+    # Reading them back first can't change that outcome, so don't pay for it.
+    if allow_change:
+        log.warning(
+            f"RLS check skipped for {len(guarded)} model(s) (--allow-rls-change): "
+            "the deploy will overwrite the target's live role definitions with "
+            f"the repo's. {MEMBERS_NOTE}"
+        )
         return
 
     log.info(
@@ -300,8 +316,7 @@ def guard_deploy_rls(
     )
 
     blocked: list[str] = []
-    change_permitted = False
-    for name, (model_dir, local) in guarded.items():
+    for name, local in guarded.items():
         remote = _remote_roles(workspace_id, name)
         if remote is None:
             log.info(
@@ -318,14 +333,8 @@ def guard_deploy_rls(
         rendering = _render_diff(
             diff, add_label="deploy ADDS", remove_label="deploy WIPES", change_label="deploy CHANGES"
         )
-        if allow_change:
-            change_permitted = True
-            log.warning(
-                f"RLS change permitted for '{name}' (--allow-rls-change):\n{rendering}"
-            )
-        else:
-            log.error(f"RLS drift for '{name}' — deploy would change live RLS:\n{rendering}")
-            blocked.append(name)
+        log.error(f"RLS drift for '{name}' — deploy would change live RLS:\n{rendering}")
+        blocked.append(name)
 
     if blocked:
         raise RuntimeError(
@@ -336,10 +345,6 @@ def guard_deploy_rls(
             "adopt the target's roles), or re-run deploy with --allow-rls-change "
             "to intentionally overwrite it.\n" + MEMBERS_NOTE
         )
-    # The definitions-vs-memberships distinction only matters when the deploy
-    # is actually about to change RLS; a clean check stays quiet.
-    if change_permitted:
-        log.info(MEMBERS_NOTE)
 
 
 # --- rls pull ------------------------------------------------------------
