@@ -224,6 +224,18 @@ def parse_args() -> argparse.Namespace:
         help="Override git branch for workspace resolution",
     )
     _ = deploy_parser.add_argument(
+        "--pr",
+        nargs="?",
+        const="HEAD",
+        metavar="COMMIT",
+        help="Deploy only the items the latest pull request touched, instead "
+        "of reading the diff by hand. Finds the most recent merge / 'Merged PR "
+        "N:' / 'Merge pull request #N' commit reachable from HEAD, maps its "
+        "changed files onto the items that own them, and filters the deploy to "
+        "those. Pass a commit-ish to use a specific PR commit. Mutually "
+        "exclusive with --include-items.",
+    )
+    _ = deploy_parser.add_argument(
         "--new-workspace",
         "-N",
         action="store_true",
@@ -486,18 +498,21 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
             include_items=args.include_items,
             fail_on_stale=args.fail_on_stale,
             allow_rls_change=bool(args.allow_rls_change),
+            pr=args.pr,
         )
     except Exception as e:
         handle_command_error(e, "Deployment")
 
     if getattr(args, "frame", False):
-        # Frame the model(s) just deployed. If specific SemanticModels were
-        # targeted via -i, frame those; otherwise frame every model in the repo.
+        # Frame the model(s) just deployed. If the run was scoped (-i, or --pr
+        # resolving to an item list), frame those SemanticModels; otherwise
+        # frame every model in the repo.
         models = None
-        if args.include_items:
+        scoped = args.include_items or deployer.deployed_items  # pyright: ignore[reportPossiblyUnboundVariable]
+        if scoped:
             sm = [
                 it.rsplit(".", 1)[0]
-                for it in args.include_items
+                for it in scoped
                 if it.endswith(".SemanticModel")
             ]
             models = sm or None

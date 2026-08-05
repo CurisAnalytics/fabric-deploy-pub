@@ -14,6 +14,7 @@ from pathlib import Path
 from fabric_cicd.constants import ACCEPTED_ITEM_TYPES
 
 __all__ = [
+    "items_for_changed_paths",
     "repo_item_types",
     "resolve_item_scope",
     "validate_include_items",
@@ -61,6 +62,50 @@ def _repo_items(repo_dir: Path) -> dict[str, str]:
         display, item_type = meta
         items[f"{display}.{item_type}"] = platform_file.parent.name
     return items
+
+
+def items_for_changed_paths(
+    changed_paths: list[str], repo_dir: Path
+) -> tuple[list[str], list[str]]:
+    """Map changed file paths onto the items that own them.
+
+    Each item is a directory containing a `.platform`; a changed file belongs
+    to the nearest such ancestor. Files outside any item (fabdep.yml, README,
+    .gitignore) and files whose item directory no longer exists (the PR
+    deleted it) match nothing.
+
+    Args:
+        changed_paths: Repo-relative POSIX paths from a git diff.
+        repo_dir: Workspace repo directory.
+
+    Returns:
+        (item ids as '<displayName>.<ItemType>' in stable order, unmatched paths)
+    """
+    # Longest-prefix wins: an item nested inside a workspace folder must beat
+    # any shallower match.
+    index: dict[str, str] = {}
+    for platform_file in repo_dir.rglob(".platform"):
+        meta = _platform_meta(platform_file)
+        if not meta or meta[1] not in ACCEPTED_ITEM_TYPES:
+            continue
+        item_dir = platform_file.parent.relative_to(repo_dir).as_posix()
+        index[item_dir] = f"{meta[0]}.{meta[1]}"
+
+    matched: list[str] = []
+    unmatched: list[str] = []
+    for path in changed_paths:
+        posix = Path(path).as_posix()
+        owner = max(
+            (d for d in index if posix == d or posix.startswith(f"{d}/")),
+            key=len,
+            default=None,
+        )
+        if owner is None:
+            unmatched.append(path)
+        elif index[owner] not in matched:
+            matched.append(index[owner])
+
+    return matched, unmatched
 
 
 def resolve_item_scope(

@@ -32,7 +32,17 @@ from .params import (
     apply_manual_overrides,
     resolve_warehouse_endpoint_params,
 )
-from .scope import repo_item_types, resolve_item_scope, validate_include_items
+from .git import changed_paths_in, latest_pr_commit
+from .scope import (
+    items_for_changed_paths,
+    repo_item_types,
+    resolve_item_scope,
+    validate_include_items,
+)
+
+# Sentinel for a bare `--pr`: search back from HEAD for the PR commit, rather
+# than treating a specific commit-ish as the PR.
+PR_HEAD = "HEAD"
 
 
 def format_deploy_options(
@@ -46,6 +56,7 @@ def format_deploy_options(
     include_items: list[str] | None = None,
     fail_on_stale: bool = False,
     allow_rls_change: bool = False,
+    pr: str | None = None,
 ) -> str:
     """One-line record of every non-default deploy option, in CLI-flag form.
 
@@ -69,6 +80,8 @@ def format_deploy_options(
         opts.append(f"--exclude-types {' '.join(exclude_types)}")
     if include_items:
         opts.append(f"--include-items {' '.join(repr(i) for i in include_items)}")
+    if pr:
+        opts.append("--pr" if pr == PR_HEAD else f"--pr {pr}")
     if fail_on_stale:
         opts.append("--fail-on-stale")
     if allow_rls_change:
@@ -120,6 +133,8 @@ class WorkspaceDeployer:
     config: FabdepConfig = field(init=False, repr=False)
     _paramfile: ParameterFile = field(init=False, repr=False)
     _detector: ParameterDetector | None = field(default=None, init=False, repr=False)
+    # Item scope a deploy() call resolved to (set by --pr / --include-items).
+    deployed_items: list[str] = field(default_factory=list, init=False, repr=False)
     _skipped_lakehouse_count: int = field(default=0, init=False, repr=False)
     _manual_count: int = field(default=0, init=False, repr=False)
     logger: logging.Logger = field(init=False, repr=False)
@@ -300,6 +315,58 @@ class WorkspaceDeployer:
             logger=self.logger,
         )
 
+    def _items_from_pr(self, pr: str) -> list[str]:
+        """Resolve `--pr` to the item list the pull request actually touched.
+
+        Mirrors reading the PR diff by hand before a deploy: find the merge (or
+        squash) commit, take what it changed, and keep the items that own those
+        files. Anything ambiguous is reported rather than silently widened —
+        deploying more than the PR changed is the failure mode this flag exists
+        to avoid.
+
+        Raises:
+            RuntimeError: If no PR commit is found, or it touched no item.
+        """
+        if pr == PR_HEAD:
+            found = latest_pr_commit(self._repo_dir_resolved)
+            if not found:
+                raise RuntimeError(
+                    "--pr found no pull-request commit in the last 50 commits "
+                    "(looked for a merge commit, 'Merged PR N:' from Azure "
+                    "DevOps, or GitHub's 'Merge pull request #N' / '(#N)'). "
+                    "Pass the commit explicitly with --pr <commit-ish>."
+                )
+            sha, subject = found
+        else:
+            sha, subject = pr, ""
+
+        changed = changed_paths_in(self._repo_dir_resolved, sha)
+        matched, unmatched = items_for_changed_paths(
+            changed, self._repo_dir_resolved
+        )
+
+        label = f"{sha[:8]}" + (f" ({subject})" if subject else "")
+        self.logger.info(
+            f"--pr: {label} changed {len(changed)} file(s) across "
+            f"{len(matched)} item(s)."
+        )
+        if unmatched:
+            # Deleted items land here too — their directory is gone, so there
+            # is nothing to publish and `--pr` never unpublishes.
+            self.logger.info(
+                f"--pr: {len(unmatched)} changed path(s) belong to no item "
+                f"(repo config, docs, or an item the PR deleted) and are "
+                f"ignored: {', '.join(sorted(unmatched)[:5])}"
+                + (" ..." if len(unmatched) > 5 else "")
+            )
+        if not matched:
+            raise RuntimeError(
+                f"--pr: {label} changed no deployable item, so there is "
+                "nothing to publish. Deploy without --pr to push the whole "
+                "workspace."
+            )
+        return matched
+
     def deploy(
         self,
         no_cleanup: bool = False,
@@ -308,6 +375,7 @@ class WorkspaceDeployer:
         include_items: list[str] | None = None,
         fail_on_stale: bool = False,
         allow_rls_change: bool = False,
+        pr: str | None = None,
     ) -> None:
         """
         Deploy Fabric workspace items.
@@ -325,6 +393,14 @@ class WorkspaceDeployer:
                 security. By default, if the repo carries RLS and the target's
                 live RLS differs, the deploy is blocked (someone may have edited
                 RLS directly in the target).
+            pr: Restrict the deploy to the items a pull request touched.
+                PR_HEAD ("HEAD") searches back from HEAD for the PR commit; any
+                other value is used as the commit-ish directly. Resolves into
+                `include_items`, so it cannot be combined with it.
+
+        Raises:
+            RuntimeError: If `pr` is combined with `include_items`, no PR commit
+                is found, or the PR touched no deployable item.
         """
 
         from . import __version__
@@ -342,8 +418,21 @@ class WorkspaceDeployer:
                 include_items=include_items,
                 fail_on_stale=fail_on_stale,
                 allow_rls_change=allow_rls_change,
+                pr=pr,
             )
         )
+
+        if pr:
+            if include_items:
+                raise RuntimeError(
+                    "--pr and --include-items both set the item filter. Use "
+                    "--pr to deploy what a PR touched, or --include-items to "
+                    "name items yourself — not both."
+                )
+            include_items = self._items_from_pr(pr)
+        # Published as the resolved scope so callers (e.g. --frame) can act on
+        # what a --pr run actually selected instead of re-deriving it.
+        self.deployed_items = list(include_items or [])
 
         if include_items:
             append_feature_flag("enable_experimental_features")

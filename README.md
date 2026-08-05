@@ -28,6 +28,7 @@ fabdep [DIRECTORY] [OPTIONS]
   -t, --item-types       Item types to deploy (e.g. Notebook DataPipeline)
   -x, --exclude-types    Item types to exclude
   -i, --include-items    Specific items only, "Name.Type" (matches .platform displayName)
+      --pr [COMMIT]      Only the items the latest pull request touched
   -b, --branch           Override git branch for workspace resolution
   -N, --new-workspace    Create the workspace if it doesn't exist
   -r, --max-retries      Retries for transient errors (default: 1)
@@ -39,6 +40,15 @@ fabdep [DIRECTORY] [OPTIONS]
 `-i` matches the `.platform` **displayName**, not the folder name; a name that
 matches nothing fails loudly (instead of silently deploying nothing) and a
 one-line `Deployed: ...` confirmation prints what landed.
+
+`--pr` automates reading the PR diff before a promotion: it finds the most
+recent merge / `Merged PR N:` (Azure DevOps) / `Merge pull request #N` or
+`(#N)` (GitHub) commit reachable from HEAD, maps the files it changed onto the
+items that own them, and deploys only those. Pass a commit-ish (`--pr abc1234`)
+to pick a specific PR. It resolves into `-i`, so orphan cleanup is off and the
+two flags can't be combined. Changed paths that belong to no item in the
+working tree — repo config, docs, or an item the PR deleted — are listed and
+skipped; `--pr` never unpublishes.
 
 ### Refresh (Direct Lake framing)
 
