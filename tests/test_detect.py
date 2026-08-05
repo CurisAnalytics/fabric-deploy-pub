@@ -751,3 +751,176 @@ class TestNestedItemNameDetection:
         _make_lakehouse(tmp_path, "top_lh")
         d = ParameterDetector(tmp_path)
         assert d._detect_item_names("Lakehouse") == ["top_lh", "nested_lh"]
+
+
+# --- PBIR User Data Function rebind ----------------------------------------
+
+UDF_ITEM_ID = "66666666-6666-6666-6666-666666666666"
+
+
+def _make_udf(repo: Path, name: str, functions: list[str]) -> None:
+    item = repo / f"{name}.UserDataFunction"
+    item.mkdir()
+    (item / ".platform").write_text(
+        json.dumps({"metadata": {"displayName": name, "type": "UserDataFunction"}})
+    )
+    (item / "definition.json").write_text(
+        json.dumps({"functions": [{"name": f} for f in functions]})
+    )
+
+
+def _data_function_visual(
+    item_id: str, workspace_id: str, function_name: str | None
+) -> dict:
+    """A PBIR action button bound to a User Data Function."""
+    metadata: dict = {"autoRefresh": True, "parameters": []}
+    if function_name is not None:
+        metadata["name"] = function_name
+    return {
+        "visual": {
+            "visualType": "actionButton",
+            "visualContainerObjects": {
+                "visualLink": [
+                    {
+                        "properties": {
+                            "type": {
+                                "expr": {"Literal": {"Value": "'DataFunction'"}}
+                            },
+                            "dataFunction": {
+                                "kind": "ItemLocation",
+                                "byReference": {
+                                    "itemId": {
+                                        "expr": {"Literal": {"Value": f"'{item_id}'"}}
+                                    },
+                                    "workspaceId": {
+                                        "expr": {
+                                            "Literal": {"Value": f"'{workspace_id}'"}
+                                        }
+                                    },
+                                },
+                                "metadata": {"dataFunction": metadata},
+                            },
+                        }
+                    }
+                ]
+            },
+        }
+    }
+
+
+def _make_report_visual(repo: Path, name: str, visual: dict, visual_id: str = "v1") -> None:
+    report = repo / f"{name}.Report"
+    visuals = report / "definition" / "pages" / "p1" / "visuals" / visual_id
+    visuals.mkdir(parents=True)
+    (report / ".platform").write_text(
+        json.dumps({"metadata": {"displayName": name, "type": "Report"}})
+    )
+    (visuals / "visual.json").write_text(json.dumps(visual))
+
+
+class TestUserDataFunctionRebind:
+    def test_bound_button_is_rebound_to_target_workspace(self, tmp_path: Path):
+        """The dev itemId/workspaceId become target-resolved dynamics."""
+        _make_lakehouse(tmp_path, "lh")
+        _make_udf(tmp_path, "Report Functions", ["update_report_json"])
+        _make_report_visual(
+            tmp_path,
+            "Finance Report",
+            _data_function_visual(
+                UDF_ITEM_ID, WORKSPACE_ID, "update_report_json"
+            ),
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert (
+            d.parameters[UDF_ITEM_ID].dynamic_variable
+            == "$items.UserDataFunction.Report Functions.$id"
+        )
+        assert d.parameters[WORKSPACE_ID].dynamic_variable == "$workspace.$id"
+        assert d.udf_bindings == [
+            (
+                "Finance Report",
+                "update_report_json",
+                "Report Functions",
+                UDF_ITEM_ID,
+            )
+        ]
+
+    def test_unbound_button_is_left_alone(self, tmp_path: Path):
+        """An unassigned button carries "''" for both ids — nothing to rebind."""
+        _make_lakehouse(tmp_path, "lh")
+        _make_udf(tmp_path, "Fns", ["f"])
+        _make_report_visual(
+            tmp_path, "R", _data_function_visual("", "", None)
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert d.udf_bindings == []
+        assert not any(
+            p.description == "User Data Function Item ID" for p in d.parameters.values()
+        )
+
+    def test_unknown_function_is_not_rebound(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        """A function no repo item declares must warn, not guess at a host."""
+        _make_lakehouse(tmp_path, "lh")
+        _make_udf(tmp_path, "Fns", ["something_else"])
+        _make_report_visual(
+            tmp_path, "R", _data_function_visual(UDF_ITEM_ID, WORKSPACE_ID, "ghost_fn")
+        )
+        d = ParameterDetector(tmp_path)
+        with caplog.at_level("WARNING", logger="fabric_deploy.detect"):
+            d.detect_all()
+
+        assert UDF_ITEM_ID not in d.parameters
+        assert d.udf_bindings == []
+        assert any("not rebound" in r.message for r in caplog.records)
+
+    def test_ambiguous_function_is_not_rebound(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        """Two items declaring the same function -> the host can't be inferred."""
+        _make_lakehouse(tmp_path, "lh")
+        _make_udf(tmp_path, "FnsA", ["shared_fn"])
+        _make_udf(tmp_path, "FnsB", ["shared_fn"])
+        _make_report_visual(
+            tmp_path, "R", _data_function_visual(UDF_ITEM_ID, WORKSPACE_ID, "shared_fn")
+        )
+        d = ParameterDetector(tmp_path)
+        with caplog.at_level("WARNING", logger="fabric_deploy.detect"):
+            d.detect_all()
+
+        assert UDF_ITEM_ID not in d.parameters
+        assert any("ambiguous" in r.message for r in caplog.records)
+
+    def test_malformed_literal_is_not_rebound(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        """A byReference that isn't the expected literal shape is left verbatim."""
+        _make_lakehouse(tmp_path, "lh")
+        _make_udf(tmp_path, "Fns", ["f"])
+        visual = _data_function_visual(UDF_ITEM_ID, WORKSPACE_ID, "f")
+        link = visual["visual"]["visualContainerObjects"]["visualLink"][0]
+        link["properties"]["dataFunction"]["byReference"]["itemId"] = {"expr": "nope"}
+        _make_report_visual(tmp_path, "R", visual)
+        d = ParameterDetector(tmp_path)
+        with caplog.at_level("WARNING", logger="fabric_deploy.detect"):
+            d.detect_all()
+
+        assert UDF_ITEM_ID not in d.parameters
+        assert any("no usable" in r.message for r in caplog.records)
+
+    def test_reports_ignored_when_repo_has_no_udf(self, tmp_path: Path):
+        """No UserDataFunction item -> report definitions aren't walked at all."""
+        _make_lakehouse(tmp_path, "lh")
+        _make_report_visual(
+            tmp_path, "R", _data_function_visual(UDF_ITEM_ID, WORKSPACE_ID, "f")
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert UDF_ITEM_ID not in d.parameters
+        assert d.udf_bindings == []

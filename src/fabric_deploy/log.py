@@ -77,6 +77,16 @@ _ERROR_HINTS: list[tuple[tuple[str, ...], str]] = [
         "(Import/DirectQuery -> Direct Lake). Delete the semantic model item, "
         "then redeploy it fresh as Direct Lake.",
     ),
+    (
+        # Raised while resolving $items.UserDataFunction.<name>.$id, which the
+        # report UDF rebind emits. That dynamic reads the TARGET workspace, so
+        # it only resolves once the UDF itself has been published there.
+        ("not found as a deployed userdatafunction",),
+        "A report button is bound to a User Data Function that isn't deployed "
+        "in the target workspace yet. UserDataFunction publishes before Report "
+        "in a full deploy — so either drop the item-type filter for one run, or "
+        "deploy the function first (`fabdep -t UserDataFunction`) and re-run.",
+    ),
 ]
 
 

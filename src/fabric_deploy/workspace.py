@@ -405,6 +405,16 @@ class WorkspaceDeployer:
         for line in self._paramfile.summary:
             self.logger.info(line)
 
+        # An auto-rebound UDF button changes what a live report calls, so it is
+        # always announced rather than folded into the parameter count.
+        if self._detector and self._detector.udf_bindings:
+            for report, function, udf, item_id in self._detector.udf_bindings:
+                self.logger.info(
+                    f"UDF auto-rebind: '{report}' button calling '{function}' "
+                    f"-> '{udf}' in this deploy's target workspace "
+                    f"(was {item_id})."
+                )
+
         if item_type_in_scope:
             types_to_deploy = sorted(set(item_type_in_scope) & self.repo_item_types)
             if types_to_deploy:

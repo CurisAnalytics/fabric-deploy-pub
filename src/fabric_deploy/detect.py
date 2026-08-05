@@ -130,6 +130,17 @@ class ParameterDetector:
         r'"default_lakehouse":\s*"([0-9a-f-]+)"', re.IGNORECASE
     )
 
+    # A PBIR action button invokes a User Data Function through a `visualLink`
+    # container object whose properties look like:
+    #   type.expr.Literal.Value            == "'DataFunction'"
+    #   dataFunction.byReference.itemId    -> "'<udf item id>'"
+    #   dataFunction.byReference.workspaceId -> "'<workspace id>'"
+    #   dataFunction.metadata.dataFunction.name -> the function inside the item
+    # Both GUIDs are the SOURCE workspace's deployed ids (not logicalIds), so a
+    # dev->prod deploy ships buttons that still call the dev function unless
+    # they are parameterized. Unbound buttons carry "''" and are left alone.
+    PBIR_DATA_FUNCTION_TYPE = "'DataFunction'"
+
     # DirectLake semantic models reference the lakehouse via OneLake DFS URL:
     #   https://onelake.dfs.fabric.microsoft.com/<workspace_id>/<lakehouse_id>
     ONELAKE_DFS_PATTERN: regex = re.compile(
@@ -160,6 +171,14 @@ class ParameterDetector:
         # that has no replacement mapping — the source-workspace GUID would
         # deploy verbatim. Same promote-to-fatal contract as stale_attachments.
         self.unresolved_warehouse_bindings: list[tuple[str, str, str]] = []
+        # (report_item, function_name, udf_display_name, item_id) for each PBIR
+        # button whose UDF reference was auto-rebound to the target workspace.
+        # Surfaced by the deployer so an auto-replace is never silent.
+        self.udf_bindings: list[tuple[str, str, str, str]] = []
+        # Function name -> {UDF display names declaring it}, from each
+        # .UserDataFunction item's definition.json.
+        self._udf_functions: dict[str, set[str]] = {}
+        self._userdatafunction_names: list[str] = []
         self.logger: logging.Logger = get_logger(logger_name or __name__)
 
     @property
@@ -186,11 +205,13 @@ class ParameterDetector:
         self.parameters = {}
         self.stale_attachments = []
         self.unresolved_warehouse_bindings = []
+        self.udf_bindings = []
 
         # Item names must be resolved before _generate_dynamic_variable runs.
         self._lakehouse_names = self._detect_item_names("Lakehouse")
         self._sqldatabase_names = self._detect_item_names("SQLDatabase")
         self._warehouse_names = self._detect_item_names("Warehouse")
+        self._index_user_data_functions()
 
         # Notebook content is `.py` (Python/PySpark), `.sql` (T-SQL), etc.
         # Metadata block is identical JSON-in-comments — the prefix differs
@@ -218,6 +239,14 @@ class ParameterDetector:
             self._extract_from_copyjob,
             parse_json=True,
         )
+        # Only worth walking report definitions when the repo actually ships a
+        # User Data Function to rebind the buttons to.
+        if self._userdatafunction_names:
+            self._process_files(
+                self.repo_dir.glob("**/*.Report/definition/**/*.json"),
+                self._extract_from_report,
+                parse_json=True,
+            )
 
     def _platform_items(self, item_type: str) -> list[tuple[Path, dict]]:
         """(item_dir, .platform metadata) pairs for repo items of `item_type`.
@@ -603,6 +632,169 @@ class ParameterDetector:
                 source_file,
                 "Lakehouse ID",
             )
+
+    def _index_user_data_functions(self) -> None:
+        """Index the repo's `.UserDataFunction` items by the functions they declare.
+
+        A PBIR button names the *function* it calls (`update_report_json`),
+        not the item that hosts it, and the itemId it carries is the source
+        workspace's — useless for identifying the repo item. The declared
+        function names in each item's `definition.json` are the only portable
+        link, so they are what a rebind is matched on.
+        """
+        self._udf_functions = {}
+        self._userdatafunction_names = []
+        for item_dir, meta in self._platform_items("UserDataFunction"):
+            display_name = meta.get("displayName")
+            if not display_name:
+                continue
+            self._userdatafunction_names.append(display_name)
+            definition = item_dir / "definition.json"
+            if not definition.exists():
+                continue
+            try:
+                functions = json.loads(definition.read_text(encoding="utf-8")).get(
+                    "functions", []
+                )
+            except Exception as e:
+                self._log_file_warning(definition, e, "user data function definition")
+                continue
+            for fn in functions:
+                name = fn.get("name") if isinstance(fn, dict) else None
+                if name:
+                    self._udf_functions.setdefault(name, set()).add(display_name)
+
+    @staticmethod
+    def _pbir_literal(node) -> str:
+        """Unwrap a PBIR `{"expr": {"Literal": {"Value": "'x'"}}}` node to `x`.
+
+        Returns "" for any other shape — including the `"''"` empty literal an
+        unbound button carries. This is the structural gate: anything that
+        isn't exactly this shape is left untouched rather than guessed at.
+        """
+        if not isinstance(node, dict):
+            return ""
+        value = node.get("expr", {})
+        if not isinstance(value, dict):
+            return ""
+        literal = value.get("Literal", {})
+        if not isinstance(literal, dict):
+            return ""
+        raw = literal.get("Value")
+        if not isinstance(raw, str):
+            return ""
+        raw = raw.strip()
+        if len(raw) >= 2 and raw[0] == "'" and raw[-1] == "'":
+            raw = raw[1:-1]
+        return raw.strip()
+
+    def _iter_data_function_links(self, obj):
+        """Yield every `dataFunction` block with a `byReference` under `obj`."""
+        if isinstance(obj, dict):
+            candidate = obj.get("dataFunction")
+            if isinstance(candidate, dict) and isinstance(
+                candidate.get("byReference"), dict
+            ):
+                yield candidate
+            for value in obj.values():
+                yield from self._iter_data_function_links(value)
+        elif isinstance(obj, list):
+            for item in obj:
+                yield from self._iter_data_function_links(item)
+
+    def _resolve_udf_name(self, function_name: str) -> str | None:
+        """Which repo `.UserDataFunction` item declares `function_name`, if exactly one.
+
+        Ambiguity (two items declaring the same function) and absence (the
+        button calls something no repo item provides) both return None — the
+        caller then leaves the reference alone rather than binding it wrong.
+        """
+        if not function_name:
+            return None
+        owners = self._udf_functions.get(function_name, set())
+        if len(owners) == 1:
+            return next(iter(owners))
+        return None
+
+    def _extract_from_report(self, file_path: Path, data: dict) -> None:
+        """Rebind PBIR User Data Function buttons to the target workspace.
+
+        Conservative by design — a reference is only parameterized when every
+        structural gate holds: the literal wrappers are the expected shape,
+        both GUIDs are real UUIDs, and the named function resolves to exactly
+        one `.UserDataFunction` item in the repo. Anything else is warned about
+        and left verbatim, because a wrong rebind points a live button at the
+        wrong workspace's function.
+        """
+        source_file = str(file_path.relative_to(self.repo_dir))
+        report_name = self._report_item_name(file_path)
+
+        for block in self._iter_data_function_links(data):
+            by_reference = block["byReference"]
+            item_id = self._pbir_literal(by_reference.get("itemId"))
+            workspace_id = self._pbir_literal(by_reference.get("workspaceId"))
+
+            # An unbound button carries "''" for both — nothing to rebind.
+            if not item_id and not workspace_id:
+                continue
+            if not self.UUID_PATTERN.fullmatch(item_id):
+                self.logger.warning(
+                    f"{source_file}: User Data Function reference has no usable "
+                    f"itemId ({item_id or 'empty'}) — left as-is."
+                )
+                continue
+
+            metadata = block.get("metadata", {})
+            function_name = ""
+            if isinstance(metadata, dict):
+                inner = metadata.get("dataFunction", {})
+                if isinstance(inner, dict):
+                    function_name = inner.get("name") or ""
+
+            udf_name = self._resolve_udf_name(function_name)
+            if not udf_name:
+                owners = self._udf_functions.get(function_name, set())
+                reason = (
+                    f"'{function_name}' is declared by {len(owners)} "
+                    f".UserDataFunction items ({', '.join(sorted(owners))}), so the "
+                    f"host is ambiguous"
+                    if len(owners) > 1
+                    else f"no .UserDataFunction item in the repo declares "
+                    f"'{function_name or '(unnamed)'}'"
+                )
+                self.logger.warning(
+                    f"{source_file}: User Data Function button (itemId {item_id}) "
+                    f"not rebound — {reason}. It will deploy still pointing at the "
+                    f"source workspace's function."
+                )
+                continue
+
+            param = self._add_parameter(
+                item_id, source_file, "User Data Function Item ID"
+            )
+            param.dynamic_variable = f"$items.UserDataFunction.{udf_name}.$id"
+
+            # The hosting workspace is the one the UDF item deploys into — the
+            # deploy target — since it was matched from this same repo.
+            if workspace_id and workspace_id != self.NULL_UUID:
+                self._add_uuid_parameter(workspace_id, source_file, "Workspace ID")
+
+            binding = (report_name, function_name, udf_name, item_id)
+            if binding not in self.udf_bindings:
+                self.udf_bindings.append(binding)
+
+    def _report_item_name(self, file_path: Path) -> str:
+        """Display name of the `.Report` item a definition file belongs to."""
+        for parent in file_path.parents:
+            if parent.name.endswith(".Report"):
+                try:
+                    meta = json.loads(
+                        (parent / ".platform").read_text(encoding="utf-8")
+                    )["metadata"]
+                    return meta.get("displayName") or parent.stem
+                except Exception:
+                    return parent.stem
+        return file_path.name
 
     def _ensure_detected(self) -> None:
         """Run detect_all() if no parameters have been detected yet.
