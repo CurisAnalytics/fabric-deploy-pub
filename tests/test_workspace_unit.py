@@ -129,6 +129,18 @@ class TestFabricWorkspaceConstruction:
         assert fake_publish.call_args.args[0] is instance
 
 
+class TestFeatureFlags:
+    def test_appended_flags_are_still_supported_upstream(self):
+        """fabdep appends these flags for --include-items deploys. fabric-cicd
+        1.3 exposes the supported set — catch an upstream rename at test time
+        instead of at deploy time."""
+        from fabric_cicd import get_supported_feature_flags
+
+        supported = set(get_supported_feature_flags())
+        assert "enable_experimental_features" in supported
+        assert "enable_items_to_include" in supported
+
+
 class TestFailOnStale:
     """Pin the --fail-on-stale contract: deploy raises before publish_all_items
     is called when the detector has recorded stale lakehouse attachments."""

@@ -163,6 +163,7 @@ class ParameterDetector:
         self._lakehouse_names: list[str] = []
         self._sqldatabase_names: list[str] = []
         self._warehouse_names: list[str] = []
+        self._mirroreddatabase_names: list[str] = []
         # (source_file, [stale_ids]) for each notebook with >1 known_lakehouse.
         # Populated alongside the inline warning so the caller (e.g. deploy
         # with --fail-on-stale) can promote it to a fatal error.
@@ -171,6 +172,16 @@ class ParameterDetector:
         # that has no replacement mapping — the source-workspace GUID would
         # deploy verbatim. Same promote-to-fatal contract as stale_attachments.
         self.unresolved_warehouse_bindings: list[tuple[str, str, str]] = []
+        # Workspace ids this repo's own items were exported from (notebook
+        # attachments, semantic-model OneLake URLs). Pipeline/CopyJob
+        # workspaceIds are only remapped to the target when they match one of
+        # these — anything else is a deliberate cross-workspace reference that
+        # must deploy verbatim (a another workspace pipeline invoking a Data
+        # Quality notebook had the foreign workspace id rewritten to the target).
+        self._source_workspace_ids: set[str] = set()
+        # (source_file, guid) for each pipeline/copyjob workspaceId left
+        # verbatim as a cross-workspace reference.
+        self.offtarget_workspace_refs: list[tuple[str, str]] = []
         # (report_item, function_name, udf_display_name, item_id) for each PBIR
         # button whose UDF reference was auto-rebound to the target workspace.
         # Surfaced by the deployer so an auto-replace is never silent.
@@ -206,11 +217,14 @@ class ParameterDetector:
         self.stale_attachments = []
         self.unresolved_warehouse_bindings = []
         self.udf_bindings = []
+        self._source_workspace_ids = set()
+        self.offtarget_workspace_refs = []
 
         # Item names must be resolved before _generate_dynamic_variable runs.
         self._lakehouse_names = self._detect_item_names("Lakehouse")
         self._sqldatabase_names = self._detect_item_names("SQLDatabase")
         self._warehouse_names = self._detect_item_names("Warehouse")
+        self._mirroreddatabase_names = self._detect_item_names("MirroredDatabase")
         self._index_user_data_functions()
 
         # Notebook content is `.py` (Python/PySpark), `.sql` (T-SQL), etc.
@@ -367,6 +381,18 @@ class ParameterDetector:
             if "lakehouse sql analytics endpoint item id" in desc_lower:
                 return f"$items.Lakehouse.{lakehouse_name}.$sqlendpointid"
 
+        # A MirroredDatabase's SQL analytics endpoint lives on the same
+        # `datawarehouse.*` domain as a Lakehouse's, so it is detected under
+        # the same descriptions. It only claims them when the repo has no
+        # Lakehouse — with both present, first-match Lakehouse wins (above).
+        # Requires fabric-cicd >= 1.3 (MirroredDatabase $sqlendpoint support).
+        if self._mirroreddatabase_names and not self._lakehouse_names:
+            mirrored_name = self._mirroreddatabase_names[0]
+            if "sql analytics endpoint connection string" in desc_lower:
+                return f"$items.MirroredDatabase.{mirrored_name}.$sqlendpoint"
+            if "lakehouse sql analytics endpoint item id" in desc_lower:
+                return f"$items.MirroredDatabase.{mirrored_name}.$sqlendpointid"
+
         if self._sqldatabase_names:
             sqldatabase_name = self._sqldatabase_names[0]
             # Resolves to body/properties/serverFqdn (.database.fabric.microsoft.com).
@@ -409,6 +435,10 @@ class ParameterDetector:
             if workspace_id == self.NULL_UUID:
                 continue
             _ = self._add_parameter(workspace_id, source_file, "Workspace ID")
+            # Notebook attachments carry the workspace the repo was exported
+            # from — the anchor that pipeline/copyjob workspaceIds are
+            # checked against. Notebooks are processed first in detect_all.
+            self._source_workspace_ids.add(workspace_id)
 
         for lakehouse_id in self.LAKEHOUSE_ID_PATTERN.findall(content):
             if lakehouse_id == self.NULL_UUID:
@@ -514,6 +544,11 @@ class ParameterDetector:
         for workspace_id, lakehouse_id in self.ONELAKE_DFS_PATTERN.findall(content):
             self._add_uuid_parameter(workspace_id, source_file, "Workspace ID")
             self._add_uuid_parameter(lakehouse_id, source_file, "Lakehouse ID")
+            # A Direct Lake model's OneLake URL points at its own workspace —
+            # a second source-workspace anchor (models process before
+            # pipelines in detect_all).
+            if self.UUID_PATTERN.match(workspace_id):
+                self._source_workspace_ids.add(workspace_id)
 
         for (
             host_prefix,
@@ -599,11 +634,7 @@ class ParameterDetector:
 
             # workspaceId appears in TridentNotebook / InvokePipeline activities.
             if "workspaceId" in obj and obj.get("workspaceId") != self.NULL_UUID:
-                self._add_uuid_parameter(
-                    value=obj["workspaceId"],
-                    source_file=source_file,
-                    description="Workspace ID",
-                )
+                self._classify_activity_workspace(obj["workspaceId"], source_file)
 
             for value in obj.values():
                 self._extract_connections_recursive(value, source_file)
@@ -611,6 +642,33 @@ class ParameterDetector:
         elif isinstance(obj, list):
             for item in obj:
                 self._extract_connections_recursive(item, source_file)
+
+    def _classify_activity_workspace(self, ws_id, source_file: str) -> bool:
+        """Remap or preserve a pipeline/copyjob workspaceId. Returns True if
+        the id belongs to the source workspace (and was parameterized).
+
+        Only ids the repo's own items anchor (notebook attachments,
+        semantic-model OneLake URLs) map to `$workspace.$id`. Anything else is
+        a deliberate cross-workspace reference — e.g. one workspace's
+        `merge_shared_facts` invoking another workspace's notebook — recorded
+        with no dynamic variable so it deploys verbatim. It still lands in
+        `parameters`, so a fabdep.yml manual_parameters entry can remap one.
+        """
+        if not isinstance(ws_id, str) or not self.UUID_PATTERN.fullmatch(ws_id):
+            return False
+        if ws_id in self._source_workspace_ids:
+            _ = self._add_parameter(ws_id, source_file, "Workspace ID")
+            return True
+        _ = self._add_parameter(ws_id, source_file, "Cross-workspace reference")
+        if (source_file, ws_id) not in self.offtarget_workspace_refs:
+            self.offtarget_workspace_refs.append((source_file, ws_id))
+            self.logger.warning(
+                f"{source_file}: workspaceId {ws_id} does not match this "
+                f"repo's workspace — treating it as a cross-workspace "
+                f"reference and deploying it unchanged. Add a "
+                f"manual_parameters entry in fabdep.yml to remap it."
+            )
+        return False
 
     def _extract_from_copyjob(self, file_path: Path, data: dict) -> None:
         """Extract workspace and lakehouse IDs from CopyJob JSON."""
@@ -622,16 +680,17 @@ class ParameterDetector:
                 "typeProperties", {}
             )
 
-            self._add_uuid_parameter(
-                type_properties.get("workspaceId"),
-                source_file,
-                "Workspace ID",
-            )
-            self._add_uuid_parameter(
-                type_properties.get("artifactId"),
-                source_file,
-                "Lakehouse ID",
-            )
+            ws_id = type_properties.get("workspaceId")
+            artifact_id = type_properties.get("artifactId")
+            if ws_id and not self._classify_activity_workspace(ws_id, source_file):
+                # The artifact lives in that foreign workspace too — mapping
+                # it to the repo's Lakehouse would corrupt the reference.
+                if artifact_id and self.UUID_PATTERN.fullmatch(str(artifact_id)):
+                    _ = self._add_parameter(
+                        artifact_id, source_file, "Cross-workspace reference"
+                    )
+                continue
+            self._add_uuid_parameter(artifact_id, source_file, "Lakehouse ID")
 
     def _index_user_data_functions(self) -> None:
         """Index the repo's `.UserDataFunction` items by the functions they declare.

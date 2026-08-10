@@ -35,6 +35,14 @@ def _make_sqldb(repo: Path, name: str) -> None:
     )
 
 
+def _make_mirrored_db(repo: Path, name: str) -> None:
+    item = repo / f"{name}.MirroredDatabase"
+    item.mkdir()
+    (item / ".platform").write_text(
+        json.dumps({"metadata": {"displayName": name, "type": "MirroredDatabase"}})
+    )
+
+
 def _make_notebook(
     repo: Path, name: str, body: str, ext: str = "py", dir_suffix: str = "Notebook"
 ) -> None:
@@ -348,6 +356,32 @@ class TestSemanticModelExtraction:
         # should be detected from this model.
         assert len(d.parameters) == 1
 
+    def test_mirrored_database_repo_resolves_analytics_endpoint(
+        self, tmp_path: Path
+    ):
+        """A repo whose only SQL-endpoint item is a MirroredDatabase resolves
+        the `datawarehouse.*` hostname and endpoint item id to fabric-cicd's
+        MirroredDatabase dynamic variables (added in fabric-cicd 1.3)."""
+        _make_mirrored_db(tmp_path, "mdb")
+        body = (
+            'Source = Sql.Database("HOST-XXXX.datawarehouse.fabric.microsoft.com", '
+            f'"mdb-{ENDPOINT_ID}")'
+        )
+        _make_semantic_model(tmp_path, "sm", body)
+
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        host = "HOST-XXXX.datawarehouse.fabric.microsoft.com"
+        assert (
+            d.parameters[host].dynamic_variable
+            == "$items.MirroredDatabase.mdb.$sqlendpoint"
+        )
+        assert (
+            d.parameters[ENDPOINT_ID].dynamic_variable
+            == "$items.MirroredDatabase.mdb.$sqlendpointid"
+        )
+
     def test_sql_databases_merges_with_two_arg_form(self, tmp_path: Path):
         """The same hostname via Sql.Databases and Sql.Database dedupes into
         one parameter, keeping the two-arg form's richer db_name metadata."""
@@ -406,7 +440,48 @@ class TestPipelineExtraction:
         assert d.parameters[CONNECTION_ID].description == "External connection ID"
 
     def test_extracts_workspaceid_in_typeproperties(self, tmp_path: Path):
+        """A pipeline workspaceId anchored by a notebook attachment (the
+        repo's own workspace) is remapped to the target."""
         _make_lakehouse(tmp_path, "lh")
+        _make_notebook(
+            tmp_path,
+            "nb",
+            f'# META  "default_lakehouse_workspace_id": "{WORKSPACE_ID}"',
+        )
+        _make_pipeline(
+            tmp_path,
+            "pl",
+            {
+                "properties": {
+                    "activities": [
+                        {
+                            "typeProperties": {
+                                "workspaceId": WORKSPACE_ID,
+                                "notebookId": "ignored",
+                            }
+                        }
+                    ]
+                }
+            },
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert WORKSPACE_ID in d.parameters
+        assert d.parameters[WORKSPACE_ID].description == "Workspace ID"
+        assert d.parameters[WORKSPACE_ID].dynamic_variable == "$workspace.$id"
+        assert d.offtarget_workspace_refs == []
+
+    def test_foreign_workspaceid_deploys_verbatim(self, tmp_path: Path):
+        """a pipeline invoking an item in ANOTHER workspace (one workspace → another) must not have that workspaceId rewritten to the
+        deploy target. It is recorded with no dynamic variable — verbatim on
+        deploy, but still overridable via manual_parameters."""
+        _make_lakehouse(tmp_path, "lh")
+        _make_notebook(
+            tmp_path,
+            "nb",
+            f'# META  "default_lakehouse_workspace_id": "{WORKSPACE_ID}"',
+        )
         _make_pipeline(
             tmp_path,
             "pl",
@@ -426,8 +501,18 @@ class TestPipelineExtraction:
         d = ParameterDetector(tmp_path)
         d.detect_all()
 
-        assert OTHER_WORKSPACE_ID in d.parameters
-        assert d.parameters[OTHER_WORKSPACE_ID].description == "Workspace ID"
+        param = d.parameters[OTHER_WORKSPACE_ID]
+        assert param.description == "Cross-workspace reference"
+        assert param.dynamic_variable == ""
+        assert d.offtarget_workspace_refs == [
+            ("pl.DataPipeline/pipeline-content.json", OTHER_WORKSPACE_ID)
+        ]
+        # Verbatim = excluded from the generated find_replace rules.
+        find_values = [
+            e["find_value"]
+            for e in d.generate_parameter_yml()["find_replace"]
+        ]
+        assert OTHER_WORKSPACE_ID not in find_values
 
     def test_skips_null_uuid_workspaceid(self, tmp_path: Path):
         _make_lakehouse(tmp_path, "lh")
@@ -454,7 +539,15 @@ class TestPipelineExtraction:
 
 class TestCopyJobExtraction:
     def test_extracts_workspace_and_artifact_ids(self, tmp_path: Path):
+        """Anchored source section remaps; foreign destination section (a
+        cross-workspace copy target) deploys verbatim — including its
+        artifactId, which must NOT map to the repo's Lakehouse."""
         _make_lakehouse(tmp_path, "lh")
+        _make_notebook(
+            tmp_path,
+            "nb",
+            f'# META  "default_lakehouse_workspace_id": "{WORKSPACE_ID}"',
+        )
         _make_copyjob(
             tmp_path,
             "cj",
@@ -482,11 +575,40 @@ class TestCopyJobExtraction:
         d = ParameterDetector(tmp_path)
         d.detect_all()
 
-        assert WORKSPACE_ID in d.parameters
-        assert OTHER_WORKSPACE_ID in d.parameters
-        assert LAKEHOUSE_ID in d.parameters
-        assert ENDPOINT_ID in d.parameters
+        assert d.parameters[WORKSPACE_ID].description == "Workspace ID"
         assert d.parameters[LAKEHOUSE_ID].description == "Lakehouse ID"
+        assert (
+            d.parameters[OTHER_WORKSPACE_ID].description
+            == "Cross-workspace reference"
+        )
+        assert d.parameters[ENDPOINT_ID].description == "Cross-workspace reference"
+        assert d.parameters[ENDPOINT_ID].dynamic_variable == ""
+
+    def test_copyjob_without_workspaceid_still_maps_artifact(self, tmp_path: Path):
+        """No workspaceId in the section → same-workspace copy; the artifact
+        keeps its Lakehouse ID mapping."""
+        _make_lakehouse(tmp_path, "lh")
+        _make_copyjob(
+            tmp_path,
+            "cj",
+            {
+                "properties": {
+                    "source": {
+                        "connectionSettings": {
+                            "typeProperties": {"artifactId": LAKEHOUSE_ID}
+                        }
+                    },
+                }
+            },
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert d.parameters[LAKEHOUSE_ID].description == "Lakehouse ID"
+        assert (
+            d.parameters[LAKEHOUSE_ID].dynamic_variable
+            == "$items.Lakehouse.lh.$id"
+        )
 
 
 # --- should_skip_replacement ---------------------------------------------
@@ -608,6 +730,43 @@ class TestGenerateDynamicVariable:
         d = ParameterDetector(tmp_path)
         d._sqldatabase_names = d._detect_item_names("SQLDatabase")
         assert d._generate_dynamic_variable("SQL Database Name") == ""
+
+    @pytest.mark.parametrize(
+        "description,expected",
+        [
+            (
+                "SQL Analytics Endpoint Connection String",
+                "$items.MirroredDatabase.mdb.$sqlendpoint",
+            ),
+            (
+                "Lakehouse SQL Analytics Endpoint Item ID",
+                "$items.MirroredDatabase.mdb.$sqlendpointid",
+            ),
+            ("Lakehouse ID", ""),  # not an endpoint description — stays unresolved
+        ],
+    )
+    def test_mirrored_database_claims_endpoint_when_no_lakehouse(
+        self, tmp_path: Path, description: str, expected: str
+    ):
+        """MirroredDatabase endpoints share the Lakehouse `datawarehouse.*`
+        domain; fabric-cicd 1.3 added $sqlendpoint/$sqlendpointid for them."""
+        _make_mirrored_db(tmp_path, "mdb")
+        d = ParameterDetector(tmp_path)
+        d._mirroreddatabase_names = d._detect_item_names("MirroredDatabase")
+        assert d._generate_dynamic_variable(description) == expected
+
+    def test_lakehouse_wins_over_mirrored_database(self, tmp_path: Path):
+        """With both item types in the repo, first-match Lakehouse resolution
+        stands — the MirroredDatabase fallback never fires."""
+        _make_lakehouse(tmp_path, "lh")
+        _make_mirrored_db(tmp_path, "mdb")
+        d = ParameterDetector(tmp_path)
+        d._lakehouse_names = d._detect_item_names("Lakehouse")
+        d._mirroreddatabase_names = d._detect_item_names("MirroredDatabase")
+        assert (
+            d._generate_dynamic_variable("SQL Analytics Endpoint Connection String")
+            == "$items.Lakehouse.lh.$sqlendpoint"
+        )
 
 
 # --- warehouse attachments (dependencies.warehouse) ------------------------
