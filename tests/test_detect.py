@@ -1038,6 +1038,34 @@ class TestUserDataFunctionRebind:
         assert d.udf_bindings == []
         assert any("not rebound" in r.message for r in caplog.records)
 
+    def test_skipped_buttons_warn_once_per_reason(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        """Two buttons calling the same ghost function -> one aggregated warning."""
+        _make_lakehouse(tmp_path, "lh")
+        _make_udf(tmp_path, "Fns", ["something_else"])
+        _make_report_visual(
+            tmp_path,
+            "R",
+            _data_function_visual(UDF_ITEM_ID, WORKSPACE_ID, "ghost_fn"),
+            visual_id="v1",
+        )
+        _make_report_visual(
+            tmp_path,
+            "R",
+            _data_function_visual(UDF_ITEM_ID, WORKSPACE_ID, "ghost_fn"),
+            visual_id="v2",
+        )
+        d = ParameterDetector(tmp_path)
+        with caplog.at_level("WARNING", logger="fabric_deploy.detect"):
+            d.detect_all()
+
+        assert len(d.udf_skipped) == 2
+        warnings = [r for r in caplog.records if "not rebound" in r.message]
+        assert len(warnings) == 1
+        assert "2 User Data Function button(s) in 'R'" in warnings[0].message
+        assert "'ghost_fn'" in warnings[0].message
+
     def test_ambiguous_function_is_not_rebound(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ):

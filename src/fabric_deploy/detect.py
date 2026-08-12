@@ -186,6 +186,10 @@ class ParameterDetector:
         # button whose UDF reference was auto-rebound to the target workspace.
         # Surfaced by the deployer so an auto-replace is never silent.
         self.udf_bindings: list[tuple[str, str, str, str]] = []
+        # (report_item, function_name, item_id, reason) for each PBIR button
+        # whose UDF reference could NOT be rebound. Warned once per distinct
+        # reason at the end of detection rather than once per visual file.
+        self.udf_skipped: list[tuple[str, str, str, str]] = []
         # Function name -> {UDF display names declaring it}, from each
         # .UserDataFunction item's definition.json.
         self._udf_functions: dict[str, set[str]] = {}
@@ -217,6 +221,7 @@ class ParameterDetector:
         self.stale_attachments = []
         self.unresolved_warehouse_bindings = []
         self.udf_bindings = []
+        self.udf_skipped = []
         self._source_workspace_ids = set()
         self.offtarget_workspace_refs = []
 
@@ -260,6 +265,27 @@ class ParameterDetector:
                 self.repo_dir.glob("**/*.Report/definition/**/*.json"),
                 self._extract_from_report,
                 parse_json=True,
+            )
+        self._warn_skipped_udf_buttons()
+
+    def _warn_skipped_udf_buttons(self) -> None:
+        """One warning per distinct skip reason, not one per visual file.
+
+        The same stale function name typically appears on several pages of the
+        same report; a per-file warning is noise that buries the actionable
+        part (which function, and why it didn't resolve).
+        """
+        counts: dict[str, int] = {}
+        reports: dict[str, set[str]] = {}
+        for report_name, _, _, reason in self.udf_skipped:
+            counts[reason] = counts.get(reason, 0) + 1
+            reports.setdefault(reason, set()).add(report_name)
+        for reason, count in counts.items():
+            names = ", ".join(f"'{r}'" for r in sorted(reports[reason]))
+            self.logger.warning(
+                f"{count} User Data Function button(s) in {names} not rebound — "
+                f"{reason}. They will deploy still pointing at the source "
+                f"workspace's function."
             )
 
     def _platform_items(self, item_type: str) -> list[tuple[Path, dict]]:
@@ -821,11 +847,7 @@ class ParameterDetector:
                     else f"no .UserDataFunction item in the repo declares "
                     f"'{function_name or '(unnamed)'}'"
                 )
-                self.logger.warning(
-                    f"{source_file}: User Data Function button (itemId {item_id}) "
-                    f"not rebound — {reason}. It will deploy still pointing at the "
-                    f"source workspace's function."
-                )
+                self.udf_skipped.append((report_name, function_name, item_id, reason))
                 continue
 
             param = self._add_parameter(
