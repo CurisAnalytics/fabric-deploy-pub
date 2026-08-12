@@ -275,6 +275,14 @@ def parse_args() -> argparse.Namespace:
         "the deploy is blocked (someone may have edited RLS directly in the "
         "target). Role memberships are never read or changed.",
     )
+    _ = deploy_parser.add_argument(
+        "--allow-unbound-udf",
+        action="store_true",
+        help="Deploy report buttons whose User Data Function reference could "
+        "not be rebound to the target workspace (missing or ambiguous "
+        ".UserDataFunction item). By default such a button blocks the deploy, "
+        "because it would ship still calling the SOURCE workspace's function.",
+    )
 
     refresh_parser = subparsers.add_parser(
         "refresh",
@@ -498,6 +506,7 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
             include_items=args.include_items,
             fail_on_stale=args.fail_on_stale,
             allow_rls_change=bool(args.allow_rls_change),
+            allow_unbound_udf=bool(args.allow_unbound_udf),
             pr=args.pr,
         )
     except Exception as e:

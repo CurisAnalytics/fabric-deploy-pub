@@ -48,6 +48,7 @@ class TestFormatDeployOptions:
             include_items=["My Model.SemanticModel"],
             fail_on_stale=True,
             allow_rls_change=True,
+            allow_unbound_udf=True,
         )
         for needle in (
             "--branch prod",
@@ -60,6 +61,7 @@ class TestFormatDeployOptions:
             "--include-items 'My Model.SemanticModel'",
             "--fail-on-stale",
             "--allow-rls-change",
+            "--allow-unbound-udf",
         ):
             assert needle in line
 
@@ -192,6 +194,93 @@ class TestFailOnStale:
             deployer.deploy(item_types=["Notebook"])  # fail_on_stale defaults to False
 
         assert fake_publish.called
+
+
+class TestUdfBindingGuard:
+    """Pin the unbound-UDF guard: a bound button whose function resolves to no
+    repo .UserDataFunction blocks the deploy when its report is in scope,
+    unless --allow-unbound-udf."""
+
+    SKIPPED = [
+        (
+            "Finance Report",
+            "write_pl_statement",
+            "33333333-4444-5555-6666-777777777777",
+            "no .UserDataFunction item in the repo declares 'write_pl_statement'",
+        )
+    ]
+
+    def _deploy(self, deployer, **kwargs):
+        with (
+            patch("fabric_deploy.workspace.FabricWorkspace"),
+            patch("fabric_deploy.workspace.publish_all_items") as fake_publish,
+            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
+            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
+        ):
+            deployer.deploy(**kwargs)
+        return fake_publish
+
+    def test_blocks_by_default_when_report_in_scope(self, deployer):
+        deployer._detector.udf_skipped = list(self.SKIPPED)
+
+        with (
+            patch("fabric_deploy.workspace.FabricWorkspace") as fake_fw,
+            patch("fabric_deploy.workspace.publish_all_items") as fake_publish,
+            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
+            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
+        ):
+            with pytest.raises(RuntimeError, match="allow-unbound-udf"):
+                deployer.deploy(item_types=["Report"])
+
+        assert not fake_fw.called
+        assert not fake_publish.called
+
+    def test_allow_flag_deploys_anyway(self, deployer):
+        deployer._detector.udf_skipped = list(self.SKIPPED)
+        fake_publish = self._deploy(
+            deployer, item_types=["Report"], allow_unbound_udf=True
+        )
+        assert fake_publish.called
+
+    def test_report_out_of_type_scope_does_not_block(self, deployer):
+        deployer._detector.udf_skipped = list(self.SKIPPED)
+        fake_publish = self._deploy(deployer, item_types=["Notebook"])
+        assert fake_publish.called
+
+    def test_report_not_in_include_items_does_not_block(self, deployer):
+        deployer._detector.udf_skipped = list(self.SKIPPED)
+        fake_publish = self._deploy(
+            deployer, include_items=["Fill Lakehouse.Notebook"]
+        )
+        assert fake_publish.called
+
+    def test_no_skipped_buttons_does_not_block(self, deployer):
+        deployer._detector.udf_skipped = []
+        fake_publish = self._deploy(deployer, item_types=["Report"])
+        assert fake_publish.called
+
+
+class TestDeployedSummaryLine:
+    """The 'Deployed N item(s)' line must reflect the type scope: an item
+    excluded via -x stays in include_items but was never published."""
+
+    def test_excluded_type_dropped_from_summary(self, deployer, caplog):
+        with (
+            patch("fabric_deploy.workspace.FabricWorkspace"),
+            patch("fabric_deploy.workspace.publish_all_items"),
+            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
+            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
+            caplog.at_level("INFO"),
+        ):
+            deployer.deploy(
+                include_items=["Fill Lakehouse.Notebook", "SQL DB.SemanticModel"],
+                exclude_types=["SemanticModel"],
+            )
+
+        deployed_lines = [
+            r.message for r in caplog.records if r.message.startswith("Deployed ")
+        ]
+        assert deployed_lines == ["Deployed 1 item(s): Fill Lakehouse.Notebook"]
 
 
 class TestIncludeItemsValidation:

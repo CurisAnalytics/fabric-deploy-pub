@@ -34,6 +34,8 @@ fabdep [DIRECTORY] [OPTIONS]
   -r, --max-retries      Retries for transient errors (default: 1)
   -L, --skip-lakehouse   Skip lakehouse param replacement (feature branches share dev lakehouse)
   -F, --fail-on-stale    Exit non-zero if a notebook has multiple lakehouses attached
+      --allow-unbound-udf  Deploy report buttons whose User Data Function
+                         reference can't be rebound to the target workspace
       --frame            After deploy, frame the Direct Lake model(s)
 ```
 
@@ -49,6 +51,14 @@ to pick a specific PR. It resolves into `-i`, so orphan cleanup is off and the
 two flags can't be combined. Changed paths that belong to no item in the
 working tree — repo config, docs, or an item the PR deleted — are listed and
 skipped; `--pr` never unpublishes.
+
+PBIR report buttons bound to a User Data Function are rebound to the target
+workspace automatically, matched on the function name declared in a repo
+`.UserDataFunction` item (the itemId a button carries is source-workspace
+state). A bound button whose function no repo item declares — a stale name,
+or a UDF that was never committed — would deploy still calling the *source*
+workspace's function, so it blocks the deploy when its report is in scope;
+fix the button's binding or pass `--allow-unbound-udf` to ship it as-is.
 
 ### Refresh (Direct Lake framing)
 

@@ -56,6 +56,7 @@ def format_deploy_options(
     include_items: list[str] | None = None,
     fail_on_stale: bool = False,
     allow_rls_change: bool = False,
+    allow_unbound_udf: bool = False,
     pr: str | None = None,
 ) -> str:
     """One-line record of every non-default deploy option, in CLI-flag form.
@@ -86,6 +87,8 @@ def format_deploy_options(
         opts.append("--fail-on-stale")
     if allow_rls_change:
         opts.append("--allow-rls-change")
+    if allow_unbound_udf:
+        opts.append("--allow-unbound-udf")
     return f"Options: {' '.join(opts) if opts else '(defaults)'}"
 
 
@@ -315,6 +318,50 @@ class WorkspaceDeployer:
             logger=self.logger,
         )
 
+    def _guard_udf_bindings(
+        self,
+        item_type_in_scope: list[str] | None,
+        include_items: list[str] | None,
+        allow_unbound_udf: bool,
+    ) -> None:
+        """Block a deploy that would ship a UDF button pointing off-target.
+
+        A bound button whose function name resolves to no repo
+        `.UserDataFunction` item deploys still calling the SOURCE workspace's
+        function — a silent cross-workspace leak. Fatal when the report is in
+        deploy scope, unless --allow-unbound-udf. Reports outside the scope
+        aren't deploying, so their buttons can't leak and don't block.
+        """
+        if not (self._detector and self._detector.udf_skipped):
+            return
+        skipped = self._detector.udf_skipped
+        if include_items:
+            in_scope = [s for s in skipped if f"{s[0]}.Report" in include_items]
+        elif item_type_in_scope is None or "Report" in item_type_in_scope:
+            in_scope = skipped
+        else:
+            in_scope = []
+        if not in_scope:
+            return
+        if allow_unbound_udf:
+            self.logger.warning(
+                f"--allow-unbound-udf: {len(in_scope)} User Data Function "
+                f"button(s) deploy still pointing at the source workspace's "
+                f"function. See warnings above."
+            )
+            return
+        details = ", ".join(
+            sorted({f"'{fn or '(unnamed)'}' in '{report}'" for report, fn, _, _ in in_scope})
+        )
+        raise RuntimeError(
+            f"{len(in_scope)} User Data Function button(s) cannot be rebound "
+            f"to the target workspace and would deploy still calling the "
+            f"source workspace's function: {details}. Fix the button's "
+            f"function binding (or the missing/ambiguous .UserDataFunction "
+            f"item), or pass --allow-unbound-udf to deploy as-is. See "
+            f"warnings above."
+        )
+
     def _items_from_pr(self, pr: str) -> list[str]:
         """Resolve `--pr` to the item list the pull request actually touched.
 
@@ -375,6 +422,7 @@ class WorkspaceDeployer:
         include_items: list[str] | None = None,
         fail_on_stale: bool = False,
         allow_rls_change: bool = False,
+        allow_unbound_udf: bool = False,
         pr: str | None = None,
     ) -> None:
         """
@@ -393,6 +441,11 @@ class WorkspaceDeployer:
                 security. By default, if the repo carries RLS and the target's
                 live RLS differs, the deploy is blocked (someone may have edited
                 RLS directly in the target).
+            allow_unbound_udf: Deploy report buttons whose User Data Function
+                reference could not be rebound to the target workspace. By
+                default an in-scope report carrying such a button blocks the
+                deploy, because the button would ship still calling the SOURCE
+                workspace's function.
             pr: Restrict the deploy to the items a pull request touched.
                 PR_HEAD ("HEAD") searches back from HEAD for the PR commit; any
                 other value is used as the commit-ish directly. Resolves into
@@ -418,6 +471,7 @@ class WorkspaceDeployer:
                 include_items=include_items,
                 fail_on_stale=fail_on_stale,
                 allow_rls_change=allow_rls_change,
+                allow_unbound_udf=allow_unbound_udf,
                 pr=pr,
             )
         )
@@ -476,6 +530,8 @@ class WorkspaceDeployer:
                 f"See warnings above."
             )
 
+        self._guard_udf_bindings(item_type_in_scope, include_items, allow_unbound_udf)
+
         # Guard live RLS before any write: only models the repo actually carries
         # RLS for are checked (no roles in repo -> no API call), and any drift
         # from the target's live roles blocks the deploy unless explicitly allowed.
@@ -493,20 +549,6 @@ class WorkspaceDeployer:
         self.logger.info(f"Workspace ID: {self.workspace_id}")
         for line in self._paramfile.summary:
             self.logger.info(line)
-
-        # An auto-rebound UDF button changes what a live report calls, so it is
-        # always announced rather than folded into the parameter count — but as
-        # one summary line, not one per binding.
-        if self._detector and self._detector.udf_bindings:
-            bound = self._detector.udf_bindings
-            targets = ", ".join(f"'{u}'" for u in sorted({b[2] for b in bound}))
-            functions = ", ".join(sorted({b[1] for b in bound}))
-            skipped = len(self._detector.udf_skipped)
-            suffix = f"; {skipped} button(s) not rebound (warned above)" if skipped else ""
-            self.logger.info(
-                f"UDF auto-rebind: {len(bound)} binding(s) -> {targets} in this "
-                f"deploy's target workspace ({functions}){suffix}."
-            )
 
         if item_type_in_scope:
             types_to_deploy = sorted(set(item_type_in_scope) & self.repo_item_types)
@@ -542,9 +584,17 @@ class WorkspaceDeployer:
             )
             # One-line confirmation of what actually deployed — fabric-cicd's
             # "Skipping ... due to items_to_include" noise otherwise buries it.
+            # Filtered by the type scope: an item excluded via -x/--item-types
+            # stays in include_items but was never published.
             if include_items:
+                deployed = [
+                    it
+                    for it in include_items
+                    if item_type_in_scope is None
+                    or it.rsplit(".", 1)[-1] in item_type_in_scope
+                ]
                 self.logger.info(
-                    f"Deployed {len(include_items)} item(s): {', '.join(include_items)}"
+                    f"Deployed {len(deployed)} item(s): {', '.join(deployed)}"
                 )
             self.logger.info("Deployment complete!")
         finally:
