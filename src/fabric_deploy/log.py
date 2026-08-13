@@ -194,14 +194,21 @@ def patch_fabric_cicd_logger() -> None:
 
 
 def get_logger(name: str) -> logging.Logger:
-    """Configure and return logger with CustomFormatter."""
-    log = logging.getLogger(name)
-    if not log.handlers:
+    """Configure and return logger with CustomFormatter.
+
+    The console handler lives on the top-level logger of the requested name
+    ("fabric_deploy" for "fabric_deploy.detect"), never on descendants: with
+    one handler per tree a record prints exactly once no matter which logger
+    in the chain emits it, and records still propagate to the root logger
+    (pytest caplog; fabric_cicd's file handler filters them out by name).
+    """
+    top = logging.getLogger(name.split(".", 1)[0])
+    if not top.handlers:
         handler = logging.StreamHandler()
         handler.setFormatter(CustomFormatter())
-        log.addHandler(handler)
-        log.setLevel(logging.INFO)
-    return log
+        top.addHandler(handler)
+        top.setLevel(logging.INFO)
+    return logging.getLogger(name)
 
 
 def print_error(message: str) -> None:

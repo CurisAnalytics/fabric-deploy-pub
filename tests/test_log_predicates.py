@@ -236,3 +236,30 @@ def test_error_hint_distinguishes_shared_error_code():
 )
 def test_error_hint_none_for_unknown(msg: str):
     assert error_hint(msg) is None
+
+
+# --- get_logger ----------------------------------------------------------
+
+
+def test_get_logger_child_does_not_double_print(capsys):
+    """A child record must print once even when an ancestor fabdep logger
+    exists (identity creates 'fabric_deploy'; modules create children)."""
+    import io
+    import logging
+
+    from fabric_deploy.log import get_logger
+
+    parent = get_logger("fabric_deploy_dbltest")
+    child = get_logger("fabric_deploy_dbltest.detect")
+
+    streams = []
+    for lg in (parent, child):
+        stream = io.StringIO()
+        for h in lg.handlers:
+            if isinstance(h, logging.StreamHandler):
+                h.setStream(stream)
+        streams.append(stream)
+
+    child.warning("only-once")
+    total = "".join(s.getvalue() for s in streams)
+    assert total.count("only-once") == 1
