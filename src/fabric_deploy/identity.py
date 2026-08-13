@@ -57,6 +57,13 @@ _POWERBI_BEARER_ENV = "POWERBI_BEARER_TOKEN"
 # token, so failing fast with a clear message beats a confusing 401 partway in.
 _EXPIRY_SKEW_SECONDS = 60
 
+# Process-wide identity state. `apply_tenant_pin` records the resolved pin so
+# token acquisition knows which tenant (and whether an SPN is required) a
+# fallback identity must satisfy; `_CLI_CREDENTIAL` caches the CLI credential
+# that actually minted a token, so one probe serves the whole run.
+_ACTIVE_PIN: TenantPin | None = None
+_CLI_CREDENTIAL: AzureCliCredential | None = None
+
 
 def _env_bearer_token() -> str | None:
     """Return the relay bearer token from the environment, stripped, or None.
@@ -112,16 +119,109 @@ class StaticTokenCredential(TokenCredential):
         return AccessToken(self._token, self._exp)
 
 
+def _logger() -> logging.Logger:
+    """The fabdep logger, imported lazily (`log` imports from this module)."""
+    from .log import get_logger
+
+    return get_logger("fabric_deploy")
+
+
+def _enabled_accounts(tenant_id: str) -> list[AzureAccount]:
+    """Every enabled `az` account acting in `tenant_id` (empty if `az` fails)."""
+    result = subprocess.run(
+        ["az", "account", "list", "--output", "json"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return []
+    try:
+        accounts: list[AzureAccount] = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return []
+    return [
+        a
+        for a in accounts
+        if a.get("state", "Enabled") == "Enabled" and a.get("tenantId") == tenant_id
+    ]
+
+
+def _fallback_credential(
+    scope: str, first_error: ClientAuthenticationError
+) -> AzureCliCredential | None:
+    """Find another logged-in identity in the same tenant that can mint `scope`.
+
+    The active `az` account can be in the tenant the pin wants and still be
+    unable to get a token — an expired SPN secret, a revoked grant. That's not
+    a reason to fail the run when a second identity for the same tenant is
+    already logged in (the common case: an SPN plus the human's own account).
+
+    Selection is deliberately conservative: same tenant only (never a
+    cross-tenant fallback), enabled accounts only, and SPN-only when the pin
+    sets `require_spn`. Tokens are minted with `subscription=`, so the active
+    account is left alone — this never silently rewrites `az` state.
+
+    Returns the working credential, or None when no sibling identity qualifies.
+    """
+    pin = _ACTIVE_PIN
+    current = active_account()
+    tenant_id = pin.id if pin and pin.id else (current or {}).get("tenantId")
+    if not tenant_id:
+        return None
+
+    for acct in _enabled_accounts(tenant_id):
+        if current and acct["id"] == current["id"]:
+            continue
+        is_spn = acct.get("user", {}).get("type", "").lower() == "serviceprincipal"
+        if pin and pin.require_spn and not is_spn:
+            continue
+        candidate = AzureCliCredential(subscription=acct["id"])
+        try:
+            _ = candidate.get_token(scope)
+        except ClientAuthenticationError:
+            continue
+        failed = (current or {}).get("user", {}).get("name", "?")
+        _logger().warning(
+            f"Active identity {failed} could not get a token "
+            f"({str(first_error).strip().splitlines()[0]}); falling back to "
+            f"'{acct['name']}' ({acct['user']['name']}) in the same tenant "
+            f"({tenant_id}). Fix or re-login the active identity to silence this."
+        )
+        return candidate
+    return None
+
+
+def _cli_token(scope: str) -> str:
+    """Mint `scope` via the Azure CLI, falling back within the pinned tenant.
+
+    Caches the credential that worked so one probe covers the whole run and
+    `fabric_credential()` hands fabric-cicd the same identity.
+    """
+    global _CLI_CREDENTIAL
+    credential = _CLI_CREDENTIAL or AzureCliCredential()
+    try:
+        return credential.get_token(scope).token
+    except ClientAuthenticationError as e:
+        fallback = _fallback_credential(scope, e)
+        if fallback is None:
+            raise
+        _CLI_CREDENTIAL = fallback
+        return fallback.get_token(scope).token
+
+
 def fabric_credential() -> TokenCredential:
     """Return the credential fabdep should use for Fabric calls.
 
     If `FABRIC_BEARER_TOKEN` is set, wrap it as a `StaticTokenCredential`
-    (token-relay mode). Otherwise return `AzureCliCredential()` (default).
+    (token-relay mode). Otherwise return `AzureCliCredential()` — or whichever
+    sibling identity `_cli_token` already fell back to, so fabric-cicd deploys
+    as the same account the REST calls used. Workspace resolution always mints
+    a token before this is called, so the cache is warm by then.
     """
     token = _env_bearer_token()
     if token:
         return StaticTokenCredential(token)
-    return AzureCliCredential()
+    return _CLI_CREDENTIAL or AzureCliCredential()
 
 
 def get_access_token(scope: str = FABRIC_SCOPE) -> str:
@@ -158,7 +258,7 @@ def get_access_token(scope: str = FABRIC_SCOPE) -> str:
             )
         return env_token
     try:
-        return AzureCliCredential().get_token(scope).token
+        return _cli_token(scope)
     except ClientAuthenticationError as e:
         raise RuntimeError(
             f"Failed to get Azure access token for scope {scope}.\n{e}\n\n"
@@ -283,10 +383,29 @@ def apply_tenant_pin(pin: TenantPin | None, logger: logging.Logger) -> None:
     Shared by `WorkspaceDeployer` (deploy) and the refresh command so both
     paths resolve the same pinned identity.
     """
+    global _ACTIVE_PIN
     if pin is None:
         return
-    pin = pin.resolve(tenant_registry())
+
+    registry = tenant_registry()
+    if not registry:
+        # Nothing registered on this machine at all — a first run, or a legacy
+        # single-`~/.azure` setup. A committed `tenant:` alias shouldn't harden
+        # into a hard stop for someone who never opted into the registry, so
+        # warn and run under whatever `az` account is active. An alias missing
+        # from a *populated* registry still raises: there, the user does use
+        # aliases, and an unknown one means the pin is wrong.
+        logger.warning(
+            f"fabdep.yml pins tenant '{pin.alias}' but no tenants are registered "
+            "on this machine — proceeding under the active Azure login, "
+            "unguarded. Register the alias with "
+            f"`fabdep auth login {pin.alias}` to enable the identity guard."
+        )
+        return
+
+    pin = pin.resolve(registry)
     assert pin.id is not None  # resolve() guarantees a concrete id or raises
+    _ACTIVE_PIN = pin
 
     if pin.config_dir:
         target = os.path.expanduser(pin.config_dir)
@@ -308,10 +427,9 @@ def apply_tenant_pin(pin: TenantPin | None, logger: logging.Logger) -> None:
     if _env_bearer_token():
         return
 
-    account = assert_active_tenant(
+    # Silent on success: the guard only proves tenant membership, not that the
+    # identity can mint a token, so announcing "OK" reads as a green light the
+    # check never gave. It speaks up by raising.
+    _ = assert_active_tenant(
         pin.id, config_dir=pin.config_dir, require_spn=pin.require_spn
-    )
-    logger.info(
-        f"Tenant pin OK: '{account.get('name')}' in {pin.id} "
-        f"({account.get('user', {}).get('name')})"
     )

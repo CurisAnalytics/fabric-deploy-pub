@@ -251,6 +251,24 @@ class TestDeployerTenantPin:
         with pytest.raises(ValueError, match="Unknown tenant alias 'bogus'"):
             WorkspaceDeployer(tmp_path, branch_override="dev")
 
+    def test_empty_registry_warns_and_runs_unguarded(
+        self, tmp_path: Path, monkeypatch, mock_fabric_api, caplog
+    ):
+        # A machine that never ran `fabdep auth login` shouldn't be hard-blocked
+        # by a committed alias — it falls back to the active login with a warning.
+        self._write(tmp_path, "tenant: fabrikam\n")
+
+        def _fail(*a, **k):
+            raise AssertionError("assertion must be skipped with an empty registry")
+
+        monkeypatch.setattr("fabric_deploy.identity.tenant_registry", dict)
+        monkeypatch.setattr("fabric_deploy.identity.assert_active_tenant", _fail)
+        monkeypatch.delenv("FABRIC_BEARER_TOKEN", raising=False)
+
+        with caplog.at_level("WARNING"):
+            WorkspaceDeployer(tmp_path, branch_override="dev")  # must not raise
+        assert "no tenants are registered" in caplog.text
+
     def test_mismatch_propagates(self, tmp_path: Path, monkeypatch, mock_fabric_api):
         self._write(tmp_path, "tenant: fabrikam\n")
 
