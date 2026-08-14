@@ -30,6 +30,7 @@ from .log import get_logger, is_transient_error, patch_fabric_cicd_logger
 from .params import (
     ParameterFile,
     apply_manual_overrides,
+    resolve_sqldatabase_hostname_params,
     resolve_warehouse_endpoint_params,
 )
 from .git import changed_paths_in, latest_pr_commit
@@ -264,6 +265,12 @@ class WorkspaceDeployer:
         # win; same-workspace deploys skip replacement entirely.
         if not detector.should_skip_replacement(self.workspace_id):
             _ = resolve_warehouse_endpoint_params(
+                detector, self.workspace_id, self.logger
+            )
+            # SQL database hostnames also resolve to literals: fabric-cicd's
+            # $sqlendpoint dynamic returns serverFqdn with a ",1433" port
+            # suffix that must not land in bare-hostname find_values.
+            _ = resolve_sqldatabase_hostname_params(
                 detector, self.workspace_id, self.logger
             )
 

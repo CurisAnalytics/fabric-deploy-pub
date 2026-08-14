@@ -421,9 +421,13 @@ class ParameterDetector:
 
         if self._sqldatabase_names:
             sqldatabase_name = self._sqldatabase_names[0]
-            # Resolves to body/properties/serverFqdn (.database.fabric.microsoft.com).
-            # Caveat: on a fresh `-N` deploy the SQLDatabase may not be
-            # provisioned yet — manual_parameters overrides take precedence.
+            # Resolves to body/properties/serverFqdn — which carries a ",1433"
+            # port suffix, so the deployer replaces this dynamic with a
+            # literal bare host at deploy time (see
+            # params.resolve_sqldatabase_hostname_params); this is the
+            # fallback if that lookup fails. Caveat: on a fresh `-N` deploy
+            # the SQLDatabase may not be provisioned yet — manual_parameters
+            # overrides take precedence.
             if "sql database connection string" in desc_lower:
                 return f"$items.SQLDatabase.{sqldatabase_name}.$sqlendpoint"
             if "sql database item id" in desc_lower:

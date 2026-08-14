@@ -41,6 +41,7 @@ __all__ = [
     "get_default_capacity_id",
     "list_workspace_items",
     "find_item_by_name",
+    "get_sqldatabase_server_host",
     "refresh_sql_endpoint_metadata",
     "refresh_semantic_model",
     "get_semantic_model_definition",
@@ -283,6 +284,49 @@ def find_item_by_name(
         + (f" matching '{name}'" if name else "")
         + f" — specify one by name:\n{listing}"
     )
+
+
+def get_sqldatabase_server_host(workspace_id: str, name: str) -> str:
+    """Resolve a SQL database's bare TDS hostname in the target workspace.
+
+    Uses the typed `/sqlDatabases` endpoint — the generic `/items` list omits
+    type-specific properties. The API's `serverFqdn` is ADO.NET-style with a
+    port suffix ("<host>.database.fabric.microsoft.com,1433"); source repos
+    embed the bare host (M expressions, JDBC variables), so the suffix is
+    stripped before returning.
+
+    Raises:
+        ValueError: No SQL database matches `name`, or it has no serverFqdn
+            yet (still provisioning).
+    """
+    endpoint = f"/v1/workspaces/{workspace_id}/sqlDatabases"
+    ctx = "list SQL databases"
+
+    items: list[dict] = []
+    token: str | None = None
+    while True:
+        query = f"?continuationToken={urllib.parse.quote(token)}" if token else ""
+        data = fabric_api_request(endpoint + query, error_context=ctx)
+        items.extend(data.get("value", []))
+        token = data.get("continuationToken")
+        if not token:
+            break
+
+    matches = [i for i in items if i.get("displayName", "").lower() == name.lower()]
+    if len(matches) != 1:
+        available = sorted(i.get("displayName", "?") for i in items)
+        listing = "\n".join(f"  - {n}" for n in available) or "  (none)"
+        raise ValueError(
+            f"{'No' if not matches else 'Multiple'} SQLDatabase matching '{name}' "
+            f"found in the workspace.\nAvailable SQLDatabases ({len(available)}):\n{listing}"
+        )
+
+    server_fqdn = matches[0].get("properties", {}).get("serverFqdn", "")
+    if not server_fqdn:
+        raise ValueError(
+            f"SQLDatabase '{name}' has no serverFqdn yet (still provisioning?)"
+        )
+    return server_fqdn.split(",")[0]
 
 
 # --- Refresh / framing ---------------------------------------------------

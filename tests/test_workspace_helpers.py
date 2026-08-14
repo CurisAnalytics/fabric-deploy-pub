@@ -310,3 +310,98 @@ class TestResolveWarehouseEndpointParams:
         assert d.parameters[self.EP_GUID].dynamic_variable == ""
         assert len(d.unresolved_warehouse_bindings) == 1
         assert d.unresolved_warehouse_bindings[0][1] == self.EP_GUID
+
+
+# --- resolve_sqldatabase_hostname_params ------------------------------------
+
+
+class TestResolveSqlDatabaseHostnameParams:
+    HOST = "abc123-def456.database.fabric.microsoft.com"
+    WS = "00000000-0000-0000-0000-000000000001"
+
+    def _detector_with_hostname(self, tmp_path: Path) -> ParameterDetector:
+        d = ParameterDetector(tmp_path)
+        d._sqldatabase_names = ["mydb"]
+        d.parameters = {
+            self.HOST: DetectedParameter(
+                find_value=self.HOST,
+                description="SQL Database Connection String",
+                dynamic_variable="$items.SQLDatabase.mydb.$sqlendpoint",
+                source_files={"m1.SemanticModel/definition/tables/t.tmdl"},
+            )
+        }
+        return d
+
+    def test_strips_port_suffix_from_server_fqdn(self, tmp_path: Path, monkeypatch):
+        from fabric_deploy import params as params_mod
+
+        d = self._detector_with_hostname(tmp_path)
+
+        def fake_host(workspace_id, name):
+            assert (workspace_id, name) == (self.WS, "mydb")
+            # client strips the ",1433" the Fabric API appends to serverFqdn
+            return "target-host.database.fabric.microsoft.com"
+
+        monkeypatch.setattr(
+            "fabric_deploy.client.get_sqldatabase_server_host", fake_host
+        )
+        count = params_mod.resolve_sqldatabase_hostname_params(d, self.WS, LOG)
+
+        assert count == 1
+        assert (
+            d.parameters[self.HOST].dynamic_variable
+            == "target-host.database.fabric.microsoft.com"
+        )
+
+    def test_manual_override_wins(self, tmp_path: Path, monkeypatch):
+        from fabric_deploy import params as params_mod
+
+        d = self._detector_with_hostname(tmp_path)
+        d.parameters[self.HOST].dynamic_variable = "manually-set-host"
+
+        def boom(*a, **k):
+            raise AssertionError("should not hit the API for resolved params")
+
+        monkeypatch.setattr(
+            "fabric_deploy.client.get_sqldatabase_server_host", boom
+        )
+        assert params_mod.resolve_sqldatabase_hostname_params(d, self.WS, LOG) == 0
+        assert d.parameters[self.HOST].dynamic_variable == "manually-set-host"
+
+    def test_lookup_failure_keeps_dynamic_fallback(self, tmp_path: Path, monkeypatch):
+        from fabric_deploy import params as params_mod
+
+        d = self._detector_with_hostname(tmp_path)
+
+        def fail(*a, **k):
+            raise ValueError("No SQLDatabase matching 'mydb' found")
+
+        monkeypatch.setattr(
+            "fabric_deploy.client.get_sqldatabase_server_host", fail
+        )
+        assert params_mod.resolve_sqldatabase_hostname_params(d, self.WS, LOG) == 0
+        assert (
+            d.parameters[self.HOST].dynamic_variable
+            == "$items.SQLDatabase.mydb.$sqlendpoint"
+        )
+
+    def test_no_sqldatabase_params_is_noop(self, tmp_path: Path, monkeypatch):
+        from fabric_deploy import params as params_mod
+
+        d = ParameterDetector(tmp_path)
+        d._sqldatabase_names = ["mydb"]
+        d.parameters = {
+            "some-host": DetectedParameter(
+                find_value="some-host",
+                description="SQL Analytics Endpoint Connection String",
+                dynamic_variable="$items.Lakehouse.lh.$sqlendpoint",
+            )
+        }
+
+        def boom(*a, **k):
+            raise AssertionError("should not hit the API without SQLDatabase params")
+
+        monkeypatch.setattr(
+            "fabric_deploy.client.get_sqldatabase_server_host", boom
+        )
+        assert params_mod.resolve_sqldatabase_hostname_params(d, self.WS, LOG) == 0

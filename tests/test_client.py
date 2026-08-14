@@ -14,6 +14,7 @@ import pytest
 
 from fabric_deploy.client import (
     find_item_by_name,
+    get_sqldatabase_server_host,
     list_workspace_items,
     refresh_semantic_model,
 )
@@ -161,3 +162,54 @@ def test_powerbi_scope_token_resolution(monkeypatch, set_powerbi: bool):
     else:
         monkeypatch.delenv("POWERBI_BEARER_TOKEN", raising=False)
     assert get_access_token(POWERBI_SCOPE) == (pbi if set_powerbi else fabric)
+
+
+# --- get_sqldatabase_server_host ------------------------------------------
+
+
+def _sqldbs(monkeypatch, value):
+    monkeypatch.setattr(
+        "fabric_deploy.client.fabric_api_request",
+        lambda endpoint, error_context="x": {"value": value},
+    )
+
+
+def test_sqldatabase_host_strips_port_suffix(monkeypatch):
+    _sqldbs(
+        monkeypatch,
+        [{
+            "displayName": "mydb",
+            "properties": {"serverFqdn": "abc-def.database.fabric.microsoft.com,1433"},
+        }],
+    )
+    assert (
+        get_sqldatabase_server_host("ws", "mydb")
+        == "abc-def.database.fabric.microsoft.com"
+    )
+
+
+def test_sqldatabase_host_portless_fqdn_unchanged(monkeypatch):
+    _sqldbs(
+        monkeypatch,
+        [{
+            "displayName": "MyDB",
+            "properties": {"serverFqdn": "abc-def.database.fabric.microsoft.com"},
+        }],
+    )
+    # also exercises case-insensitive name matching
+    assert (
+        get_sqldatabase_server_host("ws", "mydb")
+        == "abc-def.database.fabric.microsoft.com"
+    )
+
+
+def test_sqldatabase_host_no_match_raises_with_listing(monkeypatch):
+    _sqldbs(monkeypatch, [{"displayName": "other", "properties": {}}])
+    with pytest.raises(ValueError, match="No SQLDatabase matching 'mydb'"):
+        get_sqldatabase_server_host("ws", "mydb")
+
+
+def test_sqldatabase_host_missing_fqdn_raises(monkeypatch):
+    _sqldbs(monkeypatch, [{"displayName": "mydb", "properties": {}}])
+    with pytest.raises(ValueError, match="no serverFqdn"):
+        get_sqldatabase_server_host("ws", "mydb")

@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 __all__ = [
     "ParameterFile",
     "apply_manual_overrides",
+    "resolve_sqldatabase_hostname_params",
     "resolve_warehouse_endpoint_params",
 ]
 
@@ -137,6 +138,57 @@ def resolve_warehouse_endpoint_params(
             f"Resolved warehouse binding {p.find_value} -> {endpoint['id']} "
             f"(SQLEndpoint '{db_names[0]}')"
         )
+    return len(pending)
+
+
+def resolve_sqldatabase_hostname_params(
+    detector: ParameterDetector, workspace_id: str, logger: logging.Logger
+) -> int:
+    """Resolve SQL database hostnames to literal bare hosts from the target.
+
+    fabric-cicd's `$items.SQLDatabase.<name>.$sqlendpoint` resolves to the
+    item's raw `serverFqdn`, which carries an ADO.NET-style `,1433` port
+    suffix. The detected find_value is always a bare host (the Sql.Database
+    regexes require the closing quote right after the domain), so the dynamic
+    would inject the port into every occurrence — harmless in M expressions
+    (`Sql.Database("host,1433", …)` connects fine) but fatal in notebook JDBC
+    URLs composed as `f"{hostname}:{port}"`. Resolve the host ourselves and
+    emit the literal instead. Manual overrides win (their dynamic_variable no
+    longer matches the `$items.` pattern).
+
+    Returns the number of parameters resolved.
+    """
+    pending = [
+        p
+        for p in detector.parameters.values()
+        if p.dynamic_variable.startswith("$items.SQLDatabase.")
+        and p.dynamic_variable.endswith(".$sqlendpoint")
+    ]
+    if not pending:
+        return 0
+
+    db_names = detector.sqldatabase_names
+    if not db_names:
+        return 0
+
+    from .client import get_sqldatabase_server_host
+
+    try:
+        # First-name convention, same as _generate_dynamic_variable.
+        host = get_sqldatabase_server_host(workspace_id, db_names[0])
+    except (ValueError, RuntimeError) as e:
+        logger.warning(
+            f"Could not resolve the SQL database hostname for '{db_names[0]}' "
+            f"in the target workspace — falling back to fabric-cicd's "
+            f"$sqlendpoint dynamic, which appends a ',1433' port suffix "
+            f"that breaks JDBC-style 'host:port' composition: {e}"
+        )
+        return 0
+
+    for p in pending:
+        p.dynamic_variable = host
+        p.source_files.add("resolved from target workspace SQLDatabase")
+        logger.debug(f"Resolved SQL database hostname {p.find_value} -> {host}")
     return len(pending)
 
 
