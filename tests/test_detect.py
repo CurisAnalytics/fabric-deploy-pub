@@ -610,6 +610,40 @@ class TestCopyJobExtraction:
             == "$items.Lakehouse.lh.$id"
         )
 
+    def test_copyjob_null_workspaceid_is_local_not_cross_workspace(
+        self, tmp_path: Path
+    ):
+        """The null UUID is Fabric's "this workspace" placeholder — never a
+        cross-workspace reference (no warning, no parameter), and the
+        artifact keeps its same-workspace mapping."""
+        _make_lakehouse(tmp_path, "lh")
+        _make_copyjob(
+            tmp_path,
+            "cj",
+            {
+                "properties": {
+                    "destination": {
+                        "connectionSettings": {
+                            "typeProperties": {
+                                "workspaceId": ParameterDetector.NULL_UUID,
+                                "artifactId": LAKEHOUSE_ID,
+                            }
+                        }
+                    },
+                }
+            },
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert ParameterDetector.NULL_UUID not in d.parameters
+        assert d.offtarget_workspace_refs == []
+        assert d.parameters[LAKEHOUSE_ID].description == "Lakehouse ID"
+        assert (
+            d.parameters[LAKEHOUSE_ID].dynamic_variable
+            == "$items.Lakehouse.lh.$id"
+        )
+
 
 # --- should_skip_replacement ---------------------------------------------
 

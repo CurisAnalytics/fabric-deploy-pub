@@ -663,8 +663,8 @@ class ParameterDetector:
                     )
 
             # workspaceId appears in TridentNotebook / InvokePipeline activities.
-            if "workspaceId" in obj and obj.get("workspaceId") != self.NULL_UUID:
-                self._classify_activity_workspace(obj["workspaceId"], source_file)
+            if "workspaceId" in obj:
+                _ = self._classify_activity_workspace(obj["workspaceId"], source_file)
 
             for value in obj.values():
                 self._extract_connections_recursive(value, source_file)
@@ -675,7 +675,9 @@ class ParameterDetector:
 
     def _classify_activity_workspace(self, ws_id, source_file: str) -> bool:
         """Remap or preserve a pipeline/copyjob workspaceId. Returns True if
-        the id belongs to the source workspace (and was parameterized).
+        the id already points at the deploy target: the source workspace
+        (parameterized to `$workspace.$id`) or the null-UUID "this workspace"
+        placeholder (environment-independent, needs no rule — see NULL_UUID).
 
         Only ids the repo's own items anchor (notebook attachments,
         semantic-model OneLake URLs) map to `$workspace.$id`. Anything else is
@@ -686,6 +688,8 @@ class ParameterDetector:
         """
         if not isinstance(ws_id, str) or not self.UUID_PATTERN.fullmatch(ws_id):
             return False
+        if ws_id == self.NULL_UUID:
+            return True
         if ws_id in self._source_workspace_ids:
             _ = self._add_parameter(ws_id, source_file, "Workspace ID")
             return True
