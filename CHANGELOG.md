@@ -2,6 +2,9 @@
 
 Brief status per release. Newest first. Dates are release/commit dates.
 
+## [1.9.0] — Unreleased
+`manual_parameters` entries fabdep didn't auto-detect are now injected as find/replace rules when the value occurs in an item file — covers references detection has no model for (e.g. a PowerApp link in a report).
+
 ## [1.8.2] — Unreleased
 SQL Database hostnames resolve to a literal bare host: the `$sqlendpoint` dynamic returns a `,1433` suffix that broke notebook JDBC URLs.
 Fixes: token falls back to another identity in the same tenant; no more double-printed log lines; null-UUID CopyJob workspaceIds treated as local.
