@@ -117,12 +117,21 @@ workspace_base_name: "my_workspace"  # + " [<branch>]" → resolved via Fabric A
 capacity_id: "…"                        # optional; first active capacity used with -N
 tenant: contoso                           # optional tenant-pin alias (see Auth)
 
-manual_parameters:                      # optional: override auto-detected params
-  - find_value: "ffffffff-…"            #   auto-detected from source files
+manual_parameters:                      # optional: override or inject find/replace params
+  - find_value: "ffffffff-…"            #   auto-detected from source files → override
     replace_value: "ffffffff-…"         #   keep this external reference unchanged
     item_type: ["SemanticModel"]
     description: "External lakehouse SQL endpoint"
+  - find_value: "44444444-…"            #   not auto-detected but present in item files → injected
+    replace_value: "55555555-…"         #   e.g. rewrite a PowerApp app id in report JSON
+    item_type: ["Report"]
+    description: "PowerApp link"
 ```
+
+A `find_value` fabdep auto-detected gets its replacement overridden. One it didn't detect is
+injected as a new find/replace entry — but only if the value literally occurs in an item file
+(anything under a `.platform` directory); otherwise it warns and is skipped, so a typo'd or
+stale entry can't silently no-op.
 
 ## Troubleshooting
 

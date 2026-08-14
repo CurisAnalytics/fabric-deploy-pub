@@ -1,8 +1,10 @@
-"""Unit tests for WorkspaceDeployer._load_manual_parameters.
+"""Unit tests for fabdep.yml manual_parameters handling.
 
-Manual parameter overrides let users keep the auto-detected `find_value` while
-supplying a custom `replace_value` (e.g. for external references) and
-optionally scoping to specific item types.
+Overrides keep an auto-detected `find_value` while supplying a custom
+`replace_value` (e.g. for external references), optionally scoped to item
+types. Injections cover find_values detection can't see (e.g. a PowerApp app
+id in report JSON) — honored only when the value literally occurs in an item
+file, so a typo'd or stale entry still warns instead of silently no-oping.
 """
 
 from __future__ import annotations
@@ -60,9 +62,10 @@ class TestManualParameters:
         assert "manual override: external workspace" in param.description
         assert d._manual_count == 1
 
-    def test_override_unmatched_logs_warning_and_does_not_add(
+    def test_value_absent_from_repo_logs_warning_and_does_not_add(
         self, tmp_path: Path, mock_fabric_api, caplog
     ):
+        """Undetected AND not present in any item file -> typo/stale, skipped."""
         _build_repo(
             tmp_path,
             'workspace_base_name: "ws"\n'
@@ -77,6 +80,67 @@ class TestManualParameters:
         assert UNRELATED_UUID not in d._detector.parameters
         assert d._manual_count == 0
         assert any(UNRELATED_UUID in rec.message for rec in caplog.records)
+
+    def test_undetected_value_in_item_file_is_injected(
+        self, tmp_path: Path, mock_fabric_api
+    ):
+        """A find_value detection didn't see, but which exists in an item file
+        (e.g. a PowerApp app id in report JSON), becomes a new parameter."""
+        _build_repo(
+            tmp_path,
+            'workspace_base_name: "ws"\n'
+            'manual_parameters:\n'
+            f'  - find_value: "{UNRELATED_UUID}"\n'
+            '    replace_value: "new-app-guid"\n'
+            '    item_type: ["Report"]\n'
+            '    description: "PowerApp link"\n',
+        )
+        rpt = tmp_path / "r1.Report"
+        (rpt / "definition" / "pages" / "p1").mkdir(parents=True)
+        (rpt / ".platform").write_text(
+            json.dumps({"metadata": {"displayName": "r1", "type": "Report"}})
+        )
+        (rpt / "definition" / "pages" / "p1" / "visual.json").write_text(
+            json.dumps({"appId": f"/providers/Microsoft.PowerApps/apps/{UNRELATED_UUID}"})
+        )
+
+        d = WorkspaceDeployer(tmp_path, branch_override="dev")
+
+        param = d._detector.parameters[UNRELATED_UUID]
+        assert param.dynamic_variable == "new-app-guid"
+        assert param.item_types == {"Report"}
+        assert param.description == "PowerApp link"
+        assert "r1.Report/definition/pages/p1/visual.json" in param.source_files
+        assert "fabdep.yml (manual injection)" in param.source_files
+        assert d._manual_count == 1
+
+        # And it survives into the emitted find_replace structure.
+        entry = next(
+            e
+            for e in d._detector.generate_parameter_yml()["find_replace"]
+            if e["find_value"] == UNRELATED_UUID
+        )
+        assert entry["item_type"] == ["Report"]
+        assert entry["replace_value"] == {"prod": "new-app-guid"}
+
+    def test_value_only_in_fabdep_yml_is_not_injected(
+        self, tmp_path: Path, mock_fabric_api, caplog
+    ):
+        """The scan covers item files only — an entry must not match itself in
+        fabdep.yml (or any other repo-root file)."""
+        _build_repo(
+            tmp_path,
+            'workspace_base_name: "ws"\n'
+            'manual_parameters:\n'
+            '  - find_value: "only-lives-in-fabdep-yml"\n'
+            '    replace_value: "x"\n',
+        )
+
+        with caplog.at_level("WARNING"):
+            d = WorkspaceDeployer(tmp_path, branch_override="dev")
+
+        assert "only-lives-in-fabdep-yml" not in d._detector.parameters
+        assert d._manual_count == 0
 
     @pytest.mark.parametrize(
         ("item_type_yaml", "expected"),
@@ -134,8 +198,8 @@ class TestManualParameters:
         with caplog.at_level("WARNING"):
             d = WorkspaceDeployer(tmp_path, branch_override="dev")
 
-        # Only the third entry was a complete override, but its find_value
-        # wasn't detected — so the manual count is 0.
+        # Only the third entry was complete, but its find_value is neither
+        # detected nor present in any item file — so the manual count is 0.
         assert d._manual_count == 0
 
         # The two malformed entries should produce skip warnings.
