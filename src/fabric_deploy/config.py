@@ -7,7 +7,9 @@ that turns the workspace name into a workspace ID.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
+from difflib import get_close_matches
 from pathlib import Path
 from typing import NotRequired, TypedDict
 
@@ -18,17 +20,21 @@ from .git import current_branch
 
 __all__ = ["FabdepConfig", "TenantPin", "TenantRegistryEntry"]
 
+FABDEP_YML_KEYS = frozenset({"workspace_base_name", "capacity_id", "tenant", "manual_parameters"})
+
 
 class TenantRegistryEntry(TypedDict):
     """A machine-local tenant registry entry (alias -> this).
 
-    Written by `fabdep auth login <alias>` as it logs each tenant's SPN into its
-    isolated config dir, and read by fabdep to resolve a `fabdep.yml` alias. That
-    command is the single source of truth — see the multi-tenant-auth recipe.
+    Written by `fabdep auth login <alias>` (isolated config dir + fresh login) or
+    `fabdep auth bind <alias> <target>` (an identity already in the shared
+    `~/.azure`), and read by fabdep to resolve a `fabdep.yml` alias. Those two
+    commands are the only writers — see the multi-tenant-auth recipe.
     """
 
     id: str  # Entra tenant GUID asserted before deploy
     config_dir: NotRequired[str]  # AZURE_CONFIG_DIR selecting this tenant's login
+    subscription: NotRequired[str]  # `fabdep auth bind`: pin this az account (global ~/.azure)
     require_spn: NotRequired[bool]  # reject user creds, require an SPN (default off)
     app_id: NotRequired[str]  # SPN client id, for flag-free `fabdep auth login` re-login
     cert_path: NotRequired[str]  # SPN cert path, for flag-free re-login
@@ -50,6 +56,7 @@ class TenantPin:
     alias: str  # registry key from fabdep.yml; resolved to id/config_dir before deploy
     id: str | None = None  # expected Entra tenant GUID (filled by resolve())
     config_dir: str | None = None  # AZURE_CONFIG_DIR to select this tenant's login
+    subscription: str | None = None  # bound az account to mint tokens under (no config_dir)
     require_spn: bool = False  # reject user credentials, require an SPN
 
     @classmethod
@@ -63,7 +70,7 @@ class TenantPin:
         )
 
     def resolve(self, registry: dict[str, TenantRegistryEntry]) -> TenantPin:
-        """Fill `id`/`config_dir`/`require_spn` from the registry entry.
+        """Fill `id`/`config_dir`/`subscription`/`require_spn` from the registry entry.
 
         Raises ValueError on an unknown alias or a registry entry missing `id`.
         """
@@ -72,19 +79,22 @@ class TenantPin:
             raise ValueError(
                 f"Unknown tenant alias '{self.alias}' in fabdep.yml.\n"
                 f"Known aliases: {known}.\n"
-                "Log the tenant in with `fabdep auth login <alias>`, which registers "
-                "it under 'tenants' in ~/.azure/azureProfile.fabdep.json."
+                "Register it under 'tenants' in ~/.azure/azureProfile.fabdep.json with "
+                "`fabdep auth bind <alias> <tenant-id>` (existing az login) or "
+                "`fabdep auth login <alias>` (isolated SPN login)."
             )
         entry = registry[self.alias]
         if not entry.get("id"):
             raise ValueError(
                 f"Tenant alias '{self.alias}' is registered without an 'id'; "
-                f"re-run `fabdep auth login {self.alias}`."
+                f"re-run `fabdep auth bind {self.alias} <tenant-id>` or "
+                f"`fabdep auth login {self.alias}`."
             )
         return TenantPin(
             alias=self.alias,
             id=entry["id"],
             config_dir=entry.get("config_dir"),
+            subscription=entry.get("subscription"),
             require_spn=bool(entry.get("require_spn", False)),
         )
 
@@ -137,6 +147,7 @@ class FabdepConfig:
             with open(config_file) as f:
                 config = yaml.safe_load(f) or {}
             from_yaml = True
+            _warn_unknown_keys(config)
 
         branch = branch_override or current_branch(resolved)
 
@@ -167,4 +178,21 @@ class FabdepConfig:
             manual_parameters=config.get("manual_parameters") or [],
             tenant=tenant,
             from_yaml=from_yaml,
+        )
+
+
+def _warn_unknown_keys(config: dict) -> None:
+    """Flag fabdep.yml keys fabdep doesn't read, so a typo like `tenan:` is loud.
+
+    A warning rather than an error: a misspelled optional key silently dropping
+    a feature is the failure mode here, not an unusable config.
+    """
+    for key in config:
+        if key in FABDEP_YML_KEYS:
+            continue
+        hint = get_close_matches(str(key), FABDEP_YML_KEYS, n=1, cutoff=0.6)
+        suggestion = f" — did you mean '{hint[0]}'?" if hint else ""
+        logging.getLogger("fabric_deploy").warning(
+            f"fabdep.yml: unknown key '{key}' ignored{suggestion} "
+            f"(known keys: {', '.join(sorted(FABDEP_YML_KEYS))})"
         )

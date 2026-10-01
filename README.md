@@ -91,16 +91,37 @@ host may reject).
 
 ### Auth
 
+Two separate things live in `~/.azure/azureProfile.fabdep.json`:
+
+**Account labels** — cosmetic names for subscriptions in the active `az` login. They
+only affect `fabdep auth list` / `switch` and never select an identity.
+
 ```
 fabdep auth list                       # accounts (marks User vs SPN)
-fabdep auth switch <sub-id|name>       # switch active account
-fabdep auth rename <sub-id> <name>     # alias an account (survives az refresh)
-fabdep auth login <alias> [--app … --tenant … --cert …] [--user]   # multi-tenant
+fabdep auth switch <sub-id|name>       # set the active az subscription
+fabdep auth rename <sub-id> <name>     # label a subscription (survives az refresh)
 ```
 
-Authenticate as an SPN with `az login --service-principal -u <id> -p <secret> --tenant <tid> --allow-no-subscriptions`. SPNs and renames persist to `~/.azure/azureProfile.fabdep.json`, surviving `az account list --refresh`.
+**Tenant aliases** — what `tenant: <alias>` in `fabdep.yml` resolves against. With a
+pin, fabdep picks the right identity for every deploy, so you never `auth switch`
+first, and a wrong-tenant login fails early with a clear error instead of
+"workspace not found". Two ways to register an alias:
 
-**Multi-tenant:** `fabdep auth login <alias>` logs a tenant's SPN into an isolated `AZURE_CONFIG_DIR` (default `~/.azure-<alias>`) and registers the alias, so tenants never share `~/.azure` state. Pass `--app/--tenant/--cert` on first login (reused after); `--user` for an interactive non-SPN login. A workspace opts in with `tenant: <alias>` in `fabdep.yml` — fabdep then selects that login and asserts the active identity is in the pinned tenant before any Fabric call.
+```
+fabdep auth bind <alias> <tenant-id|sub-id|name>   # developer machine: reuse your existing az login
+fabdep auth login <alias> [--app … --tenant … --cert …] [--user]   # isolated SPN/user login
+```
+
+`bind` writes no login and no config dir: at deploy time fabdep mints tokens with
+`--subscription` for an enabled account in that tenant (your own user login before an
+SPN, or exactly the account you named), leaving the active `az` account alone. Log in
+to the tenant first (`az login --tenant <id>`); the pin's error text lists the tenants
+`az` can see. `login` instead logs the tenant into an isolated `AZURE_CONFIG_DIR`
+(default `~/.azure-<alias>`) — the headless SPN-cert path. Pass `--app/--tenant/--cert` on
+first login (reused after); `--user` for an interactive non-SPN login. Set
+`require_spn: true` on a registry entry to reject user credentials.
+
+Authenticate as an SPN with `az login --service-principal -u <id> -p <secret> --tenant <tid> --allow-no-subscriptions`. SPNs and labels persist to the profile, surviving `az account list --refresh`.
 
 ### Rename items
 
@@ -115,7 +136,7 @@ Renames item directories to match their `.platform` displayName (dry-run by defa
 ```yaml
 workspace_base_name: "my_workspace"  # + " [<branch>]" → resolved via Fabric API
 capacity_id: "…"                        # optional; first active capacity used with -N
-tenant: contoso                           # optional tenant-pin alias (see Auth)
+tenant: contoso                           # optional tenant-pin alias (see Auth); unknown keys warn
 
 manual_parameters:                      # optional: override or inject find/replace params
   - find_value: "ffffffff-…"            #   auto-detected from source files → override

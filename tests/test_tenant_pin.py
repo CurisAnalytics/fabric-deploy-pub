@@ -2,15 +2,18 @@
 
 Covers four layers:
 - config parsing of the `tenant:` alias string into TenantPin
-- TenantPin.resolve() filling id/config_dir/require_spn from the machine-local
-  registry (written by `fabdep auth login`)
+- TenantPin.resolve() filling id/config_dir/subscription/require_spn from the
+  machine-local registry (written by `fabdep auth login` / `fabdep auth bind`)
 - identity.assert_active_tenant tenant/identity checks
 - WorkspaceDeployer wiring (alias resolved, AZURE_CONFIG_DIR set, assertion
   before any Fabric API call)
+- dir-less (bound) pins selecting an identity from the shared az login
+- the `fabdep auth bind` registry writer
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
@@ -18,19 +21,23 @@ from pathlib import Path
 
 import pytest
 
-from fabric_deploy.auth import login_tenant
+from fabric_deploy import identity
+from fabric_deploy.auth import bind_tenant, login_tenant
+from fabric_deploy.cli import handle_auth_command
 from fabric_deploy.config import FabdepConfig, TenantPin
 from fabric_deploy.identity import (
     AzureAccount,
     TenantMismatchError,
     active_account,
+    apply_tenant_pin,
     assert_active_tenant,
+    describe_tenants,
     tenant_registry,
 )
 from fabric_deploy.workspace import WorkspaceDeployer
 
-
 FABRIKAM = "99999999-9999-9999-9999-999999999999"
+CONTOSO = "dddddddd-dddd-dddd-dddd-dddddddddddd"
 REGISTRY = {"fabrikam": {"id": FABRIKAM, "config_dir": "~/.azure-fabrikam"}}
 
 
@@ -42,17 +49,29 @@ def _seed_workspace(repo: Path) -> None:
     )
 
 
-def _acct(tenant_id: str, user_type: str = "servicePrincipal") -> AzureAccount:
+def _acct(
+    tenant_id: str,
+    user_type: str = "servicePrincipal",
+    *,
+    sub: str = "sub-123",
+    name: str = "Some Account",
+    default: bool = True,
+) -> AzureAccount:
     return {  # type: ignore[return-value]
         "cloudName": "AzureCloud",
         "homeTenantId": tenant_id,
-        "id": "sub-123",
-        "isDefault": True,
-        "name": "Some Account",
+        "id": sub,
+        "isDefault": default,
+        "name": name,
         "state": "Enabled",
         "tenantId": tenant_id,
-        "user": {"name": "spn@app", "type": user_type},
+        "user": {"name": f"{sub}@{user_type}", "type": user_type},
     }
+
+
+class _FakeCliCredential:
+    def __init__(self, *, subscription=None, **_):
+        self.subscription = subscription
 
 
 # --- config parsing --------------------------------------------------------
@@ -74,6 +93,14 @@ class TestTenantPinParsing:
         cfg = FabdepConfig.from_path(tmp_path, branch_override="dev")
         assert cfg.tenant == TenantPin(alias="contoso")
 
+    def test_misspelled_tenant_key_warns_and_is_ignored(self, tmp_path: Path, caplog):
+        (tmp_path / "fabdep.yml").write_text('workspace_base_name: "ws"\ntenan: contoso\n')
+        with caplog.at_level("WARNING"):
+            cfg = FabdepConfig.from_path(tmp_path, branch_override="dev")
+        assert cfg.tenant is None
+        assert "unknown key 'tenan'" in caplog.text
+        assert "did you mean 'tenant'?" in caplog.text
+
     def test_from_path_no_tenant_is_none(self, tmp_path: Path):
         (tmp_path / "fabdep.yml").write_text('workspace_base_name: "ws"\n')
         cfg = FabdepConfig.from_path(tmp_path, branch_override="dev")
@@ -89,6 +116,11 @@ class TestTenantPinResolve:
         assert resolved == TenantPin(
             alias="fabrikam", id=FABRIKAM, config_dir="~/.azure-fabrikam"
         )
+
+    def test_bound_subscription_from_registry(self):
+        reg = {"contoso": {"id": CONTOSO, "subscription": "sub-contoso"}}
+        pin = TenantPin(alias="contoso").resolve(reg)
+        assert (pin.id, pin.config_dir, pin.subscription) == (CONTOSO, None, "sub-contoso")
 
     def test_require_spn_from_registry(self):
         reg = {"fabrikam": {"id": FABRIKAM, "config_dir": "~/.azure-fabrikam", "require_spn": True}}
@@ -263,11 +295,18 @@ class TestDeployerTenantPin:
 
         monkeypatch.setattr("fabric_deploy.identity.tenant_registry", dict)
         monkeypatch.setattr("fabric_deploy.identity.assert_active_tenant", _fail)
+        monkeypatch.setattr(
+            "fabric_deploy.identity._list_accounts",
+            lambda: [_acct(CONTOSO, "user", sub="s1", name="Contoso Personal")],
+        )
+        monkeypatch.setattr("fabric_deploy.identity.read_fabdep_profile", dict)
         monkeypatch.delenv("FABRIC_BEARER_TOKEN", raising=False)
 
         with caplog.at_level("WARNING"):
             WorkspaceDeployer(tmp_path, branch_override="dev")  # must not raise
         assert "no tenants are registered" in caplog.text
+        assert f"{CONTOSO}  Contoso Personal [active]" in caplog.text
+        assert "fabdep auth bind fabrikam <tenant-id>" in caplog.text
 
     def test_mismatch_propagates(self, tmp_path: Path, monkeypatch, mock_fabric_api):
         self._write(tmp_path, "tenant: fabrikam\n")
@@ -306,6 +345,237 @@ class TestDeployerTenantPin:
 
         WorkspaceDeployer(tmp_path, branch_override="dev")  # must not raise
         assert os.environ["AZURE_CONFIG_DIR"] == os.path.expanduser("~/.azure-fabrikam")
+
+
+# --- dir-less (bound) pins: select from the shared az login ---------------
+
+
+class TestBoundPinSelection:
+    """`fabdep auth bind` entries have no config_dir: the pin must pick an
+    identity out of the global `~/.azure` without rewriting az state."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, monkeypatch):
+        monkeypatch.setattr(identity, "_CLI_CREDENTIAL", None)
+        monkeypatch.setattr(identity, "_ACTIVE_PIN", None)
+        monkeypatch.setattr(identity, "AzureCliCredential", _FakeCliCredential)
+        monkeypatch.setattr(identity, "read_fabdep_profile", lambda: {"aliases": {}})
+        monkeypatch.delenv("FABRIC_BEARER_TOKEN", raising=False)
+        monkeypatch.delenv("AZURE_CONFIG_DIR", raising=False)
+        self.mp = monkeypatch
+
+    def _registry(self, entry: dict) -> None:
+        self.mp.setattr(identity, "tenant_registry", lambda: {"contoso": entry})
+
+    def _az(self, active, *listed) -> None:
+        self.mp.setattr(identity, "active_account", lambda config_dir=None: active)
+        self.mp.setattr(identity, "_list_accounts", lambda: list(listed))
+
+    @staticmethod
+    def _logger():
+        import logging
+
+        return logging.getLogger("test.pin")
+
+    def test_active_in_tenant_is_left_alone(self):
+        self._registry({"id": CONTOSO})
+        self._az(_acct(CONTOSO, "user"))
+
+        apply_tenant_pin(TenantPin(alias="contoso"), self._logger())
+
+        assert identity._CLI_CREDENTIAL is None
+        assert "AZURE_CONFIG_DIR" not in os.environ
+
+    def test_wrong_active_tenant_selects_sibling(self, caplog):
+        self._registry({"id": CONTOSO})
+        self._az(
+            _acct(FABRIKAM, "user", sub="w1", name="Fabrikam Personal"),
+            _acct(FABRIKAM, "user", sub="w1", name="Fabrikam Personal"),
+            _acct(CONTOSO, "servicePrincipal", sub="c-spn", name="Contoso SPN", default=False),
+            _acct(CONTOSO, "user", sub="c-user", name="Contoso Personal", default=False),
+        )
+
+        with caplog.at_level("INFO"):
+            apply_tenant_pin(TenantPin(alias="contoso"), self._logger())
+
+        assert identity._CLI_CREDENTIAL.subscription == "c-user"  # user login before SPN
+        assert "using 'Contoso Personal'" in caplog.text
+        assert "active az account unchanged" in caplog.text
+
+    def test_log_line_honors_rename_labels(self, caplog):
+        self._registry({"id": CONTOSO})
+        self.mp.setattr(
+            identity, "read_fabdep_profile", lambda: {"aliases": {"c-user": "contoso-me"}}
+        )
+        self._az(_acct(FABRIKAM, "user"), _acct(CONTOSO, "user", sub="c-user", default=False))
+
+        with caplog.at_level("INFO"):
+            apply_tenant_pin(TenantPin(alias="contoso"), self._logger())
+
+        assert "using 'contoso-me'" in caplog.text
+
+    def test_bound_subscription_is_pinned(self):
+        self._registry({"id": CONTOSO, "subscription": "c-spn"})
+        self._az(
+            _acct(CONTOSO, "user", sub="c-user"),  # active, same tenant — still not the bound one
+            _acct(CONTOSO, "user", sub="c-user"),
+            _acct(CONTOSO, "servicePrincipal", sub="c-spn", default=False),
+        )
+
+        apply_tenant_pin(TenantPin(alias="contoso"), self._logger())
+
+        assert identity._CLI_CREDENTIAL.subscription == "c-spn"
+
+    def test_bound_subscription_active_is_noop(self):
+        self._registry({"id": CONTOSO, "subscription": "c-spn"})
+        self._az(_acct(CONTOSO, "servicePrincipal", sub="c-spn"))
+
+        apply_tenant_pin(TenantPin(alias="contoso"), self._logger())
+
+        assert identity._CLI_CREDENTIAL is None
+
+    def test_require_spn_skips_user_logins(self):
+        self._registry({"id": CONTOSO, "require_spn": True})
+        self._az(
+            _acct(CONTOSO, "user", sub="c-user"),  # active user in-tenant, but SPN required
+            _acct(CONTOSO, "user", sub="c-user"),
+            _acct(CONTOSO, "servicePrincipal", sub="c-spn", default=False),
+        )
+
+        apply_tenant_pin(TenantPin(alias="contoso"), self._logger())
+
+        assert identity._CLI_CREDENTIAL.subscription == "c-spn"
+
+    def test_no_identity_in_tenant_raises_with_listing(self):
+        self._registry({"id": CONTOSO})
+        self._az(_acct(FABRIKAM, "user", sub="w1", name="Fabrikam Personal"), _acct(FABRIKAM, "user", sub="w1", name="Fabrikam Personal"))
+
+        with pytest.raises(TenantMismatchError) as exc:
+            apply_tenant_pin(TenantPin(alias="contoso"), self._logger())
+
+        msg = str(exc.value)
+        assert f"No enabled az account in tenant {CONTOSO}" in msg
+        assert f"{FABRIKAM}  Fabrikam Personal [active]" in msg
+        assert f"az login --tenant {CONTOSO}" in msg
+        assert identity._CLI_CREDENTIAL is None
+
+    def test_bound_subscription_missing_raises(self):
+        self._registry({"id": CONTOSO, "subscription": "gone"})
+        self._az(_acct(CONTOSO, "user", sub="c-user"), _acct(CONTOSO, "user", sub="c-user"))
+
+        with pytest.raises(TenantMismatchError, match="No enabled az subscription gone"):
+            apply_tenant_pin(TenantPin(alias="contoso"), self._logger())
+
+    def test_not_logged_in_raises(self):
+        self._registry({"id": CONTOSO})
+        self._az(None)
+
+        with pytest.raises(TenantMismatchError, match="none \\(run `az login`\\)"):
+            apply_tenant_pin(TenantPin(alias="contoso"), self._logger())
+
+    def test_unknown_alias_error_lists_tenants(self):
+        self.mp.setattr(identity, "tenant_registry", lambda: {"fabrikam": {"id": FABRIKAM}})
+        self._az(_acct(CONTOSO, "user", sub="c1", name="Contoso Personal"), _acct(CONTOSO, "user", sub="c1", name="Contoso Personal"))
+
+        with pytest.raises(ValueError, match="Unknown tenant alias 'contoso'") as exc:
+            apply_tenant_pin(TenantPin(alias="contoso"), self._logger())
+        assert f"{CONTOSO}  Contoso Personal" in str(exc.value)
+
+    def test_config_dir_entry_still_uses_isolated_assertion(self):
+        # The `fabdep auth login` path is untouched: no selection, env dir set.
+        self._registry({"id": CONTOSO, "config_dir": "~/.azure-contoso"})
+        self.mp.setattr(identity, "assert_active_tenant", lambda *a, **k: _acct(CONTOSO))
+        self.mp.setattr(identity, "_list_accounts", lambda: pytest.fail("must not list"))
+
+        apply_tenant_pin(TenantPin(alias="contoso"), self._logger())
+
+        assert os.environ["AZURE_CONFIG_DIR"] == os.path.expanduser("~/.azure-contoso")
+        assert identity._CLI_CREDENTIAL is None
+
+
+class TestDescribeTenants:
+    def test_groups_by_tenant_with_labels(self, monkeypatch):
+        monkeypatch.setattr(
+            identity, "read_fabdep_profile", lambda: {"aliases": {"c2": "Contoso SPN"}}
+        )
+        accounts = [
+            _acct(FABRIKAM, "user", sub="w1", name="Fabrikam Personal"),
+            _acct(CONTOSO, "user", sub="c1", name="Contoso Personal", default=False),
+            _acct(CONTOSO, "servicePrincipal", sub="c2", name="N/A(tenant level)", default=False),
+            {**_acct(CONTOSO, "user", sub="c3", name="Disabled", default=False), "state": "Disabled"},
+        ]
+        text = describe_tenants(accounts)  # type: ignore[arg-type]
+        assert f"  {CONTOSO}  Contoso Personal, Contoso SPN" in text
+        assert f"  {FABRIKAM}  Fabrikam Personal [active]" in text
+        assert "Disabled" not in text
+
+    def test_empty_says_log_in(self, monkeypatch):
+        monkeypatch.setattr(identity, "read_fabdep_profile", dict)
+        assert "none (run `az login`)" in describe_tenants([])
+
+
+# --- fabdep auth bind (registry writer, no login) ---------------------------
+
+
+class TestBindTenant:
+    @pytest.fixture
+    def profile(self, tmp_path, monkeypatch):
+        p = tmp_path / "azureProfile.fabdep.json"
+        monkeypatch.setattr("fabric_deploy.profile.FABDEP_PROFILE_PATH", p)
+        return p
+
+    @pytest.fixture(autouse=True)
+    def _accounts(self, monkeypatch):
+        listed = [
+            _acct(CONTOSO, "user", sub="c-user", name="Contoso Personal"),
+            _acct(CONTOSO, "servicePrincipal", sub="c-spn", name="Contoso SPN", default=False),
+            _acct(FABRIKAM, "user", sub="w1", name="Fabrikam Personal", default=False),
+            {**_acct(CONTOSO, "user", sub="c-dead", name="Old"), "state": "Disabled"},
+        ]
+        monkeypatch.setattr("fabric_deploy.auth.list_accounts", lambda: listed)
+        monkeypatch.setattr(
+            "fabric_deploy.auth.subprocess.run",
+            lambda *a, **k: pytest.fail("bind must never run az"),
+        )
+
+    def test_tenant_guid_writes_id_only(self, profile):
+        entry = bind_tenant("contoso", CONTOSO)
+        assert entry == {"id": CONTOSO}
+        assert json.loads(profile.read_text())["tenants"]["contoso"] == {"id": CONTOSO}
+
+    def test_account_name_pins_subscription(self, profile):
+        entry = bind_tenant("contoso", "contoso spn")  # case-insensitive, rename-aware name
+        assert entry == {"id": CONTOSO, "subscription": "c-spn"}
+
+    def test_subscription_id_pins_subscription(self, profile):
+        assert bind_tenant("contoso", "c-user") == {"id": CONTOSO, "subscription": "c-user"}
+
+    def test_disabled_account_not_bindable(self, profile):
+        with pytest.raises(ValueError, match="not a tenant id, subscription id, or account name"):
+            bind_tenant("contoso", "c-dead")
+
+    def test_unknown_target_raises_with_listing(self, profile):
+        with pytest.raises(ValueError) as exc:
+            bind_tenant("contoso", "nope")
+        assert f"{CONTOSO}  Contoso Personal [active], Contoso SPN" in str(exc.value)
+        assert "az login --tenant" in str(exc.value)
+
+    def test_rebind_replaces_login_entry_but_keeps_require_spn(self, profile):
+        profile.write_text(json.dumps({"tenants": {"contoso": {
+            "id": "old", "config_dir": "~/.azure-contoso", "app_id": "a", "cert_path": "c",
+            "require_spn": True,
+        }}}))
+        entry = bind_tenant("contoso", CONTOSO)
+        assert entry == {"id": CONTOSO, "require_spn": True}
+        assert "config_dir" not in json.loads(profile.read_text())["tenants"]["contoso"]
+
+    def test_cli_handler_prints_binding(self, profile, capsys):
+        handle_auth_command(argparse.Namespace(auth_command="bind", alias="contoso", target="Contoso SPN"))
+        assert f"registered tenant 'contoso' -> {CONTOSO} (account c-spn)" in capsys.readouterr().out
+
+    def test_cli_handler_exits_nonzero_on_failure(self, profile, capsys):
+        with pytest.raises(SystemExit):
+            handle_auth_command(argparse.Namespace(auth_command="bind", alias="contoso", target="nope"))
 
 
 # --- fabdep auth login (registry writer) -----------------------------------

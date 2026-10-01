@@ -2,6 +2,10 @@
 
 Brief status per release. Newest first. Dates are release/commit dates.
 
+## [Unreleased]
+`fabdep auth bind <alias> <tenant|account>`: register a tenant alias against an identity already in the shared `az` login — the pin then selects it per deploy without an isolated config dir or `auth switch`.
+Pin warnings/errors list the tenants `az` can see; `fabdep.yml` warns on unknown keys (`tenan:`).
+
 ## [1.9.0] — Unreleased
 `manual_parameters` entries fabdep didn't auto-detect are now injected as find/replace rules when the value occurs in an item file — covers references detection has no model for (e.g. a PowerApp link in a report).
 

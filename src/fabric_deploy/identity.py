@@ -44,6 +44,7 @@ __all__ = [
     "assert_active_tenant",
     "tenant_registry",
     "apply_tenant_pin",
+    "describe_tenants",
 ]
 
 FABRIC_SCOPE = "https://api.fabric.microsoft.com/.default"
@@ -126,24 +127,59 @@ def _logger() -> logging.Logger:
     return get_logger("fabric_deploy")
 
 
-def _enabled_accounts(tenant_id: str) -> list[AzureAccount]:
-    """Every enabled `az` account acting in `tenant_id` (empty if `az` fails)."""
-    result = subprocess.run(
-        ["az", "account", "list", "--output", "json"],
-        capture_output=True,
-        text=True,
-    )
+def _list_accounts() -> list[AzureAccount]:
+    """`az account list` as parsed JSON (empty if `az` is missing or fails)."""
+    try:
+        result = subprocess.run(
+            ["az", "account", "list", "--output", "json"],
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
     if result.returncode != 0:
         return []
     try:
-        accounts: list[AzureAccount] = json.loads(result.stdout)
+        return json.loads(result.stdout)
     except json.JSONDecodeError:
         return []
+
+
+def _is_spn(acct: AzureAccount) -> bool:
+    return acct.get("user", {}).get("type", "").lower() == "serviceprincipal"
+
+
+def _enabled_accounts(tenant_id: str) -> list[AzureAccount]:
+    """Every enabled `az` account acting in `tenant_id` (empty if `az` fails)."""
     return [
         a
-        for a in accounts
+        for a in _list_accounts()
         if a.get("state", "Enabled") == "Enabled" and a.get("tenantId") == tenant_id
     ]
+
+
+def describe_tenants(accounts: list[AzureAccount] | None = None) -> str:
+    """One line per tenant visible to `az`, with its account labels.
+
+    Labels honor `fabdep auth rename`, so the listing matches `fabdep auth list`.
+    Meant for error and warning text: it tells the user which tenant GUID to
+    bind an alias to, or that nothing is logged in at all.
+    """
+    if accounts is None:
+        accounts = _list_accounts()
+    aliases: dict[str, str] = read_fabdep_profile().get("aliases", {})
+    by_tenant: dict[str, list[str]] = {}
+    for acct in accounts:
+        if acct.get("state", "Enabled") != "Enabled":
+            continue
+        label = aliases.get(acct["id"], acct.get("name", "?"))
+        if acct.get("isDefault"):
+            label += " [active]"
+        by_tenant.setdefault(acct.get("tenantId", "?"), []).append(label)
+    if not by_tenant:
+        return "Tenants visible to `az account list`: none (run `az login`)."
+    lines = [f"  {tid}  {', '.join(labels)}" for tid, labels in sorted(by_tenant.items())]
+    return "Tenants visible to `az account list`:\n" + "\n".join(lines)
 
 
 def _fallback_credential(
@@ -172,8 +208,7 @@ def _fallback_credential(
     for acct in _enabled_accounts(tenant_id):
         if current and acct["id"] == current["id"]:
             continue
-        is_spn = acct.get("user", {}).get("type", "").lower() == "serviceprincipal"
-        if pin and pin.require_spn and not is_spn:
+        if pin and pin.require_spn and not _is_spn(acct):
             continue
         candidate = AzureCliCredential(subscription=acct["id"])
         try:
@@ -398,12 +433,18 @@ def apply_tenant_pin(pin: TenantPin | None, logger: logging.Logger) -> None:
         logger.warning(
             f"fabdep.yml pins tenant '{pin.alias}' but no tenants are registered "
             "on this machine — proceeding under the active Azure login, "
-            "unguarded. Register the alias with "
-            f"`fabdep auth login {pin.alias}` to enable the identity guard."
+            "unguarded.\n"
+            f"{describe_tenants()}\n"
+            f"Bind the alias to one of them with `fabdep auth bind {pin.alias} "
+            "<tenant-id>` (uses your existing az login), or register an isolated "
+            f"SPN login with `fabdep auth login {pin.alias}`."
         )
         return
 
-    pin = pin.resolve(registry)
+    try:
+        pin = pin.resolve(registry)
+    except ValueError as e:
+        raise ValueError(f"{e}\n{describe_tenants()}") from None
     assert pin.id is not None  # resolve() guarantees a concrete id or raises
     _ACTIVE_PIN = pin
 
@@ -430,6 +471,58 @@ def apply_tenant_pin(pin: TenantPin | None, logger: logging.Logger) -> None:
     # Silent on success: the guard only proves tenant membership, not that the
     # identity can mint a token, so announcing "OK" reads as a green light the
     # check never gave. It speaks up by raising.
-    _ = assert_active_tenant(
-        pin.id, config_dir=pin.config_dir, require_spn=pin.require_spn
+    if pin.config_dir:
+        _ = assert_active_tenant(
+            pin.id, config_dir=pin.config_dir, require_spn=pin.require_spn
+        )
+    else:
+        _select_tenant_identity(pin, logger)
+
+
+def _select_tenant_identity(pin: TenantPin, logger: logging.Logger) -> None:
+    """Satisfy a dir-less pin (`fabdep auth bind`) from the shared `az` login.
+
+    A bound alias has no isolated config dir: its identities sit in the global
+    `~/.azure` next to other tenants'. If the active account already qualifies,
+    nothing changes. Otherwise pick the bound subscription — or, for a
+    tenant-only entry, an enabled account in that tenant, your own user login
+    before an SPN — and mint tokens with `--subscription`, so `az` state is
+    never rewritten and `fabdep auth switch` keeps meaning what it meant.
+    """
+    global _CLI_CREDENTIAL
+    assert pin.id is not None
+    current = active_account()
+    if (
+        current is not None
+        and current.get("tenantId") == pin.id
+        and (not pin.require_spn or _is_spn(current))
+        and (not pin.subscription or current.get("id") == pin.subscription)
+    ):
+        return
+
+    candidates = [a for a in _enabled_accounts(pin.id) if _is_spn(a) or not pin.require_spn]
+    if pin.subscription:
+        candidates = [a for a in candidates if a["id"] == pin.subscription]
+    else:
+        candidates.sort(key=_is_spn)  # stable: user logins first, az order within
+    if not candidates:
+        what = (
+            f"subscription {pin.subscription}"
+            if pin.subscription
+            else "service principal" if pin.require_spn else "account"
+        )
+        raise TenantMismatchError(
+            f"No enabled az {what} in tenant {pin.id} (alias '{pin.alias}').\n"
+            f"{describe_tenants()}\n"
+            f"Log in to it with `az login --tenant {pin.id}` and re-run, or point the "
+            f"alias elsewhere with `fabdep auth bind {pin.alias} <tenant-id|account>`."
+        )
+
+    chosen = candidates[0]
+    _CLI_CREDENTIAL = AzureCliCredential(subscription=chosen["id"])
+    aliases: dict[str, str] = read_fabdep_profile().get("aliases", {})
+    label = aliases.get(chosen["id"], chosen.get("name", "?"))
+    user = chosen.get("user", {}).get("name", "?")
+    logger.info(
+        f"Tenant '{pin.alias}': using '{label}' ({user}); active az account unchanged"
     )

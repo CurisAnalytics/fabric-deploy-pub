@@ -3,7 +3,7 @@
 Identity/credential concerns (token acquisition, tenant pinning, identity
 introspection) live in `identity`; the fabdep profile's JSON I/O lives in
 `profile`. This module is just the account-management actions the CLI exposes:
-list / switch / rename / multi-tenant login.
+list / switch / rename / multi-tenant login + bind.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import os
 import subprocess
 from typing import TYPE_CHECKING
 
-from .identity import AzureAccount, active_account, tenant_registry
+from .identity import AzureAccount, active_account, describe_tenants, tenant_registry
 from .profile import read_fabdep_profile, write_fabdep_profile
 
 if TYPE_CHECKING:
@@ -25,6 +25,7 @@ __all__ = [
     "switch_account",
     "rename_subscription",
     "login_tenant",
+    "bind_tenant",
 ]
 
 
@@ -98,6 +99,46 @@ def login_tenant(
         entry["require_spn"] = require_spn
 
     # Upsert the alias into the `tenants` registry, preserving everything else.
+    profile = read_fabdep_profile()
+    profile.setdefault("tenants", {})[alias] = entry
+    write_fabdep_profile(profile)
+    return entry
+
+
+def bind_tenant(alias: str, target: str) -> TenantRegistryEntry:
+    """Register `alias` against an identity already in the shared `az` login.
+
+    The developer-machine counterpart of `login_tenant`: nothing is logged in
+    and no config dir is written. `target` is either a tenant GUID — any enabled
+    account in that tenant will do at deploy time — or a subscription id / name
+    as `fabdep auth list` shows it (renames included), which pins that account.
+    The pin then mints tokens with `--subscription`, leaving the active account
+    alone. Replaces an existing entry for the alias (keeping `require_spn`).
+    """
+    accounts = [a for a in list_accounts() if a.get("state", "Enabled") == "Enabled"]
+    entry: TenantRegistryEntry
+    if any(a.get("tenantId") == target for a in accounts):
+        entry = {"id": target}
+    else:
+        matches = [a for a in accounts if a["id"] == target] or [
+            a for a in accounts if a["name"].lower() == target.lower()
+        ]
+        if not matches:
+            raise ValueError(
+                f"'{target}' is not a tenant id, subscription id, or account name "
+                f"in `az account list`.\n{describe_tenants(accounts)}\n"
+                "Log in to the tenant first: az login --tenant <tenant-id>"
+            )
+        if len(matches) > 1:
+            raise ValueError(
+                f"Multiple accounts match '{target}':\n"
+                + "\n".join(f"  - {a['id']}: {a['name']}" for a in matches)
+            )
+        entry = {"id": matches[0]["tenantId"], "subscription": matches[0]["id"]}
+
+    if tenant_registry().get(alias, {}).get("require_spn"):
+        entry["require_spn"] = True
+
     profile = read_fabdep_profile()
     profile.setdefault("tenants", {})[alias] = entry
     write_fabdep_profile(profile)

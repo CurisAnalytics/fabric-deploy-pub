@@ -6,6 +6,7 @@ from pathlib import Path
 from textwrap import dedent
 
 from .auth import (
+    bind_tenant,
     list_accounts,
     login_tenant,
     rename_subscription,
@@ -119,7 +120,9 @@ def parse_args() -> argparse.Namespace:
         "account", help="Subscription ID or account name (alias supported)"
     )
 
-    rename_parser = auth_subparsers.add_parser("rename", help="Rename a subscription")
+    rename_parser = auth_subparsers.add_parser(
+        "rename", help="Label a subscription in `fabdep auth list` (not a tenant alias)"
+    )
     _ = rename_parser.add_argument("subscription_id", help="Subscription ID to rename")
     _ = rename_parser.add_argument("name", help="New subscription name")
 
@@ -136,6 +139,17 @@ def parse_args() -> argparse.Namespace:
     )
     _ = login_parser.add_argument(
         "--user", action="store_true", help="Interactive user login instead of an SPN"
+    )
+
+    bind_parser = auth_subparsers.add_parser(
+        "bind",
+        help="Register a tenant alias against an existing az login (no new login)",
+    )
+    _ = bind_parser.add_argument("alias", help="Tenant alias (e.g. contoso) used in fabdep.yml")
+    _ = bind_parser.add_argument(
+        "target",
+        help="Tenant GUID (any account in it), or a subscription id/name from "
+        "`fabdep auth list` to pin that account",
     )
 
     rename_items_parser = subparsers.add_parser(
@@ -421,6 +435,16 @@ def handle_auth_command(args: argparse.Namespace) -> None:
             )
         except Exception as e:
             print_error(f"\nFailed to log in tenant '{args.alias}': {e}\n")
+            sys.exit(1)
+
+    elif args.auth_command == "bind":
+        try:
+            entry = bind_tenant(args.alias, args.target)
+            sub = entry.get("subscription")
+            via = f"account {sub}" if sub else "any enabled account in the tenant"
+            print(f"registered tenant '{args.alias}' -> {entry['id']} ({via})")
+        except Exception as e:
+            print_error(f"\nFailed to bind tenant '{args.alias}': {e}\n")
             sys.exit(1)
 
 
