@@ -2,22 +2,23 @@
 
 Brief status per release. Newest first. Dates are release/commit dates.
 
-## [Unreleased]
+## [1.10.0] — 2026-10-16
 `fabdep auth bind <alias> <tenant|account>`: register a tenant alias against an identity already in the shared `az` login — the pin then selects it per deploy without an isolated config dir or `auth switch`.
 Pin warnings/errors list the tenants `az` can see; `fabdep.yml` warns on unknown keys (`tenan:`).
+`fabric-cicd` 1.3 → 1.4 (Graph Model / Cosmos DB items, Activator workspace-id fix); dependency upgrade clears the open `pyjwt`/`urllib3` advisories.
 
-## [1.9.0] — Unreleased
+## [1.9.0] — 2026-08-14
 `manual_parameters` entries fabdep didn't auto-detect are now injected as find/replace rules when the value occurs in an item file — covers references detection has no model for (e.g. a PowerApp link in a report).
 
-## [1.8.2] — Unreleased
+## [1.8.2] — 2026-08-14
 SQL Database hostnames resolve to a literal bare host: the `$sqlendpoint` dynamic returns a `,1433` suffix that broke notebook JDBC URLs.
 Fixes: token falls back to another identity in the same tenant; no more double-printed log lines; null-UUID CopyJob workspaceIds treated as local.
 
-## [1.8.0] — Unreleased
+## [1.8.0] — 2026-08-10
 Cross-workspace pipeline references deploy verbatim instead of being rewritten to the target workspace — override with `manual_parameters`.
 MirroredDatabase SQL analytics endpoints auto-resolve. `fabric-cicd` 1.2 → 1.3.
 
-## [1.7.0] — Unreleased
+## [1.7.0] — 2026-07-24
 `--pr`: deploy only the items the latest pull request touched.
 Report User Data Function buttons rebind to the target workspace; `--allow-unbound-udf` ships them as-is.
 `fabdep rls` pull/diff, plus a deploy guard against silently changing a model's live RLS.
@@ -26,10 +27,10 @@ Detection: server-level `Sql.Databases("host")` now yields the SQL-endpoint para
 ## [1.6.2] — 2026-07-21
 Null-UUID guard, `.platform`-typed item discovery, domain-rule fixes.
 
-## [1.6.1] — Unreleased
+## [1.6.1] — 2026-07-08
 Remap notebook `dependencies.warehouse` bindings to the target workspace; recursive item-name detection for nested folders; `--fail-on-stale` when an attachment would deploy with a source-workspace GUID.
 
-## [1.6.0] — Unreleased
+## [1.6.0] — 2026-06-29
 Internal layered-architecture refactor (`identity`/`transport`/`client`/`profile`/`scope`/`params`) — no public API or CLI change.
 
 ## [1.5.1] — 2026-06-25
