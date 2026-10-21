@@ -7,7 +7,6 @@
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
 from json import loads
 from pathlib import Path
 
@@ -96,6 +95,20 @@ def format_deploy_options(
     return f"Options: {' '.join(opts) if opts else '(defaults)'}"
 
 
+def log_banner(logger: logging.Logger, options_line: str) -> None:
+    """The `fabdep vX` header plus the options line.
+
+    Printed before anything else a run logs. The CLI calls it before the
+    deployer is constructed — construction already resolves workspaces and
+    runs detection, whose warnings would otherwise land above the header —
+    and tells `deploy()` not to print it again.
+    """
+    from . import __version__
+
+    log_header(logger, f"fabdep v{__version__}")
+    logger.info(options_line)
+
+
 @dataclass
 class WorkspaceDeployer:
     """
@@ -135,8 +148,10 @@ class WorkspaceDeployer:
     lakehouse_name: str = field(init=False, repr=False)
     # This repo's workspaces (target + siblings) and the lakehouses of the
     # siblings the content references, by item id — the detector's anchors
-    # (see _resolve_source_anchors).
+    # (see _resolve_source_anchors). `source_workspaces` is the referenced
+    # siblings by id → display name, for the run summary.
     source_workspace_ids: set[str] = field(init=False, default_factory=set, repr=False)
+    source_workspaces: dict[str, str] = field(init=False, default_factory=dict, repr=False)
     source_lakehouse_ids: dict[str, str] = field(
         init=False, default_factory=dict, repr=False
     )
@@ -276,6 +291,7 @@ class WorkspaceDeployer:
         an error: detection falls back to whatever anchors the content has.
         """
         self.source_workspace_ids = {self.workspace_id}
+        self.source_workspaces = {}
         self.source_lakehouse_ids = {}
         try:
             workspaces = list_workspaces()
@@ -309,7 +325,7 @@ class WorkspaceDeployer:
         }
         for ws_id in sorted(referenced):
             name = siblings[ws_id]
-            self.logger.info(f"Source workspace: {name} ({ws_id}) — its ids remap to the target")
+            self.source_workspaces[ws_id] = name
             try:
                 lakehouses = list_workspace_items(ws_id, "Lakehouse")
             except Exception as e:
@@ -524,6 +540,7 @@ class WorkspaceDeployer:
         allow_rls_change: bool = False,
         allow_unbound_udf: bool = False,
         pr: str | None = None,
+        banner: bool = True,
     ) -> None:
         """
         Deploy Fabric workspace items.
@@ -550,31 +567,36 @@ class WorkspaceDeployer:
                 PR_HEAD ("HEAD") searches back from HEAD for the PR commit; any
                 other value is used as the commit-ish directly. Resolves into
                 `include_items`, so it cannot be combined with it.
+            banner: Print the `fabdep vX` header and options line first. The
+                CLI prints them itself before constructing the deployer and
+                passes False.
 
         Raises:
             RuntimeError: If `pr` is combined with `include_items`, no PR commit
                 is found, or the PR touched no deployable item.
         """
 
-        from . import __version__
-
-        log_header(self.logger, f"Fabric CI/CD v{__version__}")
-        self.logger.info(
-            format_deploy_options(
-                branch_override=self.branch_override,
-                new_workspace=self.new_workspace,
-                skip_lakehouse=self.skip_lakehouse,
-                max_retries=self.max_retries,
-                no_cleanup=no_cleanup,
-                item_types=item_types,
-                exclude_types=exclude_types,
-                include_items=include_items,
-                fail_on_stale=fail_on_stale,
-                allow_rls_change=allow_rls_change,
-                allow_unbound_udf=allow_unbound_udf,
-                pr=pr,
+        if banner:
+            log_banner(
+                self.logger,
+                format_deploy_options(
+                    branch_override=self.branch_override,
+                    new_workspace=self.new_workspace,
+                    skip_lakehouse=self.skip_lakehouse,
+                    max_retries=self.max_retries,
+                    no_cleanup=no_cleanup,
+                    item_types=item_types,
+                    exclude_types=exclude_types,
+                    include_items=include_items,
+                    fail_on_stale=fail_on_stale,
+                    allow_rls_change=allow_rls_change,
+                    allow_unbound_udf=allow_unbound_udf,
+                    pr=pr,
+                ),
             )
-        )
+        for ws_id, name in sorted(self.source_workspaces.items(), key=lambda kv: kv[1]):
+            self.logger.info(f"Source Workspace: {name} ({ws_id})")
+        self.logger.info(f"Target Workspace: '{self.workspace_name}' ({self.workspace_id})")
 
         if pr:
             if include_items:
@@ -645,8 +667,6 @@ class WorkspaceDeployer:
                 self._skipped_lakehouse_count,
             )
 
-        self.logger.info(f"Workspace Name: '{self.workspace_name}'")
-        self.logger.info(f"Workspace ID: {self.workspace_id}")
         for line in self._paramfile.summary:
             self.logger.info(line)
 
@@ -658,19 +678,6 @@ class WorkspaceDeployer:
                 self.logger.warning("No matching item types found in repository")
         if include_items:
             self.logger.info(f"Including items: {', '.join(include_items)}")
-
-        param_file = self._repo_dir_resolved / "parameter.yml"
-        bak_file = self._repo_dir_resolved / "parameter.yml.backup"
-        if bak_file.exists() and not param_file.exists():
-            mtime = datetime.fromtimestamp(bak_file.stat().st_mtime)
-            self.logger.info(
-                f"Parameter file (.backup) modified: {mtime.strftime('%d/%m/%Y %H:%M:%S')}"
-            )
-        elif param_file.exists():
-            mtime = datetime.fromtimestamp(param_file.stat().st_mtime)
-            self.logger.info(
-                f"Parameter file modified: {mtime.strftime('%d/%m/%Y %H:%M:%S')}"
-            )
 
         # fabric-cicd configures its own logger at import time; swap in our
         # formatter that omits timestamps on header lines.

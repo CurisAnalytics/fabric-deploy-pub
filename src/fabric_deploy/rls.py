@@ -28,6 +28,7 @@ from __future__ import annotations
 import difflib
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -263,8 +264,9 @@ def guard_deploy_rls(
     (added, removed, or modified role) blocks the deploy.
 
     `allow_change` skips the comparison outright: the operator has already
-    decided to overwrite the target's roles, so the live read (~30s per model)
-    can only produce a warning about a decision already made.
+    decided to overwrite the target's roles, so the live read (slow — each
+    model's definition is a full getDefinition round trip) can only produce a
+    warning about a decision already made. Models are read in parallel.
 
     Assumes auth / tenant pin is already applied (the deployer does this).
 
@@ -312,12 +314,22 @@ def guard_deploy_rls(
 
     log.info(
         f"RLS guard: reading live role definitions for {len(guarded)} model(s) "
-        "from the target — this can take ~30s per model..."
+        "from the target..."
     )
+
+    # Each live read is a full getDefinition round trip; they are independent,
+    # so fetch them concurrently and report in name order.
+    with ThreadPoolExecutor(max_workers=min(8, len(guarded))) as pool:
+        remotes = dict(
+            zip(
+                guarded,
+                pool.map(lambda name: _remote_roles(workspace_id, name), guarded),
+            )
+        )
 
     blocked: list[str] = []
     for name, local in guarded.items():
-        remote = _remote_roles(workspace_id, name)
+        remote = remotes[name]
         if remote is None:
             log.info(
                 f"RLS check: '{name}' is not in the target yet — first deploy, "

@@ -219,7 +219,7 @@ def test_guard_with_allow_change_announces_the_skip(tmp_path, monkeypatch, caplo
             logger=logging.getLogger("test_rls_guard"),
         )
     assert any("skipped" in r.message for r in caplog.records)
-    assert not any("can take" in r.message for r in caplog.records)
+    assert not any("reading live role definitions" in r.message for r in caplog.records)
 
 
 def test_guard_with_allow_change_silent_without_repo_rls(tmp_path, monkeypatch, caplog):
@@ -245,7 +245,7 @@ def test_guard_skips_when_model_absent_in_target(tmp_path, monkeypatch):
 
 
 def test_guard_announces_fetch_cost_before_reading_target(tmp_path, monkeypatch, caplog):
-    """The live-definition read is slow (~30s/model) — say so before starting."""
+    """The live-definition read is slow — say so before starting."""
     _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS})
     monkeypatch.setattr(
         "fabric_deploy.rls._remote_roles",
@@ -256,7 +256,7 @@ def test_guard_announces_fetch_cost_before_reading_target(tmp_path, monkeypatch,
             "ws", tmp_path, model_names=None, allow_change=False,
             logger=logging.getLogger("test_rls_guard"),
         )
-    assert any("can take" in r.message for r in caplog.records)
+    assert any("reading live role definitions" in r.message for r in caplog.records)
 
 
 def test_guard_clean_check_omits_members_note(tmp_path, monkeypatch, caplog):
@@ -386,3 +386,29 @@ def test_pull_requires_a_model(tmp_path, patch_pull_env):
 
 def test_members_note_mentions_entra():
     assert "Entra" in MEMBERS_NOTE and "membership" in MEMBERS_NOTE.lower()
+
+
+def test_guard_reads_models_concurrently(tmp_path, monkeypatch):
+    """Live reads are independent round trips; they overlap instead of queueing."""
+    import threading
+    import time
+
+    for name in ("A", "B", "C"):
+        _make_model(tmp_path, name=name, roles={"RLS.tmdl": ROLE_RLS})
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def _slow_remote(ws, name):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.05)
+        with lock:
+            active -= 1
+        return read_local_roles(tmp_path / f"{name}.SemanticModel")
+
+    monkeypatch.setattr("fabric_deploy.rls._remote_roles", _slow_remote)
+    guard_deploy_rls("ws", tmp_path, model_names=None, allow_change=False)
+    assert peak > 1

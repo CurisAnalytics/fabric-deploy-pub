@@ -574,3 +574,32 @@ class TestSkipLakehouseWithAutoBinding:
 
         assert "--skip-lakehouse" in caplog.text
         assert "nb.Notebook" in caplog.text
+
+
+class TestRunSummaryLines:
+    def test_deploy_without_banner_still_names_source_and_target(self, deployer, caplog):
+        deployer.source_workspaces = {"00000000-0000-0000-0000-00000000000d": "Fabdep Test [DEV]"}
+        with (
+            patch("fabric_deploy.workspace.FabricWorkspace"),
+            patch("fabric_deploy.workspace.publish_all_items"),
+            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
+            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
+            caplog.at_level("INFO"),
+        ):
+            deployer.deploy(item_types=["Notebook"], banner=False)
+
+        messages = [r.message for r in caplog.records]
+        assert not any("fabdep v" in m for m in messages)
+        assert "Source Workspace: Fabdep Test [DEV] (00000000-0000-0000-0000-00000000000d)" in messages
+        assert f"Target Workspace: 'Fabdep Test [MAIN]' ({FAKE_WORKSPACE_ID})" in messages
+        assert not any(m.startswith("Workspace Name") or m.startswith("Parameter file") for m in messages)
+
+    def test_banner_names_fabdep(self, caplog):
+        from fabric_deploy import __version__
+        from fabric_deploy.workspace import log_banner
+        import logging
+
+        with caplog.at_level("INFO"):
+            log_banner(logging.getLogger("fabric_deploy.test"), "Options: (defaults)")
+        assert any(f"fabdep v{__version__}" in r.message for r in caplog.records)
+        assert caplog.records[-1].message == "Options: (defaults)"

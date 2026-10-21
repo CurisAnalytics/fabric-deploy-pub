@@ -2,6 +2,9 @@
 
 Brief status per release. Newest first. Dates are release/commit dates.
 
+## [1.11.1] — 2026-10-21
+The `fabdep vX` header (renamed from "Fabric CI/CD") is printed before anything else; the run summary names the source and target workspaces and drops the parameter-file timestamp. The RLS guard reads the target's models in parallel.
+
 ## [1.11.0] — 2026-10-21
 Lakehouse auto-binding in git: notebooks whose metadata carries the lakehouse logicalId and the null-UUID workspace no longer anchor the source workspace, so the deployer anchors every `{base} [...]` sibling workspace it can list and maps the referenced siblings' lakehouse ids where code still carries them; `fabdep detect --source-workspace-id`. Anchoring is order-independent (a bound UDF button now anchors pipeline references too). `-L` warns that auto-bound notebooks rebind anyway.
 

@@ -20,11 +20,12 @@ from .log import (
     format_auth_error_message,
     is_auth_error,
     is_connection_error,
+    get_logger,
     is_expired_credential_error,
     print_error,
 )
 from .rename import rename_items_by_display_name
-from .workspace import WorkspaceDeployer
+from .workspace import WorkspaceDeployer, format_deploy_options, log_banner
 
 
 def handle_command_error(error: Exception, context: str) -> None:
@@ -517,6 +518,26 @@ def handle_detect_command(args: argparse.Namespace) -> None:
 def handle_deploy_command(args: argparse.Namespace) -> None:
     """Handle deploy subcommand execution."""
 
+    # Header first: constructing the deployer already resolves workspaces and
+    # runs detection, and their warnings belong under the banner.
+    log_banner(
+        get_logger("fabric_deploy.cli"),
+        format_deploy_options(
+            branch_override=args.branch,
+            new_workspace=bool(args.new_workspace),
+            skip_lakehouse=bool(args.skip_lakehouse),
+            max_retries=int(args.max_retries),
+            no_cleanup=args.no_cleanup,
+            item_types=args.item_types,
+            exclude_types=args.exclude_types,
+            include_items=args.include_items,
+            fail_on_stale=args.fail_on_stale,
+            allow_rls_change=bool(args.allow_rls_change),
+            allow_unbound_udf=bool(args.allow_unbound_udf),
+            pr=args.pr,
+        ),
+    )
+
     try:
         deployer = WorkspaceDeployer(
             repo_dir=args.directory,
@@ -544,6 +565,7 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
             allow_rls_change=bool(args.allow_rls_change),
             allow_unbound_udf=bool(args.allow_unbound_udf),
             pr=args.pr,
+            banner=False,
         )
     except Exception as e:
         handle_command_error(e, "Deployment")
