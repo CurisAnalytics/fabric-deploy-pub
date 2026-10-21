@@ -60,6 +60,29 @@ or a UDF that was never committed — would deploy still calling the *source*
 workspace's function, so it blocks the deploy when its report is in scope;
 fix the button's binding or pass `--allow-unbound-udf` to ship it as-is.
 
+#### Sibling workspaces and lakehouse auto-binding
+
+A deploy rewrites the ids of the workspace the content was exported from to
+the target's. Every workspace named `{base} [...]` is one of this repo's
+environments, so fabdep lists them and treats their ids as environment ids
+to remap; a workspace id outside that family belongs to another repo and
+deploys verbatim (override with `manual_parameters`). This holds
+whatever branch is checked out: a `prod` checkout after a dev→prod merge
+still carries DEV's ids. For each sibling the content references, its
+lakehouses are listed too, so a physical lakehouse id in notebook code (an
+abfss literal) maps to the target's lakehouse by display name.
+
+Legacy notebook metadata names the source workspace in
+`default_lakehouse_workspace_id`, so content alone used to be enough. With
+Fabric's **Lakehouse Auto-Binding in Git** on, the metadata carries the
+lakehouse's git logicalId and the null-UUID workspace instead (plus a
+Fabric-owned `notebook-settings.json`); the sibling list is what anchors
+those repos. fabric-cicd resolves the logicalId itself; fabdep's rule names
+the owning lakehouse as a backstop. `fabdep detect` runs offline and takes
+anchors as `--source-workspace-id <guid>` (repeatable). `-L/--skip-lakehouse`
+cannot keep an auto-bound notebook on the source lakehouse: the logicalId is
+resolved to the target's lakehouse before any parameter applies.
+
 ### Refresh (Direct Lake framing)
 
 Re-frames a Direct Lake model: **sync SQL endpoint → refresh → poll → surface

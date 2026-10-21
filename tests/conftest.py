@@ -49,6 +49,7 @@ def mock_fabric_api(monkeypatch):
         "fabric_deploy.workspace.create_workspace",
         _create_workspace,
     )
+    monkeypatch.setattr("fabric_deploy.workspace.list_workspaces", lambda: [])
 
     # Also patch the source in api.py for tests that import from there directly
     monkeypatch.setattr(

@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 import yaml
 
-from .detect import DetectedParameter
+from .detect import DetectedParameter, find_in_item_files
 
 if TYPE_CHECKING:
     from .detect import ParameterDetector
@@ -101,31 +101,17 @@ def _inject_undetected_params(
 ) -> int:
     """Inject manual_parameters whose find_value detection didn't see.
 
-    Each value is validated by a literal scan of the repo's item files (files
-    under a directory carrying a `.platform` — the same file set fabric-cicd
-    applies find_replace to; deliberately excludes repo-root files like
-    fabdep.yml so an entry can't match itself). One walk covers all pending
-    values.
+    Each value is validated by a literal scan of the repo's item files
+    (`detect.find_in_item_files`: the file set fabric-cicd applies
+    find_replace to, excluding repo-root files like fabdep.yml so an entry
+    can't match itself).
 
     Returns the number of parameters injected.
     """
     if not entries:
         return 0
 
-    matches: dict[str, set[str]] = {e["find_value"]: set() for e in entries}
-    item_dirs = {p.parent for p in detector.repo_dir.glob("**/.platform")}
-    for item_dir in item_dirs:
-        for path in item_dir.rglob("*"):
-            if not path.is_file():
-                continue
-            try:
-                content = path.read_text(encoding="utf-8", errors="ignore")
-            except OSError:
-                continue
-            rel = str(path.relative_to(detector.repo_dir))
-            for value, found_in in matches.items():
-                if value in content:
-                    found_in.add(rel)
+    matches = find_in_item_files(detector.repo_dir, [e["find_value"] for e in entries])
 
     count = 0
     for entry in entries:

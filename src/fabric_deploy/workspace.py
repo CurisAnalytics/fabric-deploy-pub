@@ -5,6 +5,7 @@
 # pyright: reportUnknownVariableType=false
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from json import loads
@@ -22,9 +23,11 @@ from .client import (
     create_workspace,
     get_default_capacity_id,
     get_workspace_id_by_name,
+    list_workspace_items,
+    list_workspaces,
 )
 from .config import FabdepConfig
-from .detect import ParameterDetector
+from .detect import ParameterDetector, find_in_item_files
 from .identity import apply_tenant_pin, fabric_credential
 from .log import get_logger, is_transient_error, patch_fabric_cicd_logger
 from .params import (
@@ -109,7 +112,8 @@ class WorkspaceDeployer:
 
     IMPORTANT: Initialization has side effects!
     - Reads fabdep.yml from disk
-    - Makes network calls to Fabric API (for workspace ID resolution)
+    - Makes network calls to Fabric API (workspace ID resolution, the repo's
+      sibling workspaces, and the lakehouses of those the content references)
     - Scans workspace files to detect source IDs (stored, not written to disk)
     - Auto-detects lakehouse metadata
 
@@ -129,6 +133,13 @@ class WorkspaceDeployer:
         init=False, repr=False
     )  # Resolved workspace name (base_name [branch])
     lakehouse_name: str = field(init=False, repr=False)
+    # This repo's workspaces (target + siblings) and the lakehouses of the
+    # siblings the content references, by item id — the detector's anchors
+    # (see _resolve_source_anchors).
+    source_workspace_ids: set[str] = field(init=False, default_factory=set, repr=False)
+    source_lakehouse_ids: dict[str, str] = field(
+        init=False, default_factory=dict, repr=False
+    )
     repo_item_types: set[str] = field(
         init=False, repr=False
     )  # Item types present in repo
@@ -151,7 +162,8 @@ class WorkspaceDeployer:
         1. Resolves repository directory path
         2. Initializes logger
         3. Reads fabdep.yml from disk
-        4. Makes network call to Fabric REST API to resolve workspace ID
+        4. Makes network calls to the Fabric REST API: the target workspace ID,
+           the repo's sibling workspaces, and lakehouses of referenced siblings
         5. Scans workspace files to detect source IDs (stored in memory, not written to disk)
         6. Scans for .Lakehouse directories and reads .platform metadata
 
@@ -167,6 +179,7 @@ class WorkspaceDeployer:
         self.workspace_name = self.config.workspace_name
         self._apply_tenant_pin()
         self._resolve_workspace_id()
+        self._resolve_source_anchors()
         self._detect_parameters()
         self.repo_item_types = repo_item_types(self._repo_dir_resolved)
         self._detect_lakehouse()
@@ -240,6 +253,72 @@ class WorkspaceDeployer:
             self.logger.error(f"Failed to create workspace: {e}")
             raise
 
+    # One of this repo's workspaces: `{base} [{branch}]`.
+    @staticmethod
+    def _sibling_pattern(base_name: str) -> re.Pattern[str]:
+        return re.compile(rf"^{re.escape(base_name)} \[.+\]$", re.IGNORECASE)
+
+    def _resolve_source_anchors(self) -> None:
+        """Anchor the ids of this repo's other workspaces as environment ids.
+
+        fabdep's model is `{base} [{branch}]`: every workspace with this repo's
+        base name is one of its environments, and content exported from any of
+        them carries that environment's ids. A deploy rewrites those to the
+        target's; a workspace id outside this family belongs to another repo
+        and deploys verbatim. Legacy notebook metadata let detection
+        recover the source workspace from content alone; Fabric's lakehouse
+        auto-binding in git replaces it with the null UUID, so the family is
+        resolved here from the workspace list instead — whatever branch is
+        checked out (a `prod` checkout after a dev→prod merge still carries
+        DEV's ids). The lakehouses of each sibling the content references are
+        listed too, so their physical ids map where notebook code still
+        carries them (abfss literals). A lookup that fails is a warning, not
+        an error: detection falls back to whatever anchors the content has.
+        """
+        self.source_workspace_ids = {self.workspace_id}
+        self.source_lakehouse_ids = {}
+        try:
+            workspaces = list_workspaces()
+        except Exception as e:
+            self.logger.warning(
+                f"Could not list workspaces to anchor this repo's environments "
+                f"({e}); workspaceIds that no notebook, model or report anchors "
+                f"deploy verbatim."
+            )
+            return
+
+        base_name = self.config.workspace_base_name or self._repo_dir_resolved.name
+        is_sibling = self._sibling_pattern(base_name).match
+        siblings = {
+            ws["id"]: ws["displayName"]
+            for ws in workspaces
+            if ws.get("id")
+            and ws["id"] != self.workspace_id
+            and is_sibling(ws.get("displayName") or "")
+        }
+        if not siblings:
+            return
+        self.source_workspace_ids |= set(siblings)
+
+        referenced = {
+            ws_id
+            for ws_id, files in find_in_item_files(
+                self._repo_dir_resolved, siblings
+            ).items()
+            if files
+        }
+        for ws_id in sorted(referenced):
+            name = siblings[ws_id]
+            self.logger.info(f"Source workspace: {name} ({ws_id}) — its ids remap to the target")
+            try:
+                lakehouses = list_workspace_items(ws_id, "Lakehouse")
+            except Exception as e:
+                self.logger.warning(f"Could not list lakehouses in '{name}': {e}")
+                continue
+            for item in lakehouses:
+                if item.get("id") and item.get("displayName"):
+                    self.source_lakehouse_ids[item["id"]] = item["displayName"]
+
     def _detect_parameters(self) -> None:
         """
         Detect parameters from workspace files and store for later use.
@@ -248,13 +327,27 @@ class WorkspaceDeployer:
         The parameter file is written later in _write_parameter_file() during deploy().
         """
         detector = ParameterDetector(
-            repo_dir=self._repo_dir_resolved, logger_name=self.logger.name
+            repo_dir=self._repo_dir_resolved,
+            logger_name=self.logger.name,
+            source_workspace_ids=self.source_workspace_ids,
+            source_lakehouse_ids=self.source_lakehouse_ids,
         )
         detector.detect_all()
 
         self._skipped_lakehouse_count = 0
         if self.skip_lakehouse:
             self._skipped_lakehouse_count = len(detector.filter_lakehouse_params())
+            if detector.auto_bound_notebooks:
+                # fabric-cicd swaps a lakehouse logicalId for the target's
+                # lakehouse before any parameter applies, so dropping the
+                # Lakehouse ID rules changes nothing for these notebooks.
+                names = ", ".join(detector.auto_bound_notebooks)
+                self.logger.warning(
+                    f"--skip-lakehouse cannot keep {len(detector.auto_bound_notebooks)} "
+                    f"auto-bound notebook(s) on the source lakehouse: their "
+                    f"metadata names the lakehouse by logicalId, which fabric-cicd "
+                    f"resolves to this workspace's lakehouse regardless: {names}"
+                )
 
         self._manual_count = apply_manual_overrides(
             detector, self.config.manual_parameters, self.logger

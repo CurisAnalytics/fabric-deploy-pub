@@ -195,6 +195,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Save detected parameters to parameter.yml.detected (uses smart replace format)",
     )
+    _ = detect_parser.add_argument(
+        "--source-workspace-id",
+        dest="source_workspace_ids",
+        action="append",
+        metavar="GUID",
+        help="A workspace the content may have been exported from, as an anchor "
+        "for cross-workspace detection (repeatable; deploy lists the repo's "
+        "sibling workspaces itself)",
+    )
 
     deploy_parser = subparsers.add_parser(
         "deploy",
@@ -469,7 +478,10 @@ def handle_rename_command(args: argparse.Namespace) -> None:
 def handle_detect_command(args: argparse.Namespace) -> None:
     """Handle detect subcommand execution."""
     try:
-        detector = ParameterDetector(repo_dir=args.directory)
+        detector = ParameterDetector(
+            repo_dir=args.directory,
+            source_workspace_ids=args.source_workspace_ids,
+        )
         detector.detect_all()
         detector.print_detection_summary()
 

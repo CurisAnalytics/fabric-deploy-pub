@@ -108,3 +108,34 @@ class TestCLI:
         # Should succeed (dry-run doesn't make changes)
         assert result.returncode == 0, f"Command failed: {result.stderr}"
 
+
+
+class TestDetectSourceWorkspaceFlag:
+    """`fabdep detect --source-workspace-id` parses (repeatable) and runs."""
+
+    def test_detect_parser_accepts_source_workspace_id(self, monkeypatch):
+        from fabric_deploy.cli import parse_args
+
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["fabdep", "detect", "--source-workspace-id", "16161616-1616-1616-1616-161616161616"],
+        )
+        args = parse_args()
+        assert args.source_workspace_ids == ["16161616-1616-1616-1616-161616161616"]
+
+    @_REQUIRES_FABDEP
+    def test_detect_with_source_workspace_id_runs(self):
+        result = subprocess.run(
+            [
+                _FABDEP,
+                "detect",
+                "--source-workspace-id",
+                "16161616-1616-1616-1616-161616161616",
+            ],
+            cwd=Path(__file__).parent / "test-wkspc",
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "Source workspace anchor" in result.stdout + result.stderr

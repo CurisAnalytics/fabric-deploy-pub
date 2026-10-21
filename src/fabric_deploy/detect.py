@@ -9,6 +9,7 @@
 import json
 import logging
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -37,6 +38,33 @@ def _iter_meta_blocks(content: str):
             current = []
     if current:
         yield "\n".join(current)
+
+
+def find_in_item_files(repo_dir: Path, values: Iterable[str]) -> dict[str, set[str]]:
+    """Repo-relative item files that contain each literal in `values`.
+
+    Item files are those under a directory carrying a `.platform` — the set
+    fabric-cicd's find_replace operates on. Repo-root files such as
+    fabdep.yml are deliberately excluded so a rule can't match itself. One
+    walk covers every value.
+    """
+    matches: dict[str, set[str]] = {v: set() for v in values}
+    if not matches:
+        return matches
+    item_dirs = {p.parent for p in repo_dir.glob("**/.platform")}
+    for item_dir in item_dirs:
+        for path in item_dir.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                content = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            rel = str(path.relative_to(repo_dir))
+            for value, found_in in matches.items():
+                if value in content:
+                    found_in.add(rel)
+    return matches
 
 
 @dataclass
@@ -150,16 +178,43 @@ class ParameterDetector:
         re.IGNORECASE,
     )
 
-    def __init__(self, repo_dir: Path | str, logger_name: str | None = None):
+    def __init__(
+        self,
+        repo_dir: Path | str,
+        logger_name: str | None = None,
+        source_workspace_ids: Iterable[str] | None = None,
+        source_lakehouse_ids: dict[str, str] | None = None,
+    ):
         """
         Initialize parameter detector.
 
         Args:
             repo_dir: Path to workspace repository directory
             logger_name: Optional logger name (defaults to module name)
+            source_workspace_ids: Workspaces this repo's content may have been
+                exported from — the deployer passes the target plus every
+                sibling workspace (`{base} [branch]`). They seed the anchor
+                set pipeline/copyjob workspaceIds are classified against.
+                Needed once notebooks use Fabric's lakehouse auto-binding in
+                git: their metadata then carries the null UUID instead of a
+                workspace id, so content alone no longer says which workspace
+                the repo came from.
+            source_lakehouse_ids: Item id → display name of those workspaces'
+                lakehouses. Each becomes a `$items.Lakehouse` rule where an
+                item file still carries the physical id (an abfss literal in
+                notebook code, say) — the coverage legacy notebook metadata
+                gave for free.
         """
         self.repo_dir = Path(repo_dir).resolve()  # pyright: ignore[reportUnannotatedClassAttribute]
         self.parameters: dict[str, DetectedParameter] = {}
+        self._seed_workspace_ids: set[str] = set(source_workspace_ids or ())
+        self._seed_lakehouse_ids: dict[str, str] = dict(source_lakehouse_ids or {})
+        # logicalId → displayName for the repo's Lakehouse items. Auto-bound
+        # notebook metadata names its lakehouse by logicalId, not item id.
+        self._lakehouse_logical_ids: dict[str, str] = {}
+        # Repo-relative notebook dirs whose notebook-settings.json turns
+        # Fabric's lakehouse auto-binding on.
+        self.auto_bound_notebooks: list[str] = []
         self._lakehouse_names: list[str] = []
         self._sqldatabase_names: list[str] = []
         self._warehouse_names: list[str] = []
@@ -172,12 +227,14 @@ class ParameterDetector:
         # that has no replacement mapping — the source-workspace GUID would
         # deploy verbatim. Same promote-to-fatal contract as stale_attachments.
         self.unresolved_warehouse_bindings: list[tuple[str, str, str]] = []
-        # Workspace ids this repo's own items were exported from (notebook
-        # attachments, semantic-model OneLake URLs). Pipeline/CopyJob
-        # workspaceIds are only remapped to the target when they match one of
-        # these — anything else is a deliberate cross-workspace reference that
-        # must deploy verbatim (a another workspace pipeline invoking a Data
-        # Quality notebook had the foreign workspace id rewritten to the target).
+        # Workspace ids this repo's own items were exported from (legacy
+        # notebook attachments, semantic-model OneLake URLs, bound UDF buttons,
+        # or the repo's sibling workspaces the deployer listed). Pipeline/
+        # CopyJob workspaceIds are only remapped to the target when they match
+        # one of these — anything else is a deliberate cross-workspace
+        # reference that must deploy verbatim (one workspace's pipeline
+        # invoking another workspace's notebook had the foreign workspace id
+        # rewritten to the target).
         self._source_workspace_ids: set[str] = set()
         # (source_file, guid) for each pipeline/copyjob workspaceId left
         # verbatim as a cross-workspace reference.
@@ -224,14 +281,24 @@ class ParameterDetector:
         self.udf_skipped = []
         self._source_workspace_ids = set()
         self.offtarget_workspace_refs = []
+        self.auto_bound_notebooks = []
 
         # Item names must be resolved before _generate_dynamic_variable runs.
         self._lakehouse_names = self._detect_item_names("Lakehouse")
+        self._lakehouse_logical_ids = self._lakehouse_logical_id_index()
         self._sqldatabase_names = self._detect_item_names("SQLDatabase")
         self._warehouse_names = self._detect_item_names("Warehouse")
         self._mirroreddatabase_names = self._detect_item_names("MirroredDatabase")
         self._index_user_data_functions()
+        for workspace_id in sorted(self._seed_workspace_ids):
+            self._anchor_workspace(workspace_id)
 
+        # Scans that can anchor the source workspace (notebooks, models,
+        # reports) run before the pipeline/copyjob scans that classify
+        # workspaceIds against the anchors, so the cross-workspace warning
+        # only fires for ids nothing in the repo claims. Correctness does not
+        # depend on this order — _anchor_workspace repairs a parameter that
+        # was classified first — only the log does.
         # Notebook content is `.py` (Python/PySpark), `.sql` (T-SQL), etc.
         # Metadata block is identical JSON-in-comments — the prefix differs
         # (`# META` vs `-- META`) but the find_replace patterns don't anchor on it.
@@ -248,6 +315,14 @@ class ParameterDetector:
             self.repo_dir.glob("**/*.SemanticModel/definition/**/*.tmdl"),
             self._extract_from_semantic_model,
         )
+        # Only worth walking report definitions when the repo actually ships a
+        # User Data Function to rebind the buttons to.
+        if self._userdatafunction_names:
+            self._process_files(
+                self.repo_dir.glob("**/*.Report/definition/**/*.json"),
+                self._extract_from_report,
+                parse_json=True,
+            )
         self._process_files(
             self.repo_dir.glob("**/*.DataPipeline/pipeline-content.json"),
             self._extract_from_pipeline,
@@ -258,14 +333,7 @@ class ParameterDetector:
             self._extract_from_copyjob,
             parse_json=True,
         )
-        # Only worth walking report definitions when the repo actually ships a
-        # User Data Function to rebind the buttons to.
-        if self._userdatafunction_names:
-            self._process_files(
-                self.repo_dir.glob("**/*.Report/definition/**/*.json"),
-                self._extract_from_report,
-                parse_json=True,
-            )
+        self._register_source_ids()
         self._warn_skipped_udf_buttons()
 
     def _warn_skipped_udf_buttons(self) -> None:
@@ -287,6 +355,42 @@ class ParameterDetector:
                 f"{reason}. They will deploy still pointing at the source "
                 f"workspace's function."
             )
+
+    def _lakehouse_logical_id_index(self) -> dict[str, str]:
+        """logicalId → displayName for the repo's Lakehouse items."""
+        index: dict[str, str] = {}
+        for item_dir, meta in self._platform_items("Lakehouse"):
+            try:
+                config = json.loads(
+                    (item_dir / ".platform").read_text(encoding="utf-8")
+                ).get("config", {})
+            except Exception:
+                continue
+            logical_id = config.get("logicalId") if isinstance(config, dict) else None
+            name = meta.get("displayName")
+            if (
+                isinstance(logical_id, str)
+                and name
+                and self.UUID_PATTERN.fullmatch(logical_id)
+                and logical_id != self.NULL_UUID
+            ):
+                index[logical_id] = name
+        return index
+
+    def _auto_binding_enabled(self, item_dir: Path) -> bool:
+        """Whether a notebook's `notebook-settings.json` turns lakehouse
+        auto-binding on. Fabric writes the file when the setting is enabled
+        in the notebook's git settings and owns its content."""
+        settings = item_dir / "notebook-settings.json"
+        if not settings.exists():
+            return False
+        try:
+            data = json.loads(settings.read_text(encoding="utf-8"))
+        except Exception as e:
+            self._log_file_warning(settings, e, "notebook settings")
+            return False
+        binding = data.get("auto-binding") if isinstance(data, dict) else None
+        return isinstance(binding, dict) and binding.get("lakehouse") == "on"
 
     def _platform_items(self, item_type: str) -> list[tuple[Path, dict]]:
         """(item_dir, .platform metadata) pairs for repo items of `item_type`.
@@ -464,16 +568,26 @@ class ParameterDetector:
         for workspace_id in self.WORKSPACE_ID_PATTERN.findall(content):
             if workspace_id == self.NULL_UUID:
                 continue
-            _ = self._add_parameter(workspace_id, source_file, "Workspace ID")
-            # Notebook attachments carry the workspace the repo was exported
-            # from — the anchor that pipeline/copyjob workspaceIds are
-            # checked against. Notebooks are processed first in detect_all.
-            self._source_workspace_ids.add(workspace_id)
+            # A legacy attachment names the workspace the repo was exported
+            # from — an anchor for pipeline/copyjob workspaceIds.
+            self._anchor_workspace(workspace_id, source_file)
 
         for lakehouse_id in self.LAKEHOUSE_ID_PATTERN.findall(content):
             if lakehouse_id == self.NULL_UUID:
                 continue
-            _ = self._add_parameter(lakehouse_id, source_file, "Lakehouse ID")
+            param = self._add_parameter(lakehouse_id, source_file, "Lakehouse ID")
+            # Auto-bound metadata carries the lakehouse's logicalId. fabric-cicd
+            # resolves logicalIds itself before parameters apply; this rule is
+            # the backstop, and it names the owning lakehouse rather than the
+            # repo's first one.
+            owner = self._lakehouse_logical_ids.get(lakehouse_id)
+            if owner:
+                param.dynamic_variable = f"$items.Lakehouse.{owner}.$id"
+
+        if self._auto_binding_enabled(file_path.parent):
+            self.auto_bound_notebooks.append(
+                str(file_path.parent.relative_to(self.repo_dir))
+            )
 
         self._extract_warehouse_attachments(source_file, content)
         self._warn_on_stale_lakehouse_attachments(source_file, content)
@@ -572,13 +686,10 @@ class ParameterDetector:
         source_file = str(file_path.relative_to(self.repo_dir))
 
         for workspace_id, lakehouse_id in self.ONELAKE_DFS_PATTERN.findall(content):
-            self._add_uuid_parameter(workspace_id, source_file, "Workspace ID")
-            self._add_uuid_parameter(lakehouse_id, source_file, "Lakehouse ID")
             # A Direct Lake model's OneLake URL points at its own workspace —
-            # a second source-workspace anchor (models process before
-            # pipelines in detect_all).
-            if self.UUID_PATTERN.match(workspace_id):
-                self._source_workspace_ids.add(workspace_id)
+            # a source-workspace anchor.
+            self._anchor_workspace(workspace_id, source_file)
+            self._add_uuid_parameter(lakehouse_id, source_file, "Lakehouse ID")
 
         for (
             host_prefix,
@@ -673,6 +784,70 @@ class ParameterDetector:
             for item in obj:
                 self._extract_connections_recursive(item, source_file)
 
+    def _anchor_workspace(self, ws_id: str, source_file: str | None = None) -> None:
+        """Record `ws_id` as a workspace this repo's content was exported from.
+
+        Anchors come from legacy notebook attachments, Direct Lake OneLake
+        URLs, bound UDF buttons and the deployer-listed sibling workspaces.
+        With `source_file` the id also becomes a `$workspace.$id` rule; a
+        seed without one stays an anchor only and gets a rule when
+        `_register_source_ids` finds it in an item file. The order anchors
+        and pipeline references are found in must not matter: an id already
+        classified as a cross-workspace reference is upgraded here and
+        dropped from the off-target list.
+        """
+        if not self.UUID_PATTERN.fullmatch(ws_id) or ws_id == self.NULL_UUID:
+            return
+        self._source_workspace_ids.add(ws_id)
+        if source_file is not None:
+            _ = self._add_parameter(ws_id, source_file, "Workspace ID")
+        param = self.parameters.get(ws_id)
+        if param is not None and not param.dynamic_variable:
+            param.description = "Workspace ID"
+            param.dynamic_variable = "$workspace.$id"
+        self.offtarget_workspace_refs = [
+            ref for ref in self.offtarget_workspace_refs if ref[1] != ws_id
+        ]
+
+    def _register_source_ids(self) -> None:
+        """Turn deployer-resolved source ids into rules where item files use them.
+
+        Legacy notebook metadata made the source workspace and lakehouse ids
+        detected values, so fabric-cicd's global find_replace also rewrote any
+        other occurrence — an `abfss://<ws>@…/<lakehouse>/` literal in
+        notebook code, say. Auto-bound metadata carries neither id, so the
+        same coverage comes from the ids the deployer resolved from the
+        sibling workspaces: a rule per id, only where an item file contains
+        it. A lakehouse id maps by display name and must belong to a repo
+        Lakehouse item, or the rule could not resolve in the target.
+        """
+        wanted: dict[str, tuple[str, str]] = {}
+        for workspace_id in self._seed_workspace_ids:
+            if self.UUID_PATTERN.fullmatch(workspace_id) and workspace_id != self.NULL_UUID:
+                wanted[workspace_id] = ("Workspace ID", "$workspace.$id")
+        for lakehouse_id, name in self._seed_lakehouse_ids.items():
+            if name not in self._lakehouse_names:
+                continue
+            if not self.UUID_PATTERN.fullmatch(lakehouse_id) or lakehouse_id == self.NULL_UUID:
+                continue
+            wanted[lakehouse_id] = ("Lakehouse ID", f"$items.Lakehouse.{name}.$id")
+        if not wanted:
+            return
+
+        found = find_in_item_files(self.repo_dir, wanted)
+        for value, (description, dynamic_variable) in wanted.items():
+            files = found.get(value, set())
+            param = self.parameters.get(value)
+            if param is None:
+                if not files:
+                    continue
+                param = DetectedParameter(find_value=value, description=description)
+                self.parameters[value] = param
+            param.source_files |= files
+            if not param.dynamic_variable:
+                param.description = description
+                param.dynamic_variable = dynamic_variable
+
     def _classify_activity_workspace(self, ws_id, source_file: str) -> bool:
         """Remap or preserve a pipeline/copyjob workspaceId. Returns True if
         the id already points at the deploy target: the source workspace
@@ -697,10 +872,12 @@ class ParameterDetector:
         if (source_file, ws_id) not in self.offtarget_workspace_refs:
             self.offtarget_workspace_refs.append((source_file, ws_id))
             self.logger.warning(
-                f"{source_file}: workspaceId {ws_id} does not match this "
-                f"repo's workspace — treating it as a cross-workspace "
-                f"reference and deploying it unchanged. Add a "
-                f"manual_parameters entry in fabdep.yml to remap it."
+                f"{source_file}: workspaceId {ws_id} is not a workspace this "
+                f"repo's content anchors — treating it as a cross-workspace "
+                f"reference and deploying it unchanged. If it is one of this "
+                f"repo's own workspaces, the deploying identity must be able "
+                f"to list it (fabdep detect takes --source-workspace-id); "
+                f"otherwise a manual_parameters entry in fabdep.yml can remap it."
             )
         return False
 
@@ -864,9 +1041,10 @@ class ParameterDetector:
             param.dynamic_variable = f"$items.UserDataFunction.{udf_name}.$id"
 
             # The hosting workspace is the one the UDF item deploys into — the
-            # deploy target — since it was matched from this same repo.
-            if workspace_id and workspace_id != self.NULL_UUID:
-                self._add_uuid_parameter(workspace_id, source_file, "Workspace ID")
+            # deploy target — since it was matched from this same repo. That
+            # also makes it a source-workspace anchor.
+            if workspace_id:
+                self._anchor_workspace(workspace_id, source_file)
 
             binding = (report_name, function_name, udf_name, item_id)
             if binding not in self.udf_bindings:
@@ -1010,6 +1188,17 @@ class ParameterDetector:
         """Log a summary of detected parameters."""
         self._ensure_detected()
 
+        if self.auto_bound_notebooks:
+            self.logger.info(
+                f"{len(self.auto_bound_notebooks)} notebook(s) use lakehouse "
+                f"auto-binding (metadata carries the lakehouse logicalId and "
+                f"no workspace id)"
+            )
+        anchors = ", ".join(sorted(self._source_workspace_ids))
+        self.logger.info(
+            "Source workspace anchor(s): "
+            + (anchors or "(none — unanchored workspaceIds deploy verbatim)")
+        )
         with_dynamic = sum(1 for p in self.parameters.values() if p.dynamic_variable)
         without_dynamic = len(self.parameters) - with_dynamic
 

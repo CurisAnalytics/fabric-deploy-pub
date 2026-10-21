@@ -75,6 +75,7 @@ def deployer():
             "fabric_deploy.workspace.get_workspace_id_by_name",
             return_value=FAKE_WORKSPACE_ID,
         ),
+        patch("fabric_deploy.workspace.list_workspaces", return_value=[]),
         # Suppress fabric-cicd module-level logging side effects
         patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
     ):
@@ -417,3 +418,159 @@ class TestParameterFileWriter:
         param_file = tmp_path / "parameter.yml"
         data = yaml.safe_load(param_file.read_text())
         assert data["find_replace"][0]["item_type"] == ["SemanticModel"]
+
+
+
+# --- sibling-workspace anchor resolution ------------------------------------
+
+# test-wkspc's legacy notebook metadata names this workspace.
+DEV_WORKSPACE_ID = "16161616-1616-1616-1616-161616161616"
+QA_WORKSPACE_ID = "00000000-0000-0000-0000-00000000000d"
+SRC_LAKEHOUSE_ID = "00000000-0000-0000-0000-00000000001a"
+
+
+def _anchored_deployer(
+    monkeypatch, *, workspaces, lakehouses=None, list_error=None, **kwargs
+) -> tuple[WorkspaceDeployer, MagicMock, MagicMock]:
+    """Deployer on test-wkspc with the workspace listing under control."""
+    list_ws = MagicMock(return_value=workspaces)
+    if list_error:
+        list_ws.side_effect = RuntimeError(list_error)
+    list_items = MagicMock(return_value=lakehouses or [])
+    monkeypatch.setattr("fabric_deploy.workspace.list_workspaces", list_ws)
+    monkeypatch.setattr("fabric_deploy.workspace.list_workspace_items", list_items)
+    with (
+        patch(
+            "fabric_deploy.workspace.get_workspace_id_by_name",
+            return_value=FAKE_WORKSPACE_ID,
+        ),
+        patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
+    ):
+        d = WorkspaceDeployer(TEST_WS_DIR, branch_override="MAIN", **kwargs)
+    return d, list_ws, list_items
+
+
+class TestSiblingWorkspaceAnchors:
+    def test_target_is_anchored_even_without_siblings(self, monkeypatch):
+        d, _, list_items = _anchored_deployer(monkeypatch, workspaces=[])
+
+        assert d.source_workspace_ids == {FAKE_WORKSPACE_ID}
+        assert d.source_lakehouse_ids == {}
+        assert not list_items.called
+        assert FAKE_WORKSPACE_ID in d._detector._source_workspace_ids
+
+    def test_referenced_sibling_anchors_and_lists_its_lakehouses(self, monkeypatch):
+        """The content names DEV (legacy metadata here; a pipeline workspaceId
+        or an abfss literal in an auto-bound repo), so DEV's lakehouse ids
+        are fetched to map alongside its workspace id."""
+        d, _, list_items = _anchored_deployer(
+            monkeypatch,
+            workspaces=[
+                {"id": FAKE_WORKSPACE_ID, "displayName": "Fabdep Test [MAIN]"},
+                {"id": DEV_WORKSPACE_ID, "displayName": "Fabdep Test [DEV]"},
+            ],
+            lakehouses=[
+                {"id": SRC_LAKEHOUSE_ID, "displayName": "fabdep_lakehouse", "type": "Lakehouse"}
+            ],
+        )
+
+        list_items.assert_called_once_with(DEV_WORKSPACE_ID, "Lakehouse")
+        assert d.source_workspace_ids == {FAKE_WORKSPACE_ID, DEV_WORKSPACE_ID}
+        assert d.source_lakehouse_ids == {SRC_LAKEHOUSE_ID: "fabdep_lakehouse"}
+        assert DEV_WORKSPACE_ID in d._detector._source_workspace_ids
+        assert d._detector.parameters[DEV_WORKSPACE_ID].dynamic_variable == "$workspace.$id"
+
+    def test_unreferenced_sibling_is_anchored_but_not_listed(self, monkeypatch):
+        d, _, list_items = _anchored_deployer(
+            monkeypatch,
+            workspaces=[{"id": QA_WORKSPACE_ID, "displayName": "Fabdep Test [QA]"}],
+        )
+
+        assert QA_WORKSPACE_ID in d.source_workspace_ids
+        assert not list_items.called
+
+    def test_other_repos_workspaces_are_not_siblings(self, monkeypatch):
+        d, _, _ = _anchored_deployer(
+            monkeypatch,
+            workspaces=[
+                {"id": QA_WORKSPACE_ID, "displayName": "Other [DEV]"},
+                {"id": DEV_WORKSPACE_ID, "displayName": "Fabdep Test Extra [DEV]"},
+                {"id": "00000000-0000-0000-0000-00000000000e", "displayName": "Fabdep Test"},
+            ],
+        )
+
+        assert d.source_workspace_ids == {FAKE_WORKSPACE_ID}
+
+    def test_sibling_match_is_case_insensitive(self, monkeypatch):
+        d, _, _ = _anchored_deployer(
+            monkeypatch,
+            workspaces=[{"id": QA_WORKSPACE_ID, "displayName": "fabdep test [qa]"}],
+        )
+
+        assert QA_WORKSPACE_ID in d.source_workspace_ids
+
+    def test_listing_failure_warns_and_keeps_target_anchor(self, monkeypatch, caplog):
+        d, _, _ = _anchored_deployer(monkeypatch, workspaces=[], list_error="403")
+
+        assert d.source_workspace_ids == {FAKE_WORKSPACE_ID}
+        assert "anchor" in caplog.text
+
+    def test_lakehouse_listing_failure_warns_and_continues(self, monkeypatch, caplog):
+        list_ws = MagicMock(
+            return_value=[{"id": DEV_WORKSPACE_ID, "displayName": "Fabdep Test [DEV]"}]
+        )
+        monkeypatch.setattr("fabric_deploy.workspace.list_workspaces", list_ws)
+        monkeypatch.setattr(
+            "fabric_deploy.workspace.list_workspace_items",
+            MagicMock(side_effect=RuntimeError("403")),
+        )
+        with (
+            patch(
+                "fabric_deploy.workspace.get_workspace_id_by_name",
+                return_value=FAKE_WORKSPACE_ID,
+            ),
+            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
+        ):
+            d = WorkspaceDeployer(TEST_WS_DIR, branch_override="MAIN")
+
+        assert DEV_WORKSPACE_ID in d.source_workspace_ids
+        assert d.source_lakehouse_ids == {}
+        assert "Fabdep Test [DEV]" in caplog.text
+
+
+class TestSkipLakehouseWithAutoBinding:
+    def test_warns_that_auto_bound_notebooks_rebind_anyway(
+        self, tmp_path: Path, monkeypatch, caplog
+    ):
+        """fabric-cicd resolves a lakehouse logicalId to the target's lakehouse
+        before parameters apply, so -L cannot keep an auto-bound notebook on
+        the source lakehouse; say so instead of silently not doing it."""
+        (tmp_path / "fabdep.yml").write_text('workspace_base_name: "Base"\n')
+        lh = tmp_path / "lh.Lakehouse"
+        lh.mkdir()
+        (lh / ".platform").write_text(
+            '{"metadata": {"displayName": "lh", "type": "Lakehouse"}, '
+            '"config": {"logicalId": "66666666-6666-6666-6666-666666666666"}}'
+        )
+        nb = tmp_path / "nb.Notebook"
+        nb.mkdir()
+        (nb / ".platform").write_text('{"metadata": {"displayName": "nb", "type": "Notebook"}}')
+        (nb / "notebook-content.py").write_text(
+            '# META {\n# META   "dependencies": {"lakehouse": {\n'
+            '# META     "default_lakehouse": "66666666-6666-6666-6666-666666666666",\n'
+            '# META     "default_lakehouse_workspace_id": "00000000-0000-0000-0000-000000000000"\n'
+            "# META   }}\n# META }\n"
+        )
+        (nb / "notebook-settings.json").write_text('{"auto-binding": {"lakehouse": "on"}}')
+        monkeypatch.setattr("fabric_deploy.workspace.list_workspaces", lambda: [])
+        with (
+            patch(
+                "fabric_deploy.workspace.get_workspace_id_by_name",
+                return_value=FAKE_WORKSPACE_ID,
+            ),
+            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
+        ):
+            WorkspaceDeployer(tmp_path, branch_override="MAIN", skip_lakehouse=True)
+
+        assert "--skip-lakehouse" in caplog.text
+        assert "nb.Notebook" in caplog.text

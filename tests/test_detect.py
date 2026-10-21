@@ -1145,3 +1145,247 @@ class TestUserDataFunctionRebind:
 
         assert UDF_ITEM_ID not in d.parameters
         assert d.udf_bindings == []
+
+
+# --- lakehouse auto-binding / source-workspace anchors ----------------------
+
+LOGICAL_ID = "6a6a6a6a-6a6a-6a6a-6a6a-6a6a6a6a6a6a"
+OTHER_LOGICAL_ID = "88888888-8888-8888-8888-888888888888"
+PHYSICAL_LAKEHOUSE_ID = "77777777-7777-7777-7777-777777777777"
+
+
+def _make_lakehouse_with_logical_id(repo: Path, name: str, logical_id: str) -> None:
+    item = repo / f"{name}.Lakehouse"
+    item.mkdir()
+    (item / ".platform").write_text(
+        json.dumps(
+            {
+                "metadata": {"displayName": name, "type": "Lakehouse"},
+                "config": {"version": "2.0", "logicalId": logical_id},
+            }
+        )
+    )
+
+
+def _auto_bound_meta(logical_id: str, name: str = "lh") -> str:
+    """Notebook META as Fabric writes it with lakehouse auto-binding on:
+    the lakehouse's logicalId and the null-UUID workspace."""
+    return "\n".join(
+        [
+            "# META {",
+            '# META   "dependencies": {',
+            '# META     "lakehouse": {',
+            f'# META       "default_lakehouse": "{logical_id}",',
+            f'# META       "default_lakehouse_name": "{name}",',
+            f'# META       "default_lakehouse_workspace_id": "{ParameterDetector.NULL_UUID}"',
+            "# META     }",
+            "# META   }",
+            "# META }",
+        ]
+    )
+
+
+def _enable_auto_binding(repo: Path, notebook_dir: str) -> None:
+    (repo / notebook_dir / "notebook-settings.json").write_text(
+        json.dumps({"auto-binding": {"lakehouse": "on"}})
+    )
+
+
+def _pinned_notebook_activity(workspace_id: str) -> dict:
+    return {
+        "properties": {
+            "activities": [
+                {"typeProperties": {"workspaceId": workspace_id, "notebookId": "x"}}
+            ]
+        }
+    }
+
+
+def _auto_bound_repo(repo: Path) -> None:
+    """A lakehouse, one auto-bound notebook, one pipeline pinned to the
+    workspace the repo was exported from."""
+    _make_lakehouse_with_logical_id(repo, "lh", LOGICAL_ID)
+    _make_notebook(repo, "nb", _auto_bound_meta(LOGICAL_ID))
+    _enable_auto_binding(repo, "nb.Notebook")
+    _make_pipeline(repo, "pl", _pinned_notebook_activity(WORKSPACE_ID))
+
+
+class TestLakehouseAutoBinding:
+    def test_logical_id_maps_to_owning_lakehouse(self, tmp_path: Path):
+        """An auto-bound notebook's default_lakehouse is the lakehouse's git
+        logicalId; the rule names that lakehouse, not the first one found."""
+        _make_lakehouse_with_logical_id(tmp_path, "first", OTHER_LOGICAL_ID)
+        _make_lakehouse_with_logical_id(tmp_path, "second", LOGICAL_ID)
+        _make_notebook(tmp_path, "nb", _auto_bound_meta(LOGICAL_ID, "second"))
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert d.parameters[LOGICAL_ID].dynamic_variable == "$items.Lakehouse.second.$id"
+
+    def test_auto_bound_notebooks_are_listed(self, tmp_path: Path):
+        _make_lakehouse_with_logical_id(tmp_path, "lh", LOGICAL_ID)
+        _make_notebook(tmp_path, "nb", _auto_bound_meta(LOGICAL_ID))
+        _enable_auto_binding(tmp_path, "nb.Notebook")
+        _make_notebook(
+            tmp_path,
+            "legacy",
+            f'# META  "default_lakehouse_workspace_id": "{WORKSPACE_ID}"',
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert d.auto_bound_notebooks == ["nb.Notebook"]
+
+    def test_auto_bound_repo_has_no_content_anchor(self, tmp_path: Path):
+        """With every notebook auto-bound nothing in the content names the
+        source workspace, so a pipeline's pinned workspaceId is a
+        cross-workspace reference until a source workspace is supplied."""
+        _auto_bound_repo(tmp_path)
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        param = d.parameters[WORKSPACE_ID]
+        assert param.description == "Cross-workspace reference"
+        assert param.dynamic_variable == ""
+        assert d.offtarget_workspace_refs == [
+            ("pl.DataPipeline/pipeline-content.json", WORKSPACE_ID)
+        ]
+
+    def test_seeded_source_workspace_anchors_pipeline_ref(self, tmp_path: Path):
+        _auto_bound_repo(tmp_path)
+        d = ParameterDetector(tmp_path, source_workspace_ids=[WORKSPACE_ID])
+        d.detect_all()
+
+        param = d.parameters[WORKSPACE_ID]
+        assert param.description == "Workspace ID"
+        assert param.dynamic_variable == "$workspace.$id"
+        assert d.offtarget_workspace_refs == []
+
+    def test_seed_without_references_emits_no_rule(self, tmp_path: Path):
+        """The seed is an anchor, not a find/replace rule of its own."""
+        _make_lakehouse_with_logical_id(tmp_path, "lh", LOGICAL_ID)
+        _make_notebook(tmp_path, "nb", _auto_bound_meta(LOGICAL_ID))
+        d = ParameterDetector(tmp_path, source_workspace_ids=[WORKSPACE_ID])
+        d.detect_all()
+
+        assert WORKSPACE_ID not in d.parameters
+
+    def test_seed_does_not_anchor_a_foreign_workspace(self, tmp_path: Path):
+        """The cross-workspace rule still holds: a workspaceId that is not the source deploys verbatim."""
+        _make_lakehouse_with_logical_id(tmp_path, "lh", LOGICAL_ID)
+        _make_notebook(tmp_path, "nb", _auto_bound_meta(LOGICAL_ID))
+        _make_pipeline(tmp_path, "pl", _pinned_notebook_activity(OTHER_WORKSPACE_ID))
+        d = ParameterDetector(tmp_path, source_workspace_ids=[WORKSPACE_ID])
+        d.detect_all()
+
+        assert d.parameters[OTHER_WORKSPACE_ID].description == "Cross-workspace reference"
+        assert d.offtarget_workspace_refs == [
+            ("pl.DataPipeline/pipeline-content.json", OTHER_WORKSPACE_ID)
+        ]
+
+    def test_report_udf_workspace_anchors_pipeline_ref(self, tmp_path: Path):
+        """A bound UDF button names the repo's own workspace. That anchor must
+        reach a pipeline reference whatever order the scans run in."""
+        _auto_bound_repo(tmp_path)
+        _make_udf(tmp_path, "Functions", ["update_report_json"])
+        _make_report_visual(
+            tmp_path,
+            "Finance Report",
+            _data_function_visual(UDF_ITEM_ID, WORKSPACE_ID, "update_report_json"),
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert d.parameters[WORKSPACE_ID].dynamic_variable == "$workspace.$id"
+        assert d.offtarget_workspace_refs == []
+
+    def test_anchor_upgrades_a_cross_workspace_parameter(self, tmp_path: Path):
+        """Anchoring after classification repairs the parameter and the
+        off-target record, so scan order cannot change the outcome."""
+        _auto_bound_repo(tmp_path)
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+        assert d.parameters[WORKSPACE_ID].dynamic_variable == ""
+
+        d._anchor_workspace(WORKSPACE_ID)
+
+        param = d.parameters[WORKSPACE_ID]
+        assert param.description == "Workspace ID"
+        assert param.dynamic_variable == "$workspace.$id"
+        assert d.offtarget_workspace_refs == []
+        assert WORKSPACE_ID in d._source_workspace_ids
+
+    def test_source_ids_registered_where_item_files_use_them(self, tmp_path: Path):
+        """Legacy metadata made the source workspace and lakehouse ids detected
+        values, so an abfss literal in notebook code was rewritten too. The
+        deployer-resolved ids restore that: a rule per id, only where an item
+        file contains it."""
+        _make_lakehouse_with_logical_id(tmp_path, "lh", LOGICAL_ID)
+        body = (
+            _auto_bound_meta(LOGICAL_ID)
+            + "\n# CELL ********************\n\n"
+            + f'p = "abfss://{WORKSPACE_ID}@onelake.dfs.fabric.microsoft.com/'
+            + f'{PHYSICAL_LAKEHOUSE_ID}/Files/x"\n'
+        )
+        _make_notebook(tmp_path, "nb", body)
+        d = ParameterDetector(
+            tmp_path,
+            source_workspace_ids=[WORKSPACE_ID],
+            source_lakehouse_ids={PHYSICAL_LAKEHOUSE_ID: "lh"},
+        )
+        d.detect_all()
+
+        lh = d.parameters[PHYSICAL_LAKEHOUSE_ID]
+        assert lh.description == "Lakehouse ID"
+        assert lh.dynamic_variable == "$items.Lakehouse.lh.$id"
+        assert lh.source_files == {"nb.Notebook/notebook-content.py"}
+        ws = d.parameters[WORKSPACE_ID]
+        assert ws.dynamic_variable == "$workspace.$id"
+        assert ws.source_files == {"nb.Notebook/notebook-content.py"}
+
+    def test_source_lakehouse_id_ignored_when_unreferenced(self, tmp_path: Path):
+        _make_lakehouse_with_logical_id(tmp_path, "lh", LOGICAL_ID)
+        _make_notebook(tmp_path, "nb", _auto_bound_meta(LOGICAL_ID))
+        d = ParameterDetector(
+            tmp_path,
+            source_workspace_ids=[WORKSPACE_ID],
+            source_lakehouse_ids={PHYSICAL_LAKEHOUSE_ID: "lh"},
+        )
+        d.detect_all()
+
+        assert PHYSICAL_LAKEHOUSE_ID not in d.parameters
+
+    def test_source_lakehouse_id_ignored_for_unknown_lakehouse(self, tmp_path: Path):
+        """A source lakehouse with no repo item can't resolve in the target."""
+        _make_lakehouse_with_logical_id(tmp_path, "lh", LOGICAL_ID)
+        _make_notebook(
+            tmp_path,
+            "nb",
+            _auto_bound_meta(LOGICAL_ID) + f"\n# CELL\n\nx = '{PHYSICAL_LAKEHOUSE_ID}'\n",
+        )
+        d = ParameterDetector(
+            tmp_path,
+            source_workspace_ids=[WORKSPACE_ID],
+            source_lakehouse_ids={PHYSICAL_LAKEHOUSE_ID: "elsewhere"},
+        )
+        d.detect_all()
+
+        assert PHYSICAL_LAKEHOUSE_ID not in d.parameters
+
+    def test_legacy_metadata_still_anchors(self, tmp_path: Path):
+        """Repos without auto-binding keep working with no seed at all."""
+        _make_lakehouse(tmp_path, "lh")
+        _make_notebook(
+            tmp_path,
+            "nb",
+            f'# META  "default_lakehouse_workspace_id": "{WORKSPACE_ID}"\n'
+            f'# META  "default_lakehouse": "{LAKEHOUSE_ID}"',
+        )
+        _make_pipeline(tmp_path, "pl", _pinned_notebook_activity(WORKSPACE_ID))
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert d.parameters[WORKSPACE_ID].dynamic_variable == "$workspace.$id"
+        assert d.parameters[LAKEHOUSE_ID].dynamic_variable == "$items.Lakehouse.lh.$id"
+        assert d.offtarget_workspace_refs == []
+        assert d.auto_bound_notebooks == []
