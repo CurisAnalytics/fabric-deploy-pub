@@ -7,7 +7,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-__all__ = ["current_branch", "changed_paths_in", "latest_pr_commit"]
+__all__ = ["changed_paths_in", "commits_after", "current_branch", "latest_pr_commit"]
 
 # How hosting services word the commit a pull request lands as. A squash merge
 # leaves no merge commit, so the message is the only signal, and a merge commit
@@ -50,20 +50,35 @@ def _git(repo_dir: Path | str, *args: str) -> str:
 
 
 def latest_pr_commit(repo_dir: Path | str) -> tuple[str, str] | None:
-    """Find the most recent pull-request commit reachable from HEAD.
+    """Find the most recent pull-request commit on HEAD's first-parent history.
 
     Returns (sha, subject), or None if none of the last `_PR_SEARCH_DEPTH`
-    commits carries a pull-request message (see `_PR_SUBJECTS`).
+    commits carries a pull-request message (see `_PR_SUBJECTS`). Commits a
+    merge brought in from another branch are not the deployed branch's own, so
+    they are not searched, however they are worded.
 
     Args:
         repo_dir: Path to a directory inside a git repository.
     """
-    out = _git(repo_dir, "log", f"-n{_PR_SEARCH_DEPTH}", "-z", "--format=%H%x1f%s%x1f%b", "HEAD")
+    out = _git(
+        repo_dir,
+        "log",
+        "--first-parent",
+        f"-n{_PR_SEARCH_DEPTH}",
+        "-z",
+        "--format=%H%x1f%s%x1f%b",
+        "HEAD",
+    )
     for record in out.split("\0"):
         sha, subject, body = (record.split("\x1f", 2) + ["", ""])[:3]
         if any(p.search(subject) for p in _PR_SUBJECTS) or _PR_BODY.search(body):
             return sha.strip(), subject
     return None
+
+
+def commits_after(repo_dir: Path | str, commit: str) -> int:
+    """How many first-parent commits HEAD has on top of `commit`."""
+    return int(_git(repo_dir, "rev-list", "--count", "--first-parent", f"{commit}..HEAD").strip())
 
 
 def changed_paths_in(repo_dir: Path | str, commit: str) -> list[str]:

@@ -26,7 +26,7 @@ from .client import (
 )
 from .config import FabdepConfig
 from .detect import ParameterDetector
-from .git import changed_paths_in, latest_pr_commit
+from .git import changed_paths_in, commits_after, latest_pr_commit
 from .identity import apply_auth_settings, fabric_credential
 from .log import get_logger, patch_fabric_cicd_logger
 from .params import (
@@ -418,7 +418,8 @@ class WorkspaceDeployer:
         to avoid.
 
         Raises:
-            RuntimeError: If no PR commit is found, or it touched no item.
+            RuntimeError: If no PR commit is found, HEAD is past it, or it
+                touched no item.
         """
         if pr == PR_HEAD:
             found = latest_pr_commit(self._repo_dir_resolved)
@@ -430,6 +431,14 @@ class WorkspaceDeployer:
                     "<commit-ish>."
                 )
             sha, subject = found
+            # Commits on top of it (a rebase merge, a direct push) mean the newest
+            # PR-worded commit is an older pull request than the one HEAD brought.
+            if newer := commits_after(self._repo_dir_resolved, sha):
+                raise RuntimeError(
+                    f"--pr: HEAD is {newer} commit(s) past the newest pull-request commit "
+                    f"{sha[:8]} ({subject}), so that commit is not what this checkout "
+                    "brought in. Pass the commit whose changes should deploy: --pr <commit>."
+                )
         else:
             sha, subject = pr, ""
 
@@ -469,8 +478,8 @@ class WorkspaceDeployer:
 
         Raises:
             RuntimeError: If `pr` is combined with `include_items`, no PR commit
-                is found, the PR touched no deployable item, or no
-                `include_items` entry names a repo item.
+                is found or HEAD is past it, the PR touched no deployable item,
+                or no `include_items` entry names a repo item.
         """
         if pr:
             if include_items:

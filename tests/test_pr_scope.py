@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from fabric_deploy.git import changed_paths_in, current_branch, latest_pr_commit
+from fabric_deploy.git import changed_paths_in, commits_after, current_branch, latest_pr_commit
 from fabric_deploy.scope import items_for_changed_paths
 
 from .conftest import make_item
@@ -103,6 +103,20 @@ class TestLatestPrCommit:
         _git(repo, "merge", "--no-ff", "-m", message, "feature")
         assert latest_pr_commit(repo) == (pr, "Merged PR 1: earlier")
 
+    def test_commits_a_merged_branch_brought_in_are_not_the_pr_commit(self, tmp_path: Path):
+        """Only the deployed branch's own history counts: a PR-worded commit that a
+        local merge brought in from another branch is not this branch's PR."""
+        repo = _repo(tmp_path)
+        (repo / "a.txt").write_text("a")
+        pr = _commit(repo, "Merged PR 1: earlier")
+        _git(repo, "checkout", "-b", "feature")
+        (repo / "b.txt").write_text("b")
+        _commit(repo, "feat: cherry-picked work (#5)")
+        _git(repo, "checkout", "main")
+        _git(repo, "merge", "--no-ff", "-m", "Merge branch 'feature'", "feature")
+        assert latest_pr_commit(repo) == (pr, "Merged PR 1: earlier")
+        assert commits_after(repo, pr) == 1
+
     def test_most_recent_pr_wins(self, tmp_path: Path):
         repo = _repo(tmp_path)
         (repo / "a.txt").write_text("a")
@@ -112,6 +126,16 @@ class TestLatestPrCommit:
         found = latest_pr_commit(repo)
         assert found is not None
         assert found[0] == sha
+
+    def test_commits_after_counts_what_head_has_on_top(self, tmp_path: Path):
+        repo = _repo(tmp_path)
+        (repo / "a.txt").write_text("a")
+        pr = _commit(repo, "Merged PR 1: add a")
+        assert commits_after(repo, pr) == 0
+        for name in ("b", "c"):
+            (repo / f"{name}.txt").write_text(name)
+            _commit(repo, f"chore: direct push {name}")
+        assert commits_after(repo, pr) == 2
 
 
 # --- changed paths ---------------------------------------------------------
@@ -274,6 +298,10 @@ def deployer(tmp_path: Path, mock_fabric_api):
 
 
 class TestItemsFromPr:
+    @pytest.fixture(autouse=True)
+    def _head_is_the_pr_commit(self, monkeypatch):
+        monkeypatch.setattr("fabric_deploy.workspace.commits_after", lambda _d, _c: 0)
+
     def test_resolves_to_the_items_the_pr_touched(self, deployer, monkeypatch):
         monkeypatch.setattr(
             "fabric_deploy.workspace.latest_pr_commit",
@@ -284,6 +312,21 @@ class TestItemsFromPr:
             lambda _d, _c: ["Load GL.Notebook/notebook-content.py", "README.md"],
         )
         assert deployer._items_from_pr("HEAD") == ["Load GL.Notebook"]
+
+    def test_head_past_the_pr_commit_is_an_error(self, deployer, monkeypatch):
+        """After a rebase merge or a direct push, the newest PR-worded commit is an
+        older PR: deploying its items would redeploy that PR, not what HEAD brought."""
+        monkeypatch.setattr(
+            "fabric_deploy.workspace.latest_pr_commit",
+            lambda _d: ("abc123def", "Merged PR 7: gl fix"),
+        )
+        monkeypatch.setattr("fabric_deploy.workspace.commits_after", lambda _d, _c: 3)
+        monkeypatch.setattr(
+            "fabric_deploy.workspace.changed_paths_in",
+            lambda _d, _c: pytest.fail("should stop before reading the older PR's changes"),
+        )
+        with pytest.raises(RuntimeError, match=r"3 commit\(s\) past.*--pr <commit>"):
+            deployer._items_from_pr("HEAD")
 
     def test_explicit_commit_skips_the_search(self, deployer, monkeypatch):
         monkeypatch.setattr(
