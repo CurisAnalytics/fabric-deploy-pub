@@ -318,3 +318,15 @@ class TestCommandErrors:
             _parse(monkeypatch, *command, str(tmp_path / "missing"))
         assert exc.value.code == 2
         assert "no such directory" in capsys.readouterr().err
+
+    def test_errors_go_to_stderr(self, capsys):
+        from fabric_deploy.cli import handle_command_error
+
+        with pytest.raises(SystemExit):
+            handle_command_error(
+                RuntimeError("Failed to list workspaces (HTTP 403)."), "Deployment"
+            )
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "Deployment failed: Failed to list workspaces (HTTP 403)." in captured.err
+        assert "Contributor" in captured.err

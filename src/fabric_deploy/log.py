@@ -7,6 +7,7 @@ and error classification for the CLI's troubleshooting output.
 
 import logging
 import re
+import sys
 from collections.abc import Iterator
 
 from azure.core.exceptions import ClientAuthenticationError
@@ -211,8 +212,8 @@ def get_logger(name: str) -> logging.Logger:
 
 
 def print_error(message: str) -> None:
-    """Print error message without log prefix (useful for stack traces, etc)."""
-    print(f"{Fore.RED}{message}{Style.RESET_ALL}")
+    """Print an error message to stderr, without a log prefix."""
+    print(f"{Fore.RED}{message}{Style.RESET_ALL}", file=sys.stderr)
 
 
 def is_connection_error(error_msg: str) -> bool:
