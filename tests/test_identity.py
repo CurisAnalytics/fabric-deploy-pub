@@ -217,6 +217,15 @@ class TestRelay:
             assert fabric_credential().get_token(FABRIC_SCOPE).token == token
         assert caplog.text.count("FABRIC_BEARER_TOKEN") == 1
 
+    @pytest.mark.parametrize("powerbi_set", [True, False])
+    def test_power_bi_prefers_its_own_token(self, monkeypatch, powerbi_set):
+        fabric, powerbi = make_jwt(aud="fabric"), make_jwt(aud="powerbi")
+        monkeypatch.setenv("FABRIC_BEARER_TOKEN", fabric)
+        if powerbi_set:
+            monkeypatch.setenv("POWERBI_BEARER_TOKEN", powerbi)
+        assert get_access_token(POWERBI_SCOPE) == (powerbi if powerbi_set else fabric)
+        assert get_access_token(FABRIC_SCOPE) == fabric
+
     def test_other_scopes_still_sign_in(self, monkeypatch, credential):
         monkeypatch.setenv("FABRIC_BEARER_TOKEN", make_jwt())
         _ = get_access_token("https://storage.azure.com/.default")
