@@ -176,3 +176,28 @@ class TestBanner:
             log_banner(logging.getLogger("fabric_deploy.test"), "Options: (defaults)")
         assert any(f"fabdep v{__version__}" in r.message for r in caplog.records)
         assert caplog.records[-1].message == "Options: (defaults)"
+
+
+def _parse(monkeypatch, *argv: str):
+    from fabric_deploy.cli import parse_args
+
+    monkeypatch.setattr(sys, "argv", ["fabdep", *argv])
+    return parse_args()
+
+
+class TestHelp:
+    def test_top_level_help_shows_the_deploy_options(self, monkeypatch, capsys):
+        with pytest.raises(SystemExit) as exc:
+            _parse(monkeypatch, "-h")
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        for flag in ("--item-types", "--include-items", "--branch", "--auth", "--frame", "--pr"):
+            assert flag in out
+        for command in ("auth", "detect", "refresh", "rls"):
+            assert command in out
+
+    @pytest.mark.parametrize("command", [["deploy"], ["refresh"], ["rls", "pull"]])
+    def test_target_options_are_shared(self, monkeypatch, command):
+        args = _parse(monkeypatch, *command, "-b", "prod", "-i", "M.SemanticModel", "--auth", "env")
+        assert (args.branch, args.include_items, args.auth) == ("prod", ["M.SemanticModel"], "env")
+        assert args.directory == Path(".")

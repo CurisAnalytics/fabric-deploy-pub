@@ -29,6 +29,8 @@ from .log import (
 )
 from .workspace import PR_HEAD, WorkspaceDeployer
 
+_TOP_LEVEL_FLAGS = ("-h", "--help", "-V", "--version")
+
 
 def format_deploy_options(
     branch_override: str | None = None,
@@ -152,64 +154,72 @@ def handle_command_error(error: Exception, context: str) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse command-line arguments."""
+    """Parse the command line; anything that isn't a command runs `deploy`."""
     from . import __version__
 
-    parser = argparse.ArgumentParser(
-        prog="fabdep",
-        description="Deploy Fabric workspace items - auto-detects configuration from parameter.yml",
-        epilog="Run from your Fabric workspace directory.",
+    # Shared arguments, layered: the directory (every command), the credential
+    # (commands that call Fabric), and the target (commands that act on items).
+    repo = argparse.ArgumentParser(add_help=False)
+    _ = repo.add_argument(
+        "directory",
+        nargs="?",
+        default=".",
+        type=Path,
+        help="Workspace directory (default: the current directory)",
     )
-    parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
-
-    subparsers = parser.add_subparsers(
-        dest="command", help="Available commands (defaults to 'deploy')"
-    )
-
-    # Shared by every command that calls Fabric.
-    auth_flag = argparse.ArgumentParser(add_help=False)
-    _ = auth_flag.add_argument(
+    signed_in = argparse.ArgumentParser(add_help=False, parents=[repo])
+    _ = signed_in.add_argument(
         "--auth",
         choices=AUTH_MODES,
         help="Credential to sign in with (default: $FABDEP_AUTH, then fabdep.yml 'auth:', then cli)",
     )
-
-    auth_parser = subparsers.add_parser("auth", help="Show how fabdep authenticates")
-    auth_subparsers = auth_parser.add_subparsers(
-        dest="auth_command", required=True, help="Auth actions"
+    target = argparse.ArgumentParser(add_help=False, parents=[signed_in])
+    _ = target.add_argument(
+        "-b",
+        "--branch",
+        help="Branch whose workspace to target (default: the checked-out branch)",
     )
-    status_parser = auth_subparsers.add_parser(
+    _ = target.add_argument(
+        "-i",
+        "--include-items",
+        nargs="+",
+        metavar="ITEM",
+        help="Only these items, as '<displayName>.<ItemType>' (refresh and rls take "
+        "semantic models, with or without the '.SemanticModel' suffix)",
+    )
+
+    parser = argparse.ArgumentParser(
+        prog="fabdep",
+        description="Deploy Microsoft Fabric workspace items from git with fabric-cicd.\n"
+        "The target workspace comes from fabdep.yml in the workspace directory.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _ = parser.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
+    commands = parser.add_subparsers(dest="command", title="commands", metavar="COMMAND")
+
+    auth = commands.add_parser("auth", help="Show the identity fabdep signs in with")
+    auth_commands = auth.add_subparsers(dest="auth_command", required=True, metavar="ACTION")
+    _ = auth_commands.add_parser(
         "status",
-        parents=[auth_flag],
+        parents=[signed_in],
         help="Sign in and show the identity, tenant, credential and token type fabdep would use",
     )
-    _ = status_parser.add_argument(
-        "directory",
-        nargs="?",
-        default=".",
-        type=Path,
-        help="Workspace directory whose fabdep.yml applies (defaults to current directory)",
-    )
 
-    detect_parser = subparsers.add_parser(
+    detect = commands.add_parser(
         "detect",
-        help="Detect source IDs from workspace files",
-        description="Auto-detect workspace, lakehouse, and connection IDs from repository files",
+        parents=[repo],
+        help="Show the source IDs a deploy would rewrite",
+        description="Find the workspace, lakehouse and connection IDs in the repo's item "
+        "files and the replacement each one gets on deploy.",
     )
-    _ = detect_parser.add_argument(
-        "directory",
-        nargs="?",
-        default=".",
-        type=Path,
-        help="Workspace directory (defaults to current directory)",
-    )
-    _ = detect_parser.add_argument(
-        "--save",
+    _ = detect.add_argument(
         "-s",
+        "--save",
         action="store_true",
-        help="Save detected parameters to parameter.yml.detected (uses smart replace format)",
+        help="Also write the replacements to parameter.yml.detected, as a fabric-cicd "
+        "parameter file",
     )
-    _ = detect_parser.add_argument(
+    _ = detect.add_argument(
         "--source-workspace-id",
         dest="source_workspace_ids",
         action="append",
@@ -219,96 +229,80 @@ def parse_args() -> argparse.Namespace:
         "sibling workspaces itself)",
     )
 
-    deploy_parser = subparsers.add_parser(
+    deploy = commands.add_parser(
         "deploy",
-        parents=[auth_flag],
-        help="Deploy Fabric workspace items (default command)",
-        description="Deploy Fabric workspace items - auto-detects configuration from parameter.yml",
+        parents=[target],
+        help="Deploy the workspace (the default command)",
+        description="Publish the directory's items to the workspace fabdep.yml names for the "
+        "branch, rewriting the source IDs detection finds, then unpublish the workspace's "
+        "items that the repo doesn't contain (see --no-cleanup).",
     )
-    _ = deploy_parser.add_argument(
-        "directory",
-        nargs="?",
-        default=".",
-        type=Path,
-        help="Workspace directory (defaults to current directory)",
-    )
-    _ = deploy_parser.add_argument(
-        "--no-cleanup",
-        "-n",
-        action="store_true",
-        help="Skip unpublishing orphaned items",
-    )
-    _ = deploy_parser.add_argument(
-        "--item-types",
+    _ = deploy.add_argument(
         "-t",
+        "--item-types",
         nargs="+",
-        help="Item types to deploy (e.g., Notebook DataPipeline)",
+        metavar="TYPE",
+        help="Only these item types (e.g. Notebook DataPipeline)",
     )
-    _ = deploy_parser.add_argument(
-        "--exclude-types",
+    _ = deploy.add_argument(
         "-x",
+        "--exclude-types",
         nargs="+",
-        help="Item types to exclude (e.g., Report SemanticModel)",
+        metavar="TYPE",
+        help="All item types but these (e.g. Report SemanticModel)",
     )
-    _ = deploy_parser.add_argument(
-        "--include-items",
-        "-i",
-        nargs="+",
-        help='Specific items only (format: "display_name.ItemType")',
-    )
-    _ = deploy_parser.add_argument(
-        "--branch",
-        "-b",
-        help="Override git branch for workspace resolution",
-    )
-    _ = deploy_parser.add_argument(
+    _ = deploy.add_argument(
         "--pr",
         nargs="?",
         const=PR_HEAD,
         metavar="COMMIT",
-        help="Deploy only the items the latest pull request touched, instead "
-        "of reading the diff by hand. Finds the most recent pull-request commit "
-        "reachable from HEAD (as Azure DevOps, GitHub, GitLab or Bitbucket word "
-        "it; a plain merge commit doesn't count), maps its changed files onto "
-        "the items that own them, and filters the deploy to those. Pass a "
-        "commit-ish to use a specific PR commit. Mutually exclusive with "
-        "--include-items.",
+        help="Deploy only the items a pull request changed: those of the newest "
+        "pull-request commit reachable from HEAD (as Azure DevOps, GitHub, GitLab or "
+        "Bitbucket word it; a plain merge commit doesn't count), or of COMMIT. Not with -i.",
     )
-    _ = deploy_parser.add_argument(
-        "--new-workspace",
+    _ = deploy.add_argument(
+        "-n",
+        "--no-cleanup",
+        action="store_true",
+        help="Don't unpublish workspace items that the repo doesn't contain",
+    )
+    _ = deploy.add_argument(
         "-N",
+        "--new-workspace",
         action="store_true",
         help="Create the target workspace; fails if it already exists (to create it only "
         "when missing, set 'create: true' for the branch under 'environments:' in fabdep.yml)",
     )
-    _ = deploy_parser.add_argument(
-        "--skip-lakehouse",
+    _ = deploy.add_argument(
         "-L",
+        "--skip-lakehouse",
         action="store_true",
-        help="Skip lakehouse parameter replacement (for feature branches sharing dev lakehouse)",
+        help="Leave lakehouse references unchanged (for a feature-branch workspace that "
+        "reads the dev workspace's lakehouse)",
     )
-    _ = deploy_parser.add_argument(
-        "--fail-on-stale",
+    _ = deploy.add_argument(
         "-F",
+        "--fail-on-stale",
         action="store_true",
-        help="Exit non-zero if any notebook has multiple lakehouses attached "
-        "(for CI / autonomous agent loops where the warning would get buried)",
+        help="Fail instead of warning when a notebook's warehouse attachment can't be "
+        "remapped to the target workspace (for CI, where a warning goes unnoticed)",
     )
-    _ = deploy_parser.add_argument(
+    _ = deploy.add_argument(
         "--frame",
         action="store_true",
         help="After deploy, frame the Direct Lake model(s): sync SQL endpoint "
         "-> refresh -> poll -> surface the first framing error",
     )
-    _ = deploy_parser.add_argument(
+    _ = deploy.add_argument(
         "--allow-rls-change",
         action="store_true",
-        help="Permit a deploy to change a model's live row-level security. "
-        "By default, if the repo carries RLS and the target's live RLS differs, "
-        "the deploy is blocked (someone may have edited RLS directly in the "
-        "target). Role memberships are never read or changed.",
+        help="Deploy even if it changes a semantic model's live row-level security. By "
+        "default every in-scope model's roles are compared with the target's, and any "
+        "difference blocks the deploy: a changed or removed role (also when the repo has "
+        "no roles for the model), or a changed role PBI_Id, which makes the service "
+        "recreate the role without its members.",
     )
-    _ = deploy_parser.add_argument(
+    _ = deploy.add_argument(
         "--allow-unbound-udf",
         action="store_true",
         help="Deploy report buttons whose User Data Function reference could "
@@ -317,102 +311,54 @@ def parse_args() -> argparse.Namespace:
         "because it would ship still calling the SOURCE workspace's function.",
     )
 
-    refresh_parser = subparsers.add_parser(
+    refresh = commands.add_parser(
         "refresh",
-        parents=[auth_flag],
-        help="Frame a Direct Lake semantic model (sync SQL endpoint -> refresh -> poll)",
-        description="Sync the SQL analytics endpoint metadata, then refresh and "
-        "poll the semantic model(s), surfacing the first framing error.",
+        parents=[target],
+        help="Refresh semantic models in the target workspace (Direct Lake framing)",
+        description="Sync the SQL analytics endpoints the models' Direct Lake tables read, "
+        "then refresh each semantic model and wait for it, failing on the first refresh "
+        "error. Without -i, every semantic model in the repo.",
     )
-    _ = refresh_parser.add_argument(
-        "directory",
-        nargs="?",
-        default=".",
-        type=Path,
-        help="Workspace directory (defaults to current directory)",
-    )
-    _ = refresh_parser.add_argument(
-        "--include-items",
-        "-i",
-        nargs="+",
-        help="Semantic model display name(s) to frame (default: all in repo); "
-        "a trailing '.SemanticModel' is tolerated to match deploy -i",
-    )
-    _ = refresh_parser.add_argument(
-        "--branch",
-        "-b",
-        help="Override git branch for workspace resolution",
-    )
-    _ = refresh_parser.add_argument(
+    _ = refresh.add_argument(
         "--no-sync",
         action="store_true",
-        help="Skip the SQL analytics endpoint metadata sync",
+        help="Skip syncing the SQL analytics endpoints the Direct Lake models read",
     )
-    _ = refresh_parser.add_argument(
+    _ = refresh.add_argument(
         "--timeout",
         type=int,
         default=900,
         help="Per-model refresh poll timeout in seconds (default: 900)",
     )
 
-    rls_parser = subparsers.add_parser(
+    rls = commands.add_parser(
         "rls",
-        help="Inspect/reconcile row-level security (role definitions) vs the target",
-        description="Read a semantic model's live RLS role definitions and compare "
-        "them to the repo. Definitions only — role memberships are Service state "
-        "and are never read or changed.",
+        help="Compare row-level security roles with the target",
+        description="Compare the repo's row-level security role definitions with the "
+        "target's. Role memberships are not part of a model definition: they can't be "
+        "compared or restored from the repo, and a deploy that removes a role or changes "
+        "its PBI_Id drops its members.",
     )
-    rls_subparsers = rls_parser.add_subparsers(
-        dest="rls_command", required=True, help="RLS actions"
-    )
-    rls_pull_parser = rls_subparsers.add_parser(
+    rls_commands = rls.add_subparsers(dest="rls_command", required=True, metavar="ACTION")
+    rls_pull = rls_commands.add_parser(
         "pull",
-        parents=[auth_flag],
+        parents=[target],
         help="Diff the target's RLS roles against the repo; --write to adopt them",
     )
-    _ = rls_pull_parser.add_argument(
-        "directory",
-        nargs="?",
-        default=".",
-        type=Path,
-        help="Workspace directory (defaults to current directory)",
-    )
-    _ = rls_pull_parser.add_argument(
-        "--include-items",
-        "-i",
-        nargs="+",
-        help="Semantic model display name(s) to check (default: all in repo); "
-        "a trailing '.SemanticModel' is tolerated to match deploy -i",
-    )
-    _ = rls_pull_parser.add_argument(
-        "--branch",
-        "-b",
-        help="Override git branch for workspace resolution",
-    )
-    _ = rls_pull_parser.add_argument(
+    _ = rls_pull.add_argument(
         "--write",
         action="store_true",
         help="Overwrite the working tree's roles to match the target "
         "(for review + commit); default is diff-only (exit non-zero on drift)",
     )
 
-    # argparse can't natively pick a default subparser or treat unknown
-    # leading args as a subcommand's options — so resolve it ourselves
-    # and feed argparse a normalized argv.
-    known_commands = {"auth", "deploy", "detect", "refresh", "rls"}
-    help_flags = {"-h", "--help", "-V", "--version"}
+    parser.epilog = "With no command, fabdep runs deploy:\n\n" + deploy.format_help()
 
-    raw = sys.argv[1:]
-    head = raw[0] if raw else None
-
-    if head is None:
-        argv = ["deploy"]
-    elif head in known_commands or head in help_flags:
-        argv = raw
-    else:
-        # `fabdep -t Notebook`, `fabdep .`, etc. — treat as deploy options.
-        argv = ["deploy", *raw]
-
+    # argparse has no default subcommand: anything that isn't a command or a
+    # top-level flag is the deploy command's arguments.
+    argv = sys.argv[1:]
+    if not argv or (argv[0] not in commands.choices and argv[0] not in _TOP_LEVEL_FLAGS):
+        argv = ["deploy", *argv]
     return parser.parse_args(argv)
 
 
