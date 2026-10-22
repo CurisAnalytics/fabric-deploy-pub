@@ -100,22 +100,44 @@ def test_find_item_ambiguous_raises(monkeypatch):
 # --- refresh_semantic_model poll loop ------------------------------------
 
 
-def test_refresh_semantic_model_polls_until_completed(monkeypatch):
-    monkeypatch.setattr("fabric_deploy.client.time.sleep", lambda _s: None)
-    gets = {"n": 0}
+def _refresh(monkeypatch, post_headers, states):
+    """Fake the refresh POST and its polls; return the ordered sleep/poll events."""
+    events: list[str] = []
+    polls = iter(states)
+    monkeypatch.setattr("fabric_deploy.client.time.sleep", lambda s: events.append(f"sleep {s}"))
 
     def fake_http(url, method="GET", data=None, scope=None, error_context=""):
         if method == "POST":
-            return 202, {"location": "https://api.powerbi.com/r/req1"}, {}
-        gets["n"] += 1
-        if gets["n"] == 1:
-            return 200, {}, {"status": "Unknown"}  # no endTime -> in progress
-        return 200, {}, {"status": "Completed"}
+            return 202, post_headers, {}
+        events.append(f"poll {url}")
+        return 200, {}, next(polls)
 
     monkeypatch.setattr("fabric_deploy.client.http_request", fake_http)
-    detail = refresh_semantic_model("ws", "ds", timeout_s=100, poll_s=1)
+    return events
+
+
+def test_refresh_semantic_model_polls_until_terminal(monkeypatch):
+    events = _refresh(
+        monkeypatch,
+        {"location": "https://api.powerbi.com/r/req1"},
+        [{"status": "NotStarted"}, {"status": "Unknown"}, {"status": "Completed"}],
+    )
+    detail = refresh_semantic_model("ws", "ds", timeout_s=100, poll_s=3)
     assert detail["status"] == "Completed"
-    assert gets["n"] == 2
+    # NotStarted and Unknown-without-endTime are in progress; every poll waits first.
+    assert events == ["sleep 3", "poll https://api.powerbi.com/r/req1"] * 3
+
+
+def test_refresh_semantic_model_returns_failed_detail(monkeypatch):
+    _refresh(monkeypatch, {"location": "https://r/1"}, [{"status": "Failed"}])
+    assert refresh_semantic_model("ws", "ds", poll_s=1)["status"] == "Failed"
+
+
+def test_refresh_semantic_model_needs_a_refresh_id(monkeypatch):
+    """`RequestId` is a per-call trace id on every response, not the refresh id."""
+    _refresh(monkeypatch, {"requestid": "trace-1"}, [])
+    with pytest.raises(RuntimeError, match="no Location"):
+        refresh_semantic_model("ws", "ds")
 
 
 # --- get_semantic_model_definition -----------------------------------------
