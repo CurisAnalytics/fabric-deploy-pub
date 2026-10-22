@@ -24,16 +24,32 @@ __all__ = [
 ]
 
 
+def for_environment(replace_value: str | dict, environment: str) -> str | None:
+    """The replacement `replace_value` gives `environment`, or None.
+
+    A string applies everywhere. A mapping is looked up by environment name,
+    then by its `_ALL_` key (any case), as fabric-cicd reads parameter.yml.
+    """
+    if not isinstance(replace_value, dict):
+        return replace_value
+    if environment in replace_value:
+        return replace_value[environment]
+    return next((v for k, v in replace_value.items() if str(k).lower() == "_all_"), None)
+
+
 def apply_manual_overrides(
-    detector: ParameterDetector, manual_params: list[dict], logger: logging.Logger
+    detector: ParameterDetector,
+    manual_params: list[dict],
+    logger: logging.Logger,
+    environment: str,
 ) -> int:
-    """Apply fabdep.yml manual_parameters onto the detected parameter set.
+    """Apply fabdep.yml manual_parameters for `environment` onto the detected set.
 
     Two modes per entry, keyed on whether the find_value was auto-detected:
 
-    - **Override** (the original behavior): the find_value was auto-detected but
-      points at an external resource — replace_value (and optionally an
-      item_type scope) override the detected dynamic variable.
+    - **Override**: the find_value was auto-detected — replace_value (and
+      optionally an item_type scope) replace the detected rule. An override
+      with no value for this environment leaves the detected rule in place.
     - **Injection**: the find_value wasn't auto-detected but does occur
       literally in the repo's item files — detection just doesn't understand
       that context (e.g. a PowerApp app id embedded in report JSON). The entry
@@ -41,104 +57,56 @@ def apply_manual_overrides(
 
     An entry whose find_value appears in no item file is skipped with a warning:
     that's a typo or a stale entry, and emitting it would silently no-op at
-    deploy time. Presence in the repo — not presence in the detector — is the
-    typo gate.
+    deploy time. Presence in the repo's item files (the set fabric-cicd applies
+    find_replace to; fabdep.yml itself is not one) is the typo gate.
 
     Returns the number of parameters overridden or injected.
     """
-    if not manual_params:
-        return 0
-
-    undetected: list[dict] = []
-    count = 0
-    for param in manual_params:
-        find_value = param.get("find_value")
-        replace_value = param.get("replace_value")
-        description = param.get("description")
-        item_type = param.get("item_type")
-
-        if not find_value or not replace_value:
+    entries = []
+    for entry in manual_params:
+        if not entry.get("find_value") or not entry.get("replace_value"):
             logger.warning("Skipping manual parameter with missing find_value or replace_value")
             continue
-
-        if find_value in detector.parameters:
-            param_obj = detector.parameters[find_value]
-
-            # replace_value may be a string or an env-keyed dict ({env: "value"}).
-            if isinstance(replace_value, dict):
-                replace_value = next(iter(replace_value.values()))
-            param_obj.dynamic_variable = replace_value
-
-            if item_type:
-                param_obj.item_types = (
-                    set(item_type) if isinstance(item_type, list) else {item_type}
-                )
-                logger.debug(f"Manual item_type override for {find_value}: {item_type}")
-
-            if description:
-                param_obj.description = f"{param_obj.description} (manual override: {description})"
-            param_obj.source_files.add("fabdep.yml (manual override)")
-            count += 1
-            logger.debug(f"Manual override for {find_value}: {replace_value}")
-
-        else:
-            undetected.append(param)
-
-    count += _inject_undetected_params(detector, undetected, logger)
-    return count
-
-
-def _inject_undetected_params(
-    detector: ParameterDetector, entries: list[dict], logger: logging.Logger
-) -> int:
-    """Inject manual_parameters whose find_value detection didn't see.
-
-    Each value is validated by a literal scan of the repo's item files
-    (`detect.find_in_item_files`: the file set fabric-cicd applies
-    find_replace to, excluding repo-root files like fabdep.yml so an entry
-    can't match itself).
-
-    Returns the number of parameters injected.
-    """
-    if not entries:
-        return 0
-
-    matches = find_in_item_files(detector.repo_dir, [e["find_value"] for e in entries])
+        entries.append(entry)
+    found = find_in_item_files(
+        detector.repo_dir,
+        [e["find_value"] for e in entries if e["find_value"] not in detector.parameters],
+    )
 
     count = 0
     for entry in entries:
         find_value = entry["find_value"]
-        replace_value = entry["replace_value"]
-        found_in = matches[find_value]
-
-        if not found_in:
+        param = detector.parameters.get(find_value)
+        if param is None and not found[find_value]:
             logger.warning(
                 f"Manual parameter '{find_value}' not found in any item file — "
                 "skipped. Check for a typo or a stale entry; the find_value "
                 "must match the item source files exactly."
             )
             continue
-
-        # replace_value may be a string or an env-keyed dict ({env: "value"}).
-        if isinstance(replace_value, dict):
-            replace_value = next(iter(replace_value.values()))
-
-        param_obj = DetectedParameter(
-            find_value=find_value,
-            description=entry.get("description") or "Manual parameter",
-            dynamic_variable=replace_value,
-        )
-        item_type = entry.get("item_type")
-        if item_type:
-            param_obj.item_types = set(item_type) if isinstance(item_type, list) else {item_type}
-        param_obj.source_files = found_in | {"fabdep.yml (manual injection)"}
-        detector.parameters[find_value] = param_obj
+        value = for_environment(entry["replace_value"], environment)
+        if value is None:
+            logger.info(
+                f"Manual parameter '{find_value}' has no replace_value for "
+                f"environment '{environment}' — not applied."
+            )
+            continue
+        if param is None:
+            param = DetectedParameter(
+                find_value=find_value,
+                description=entry.get("description") or "Manual parameter",
+                source_files=set(found[find_value]),
+            )
+            detector.parameters[find_value] = param
+            logger.info(
+                f"Manual parameter injected ({len(found[find_value])} item file(s) match): "
+                f"{find_value} -> {value}"
+            )
+        param.dynamic_variable = value
+        if item_type := entry.get("item_type"):
+            param.item_types = {item_type} if isinstance(item_type, str) else set(item_type)
+        param.source_files.add("fabdep.yml")
         count += 1
-        logger.info(
-            f"Manual parameter injected ({len(found_in)} item file(s) match): "
-            f"{find_value} -> {replace_value}"
-        )
-
     return count
 
 
@@ -267,6 +235,7 @@ class ParameterFile:
         self,
         detector: ParameterDetector,
         workspace_id: str,
+        environment: str,
         manual_count: int,
         skipped_lakehouse_count: int,
     ) -> None:
@@ -308,7 +277,7 @@ class ParameterFile:
             _ = param_file.rename(backup_file)
             summary.append(f"Backed up existing parameter.yml to {backup_file.name}")
 
-        detector.save_parameter_yml(output_path=param_file, environment="fabdep")
+        detector.save_parameter_yml(output_path=param_file, environment=environment)
         self.created = True
 
         external_count = max(total - dyns, 0)

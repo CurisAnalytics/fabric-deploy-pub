@@ -429,7 +429,7 @@ def handle_detect_command(args: argparse.Namespace) -> None:
 
         if args.save:
             output_file = Path(args.directory) / "parameter.yml.detected"
-            detector.save_parameter_yml(output_path=output_file, environment="prod")
+            detector.save_parameter_yml(output_path=output_file)
 
             with_dynamic = sum(1 for p in detector.parameters.values() if p.dynamic_variable)
             total = len(detector.parameters)

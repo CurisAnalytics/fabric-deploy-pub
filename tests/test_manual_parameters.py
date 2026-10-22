@@ -63,7 +63,7 @@ class TestManualParameters:
 
         param = d._detector.parameters[DETECTED_UUID]
         assert param.dynamic_variable == "kept-as-external"
-        assert "manual override: external workspace" in param.description
+        assert "fabdep.yml" in param.source_files
         assert d._manual_count == 1
 
     def test_value_absent_from_repo_logs_warning_and_does_not_add(
@@ -113,7 +113,7 @@ class TestManualParameters:
         assert param.item_types == {"Report"}
         assert param.description == "PowerApp link"
         assert "r1.Report/definition/pages/p1/visual.json" in param.source_files
-        assert "fabdep.yml (manual injection)" in param.source_files
+        assert "fabdep.yml" in param.source_files
         assert d._manual_count == 1
 
         # And it survives into the emitted find_replace structure.
@@ -123,7 +123,7 @@ class TestManualParameters:
             if e["find_value"] == UNRELATED_UUID
         )
         assert entry["item_type"] == ["Report"]
-        assert entry["replace_value"] == {"prod": "new-app-guid"}
+        assert entry["replace_value"] == {"_ALL_": "new-app-guid"}
 
     def test_value_only_in_fabdep_yml_is_not_injected(
         self, tmp_path: Path, mock_fabric_api, caplog
@@ -167,8 +167,33 @@ class TestManualParameters:
 
         assert d._detector.parameters[DETECTED_UUID].item_types == expected
 
-    def test_dict_replace_value_extracts_first_value(self, tmp_path: Path, mock_fabric_api):
-        """When replace_value is given as {env: value}, take the value."""
+    @pytest.mark.parametrize(
+        ("branch", "expected"),
+        [("dev", "dev-value"), ("prod", "prod-value"), ("test", "any-value")],
+    )
+    def test_environment_keyed_replace_value(
+        self, tmp_path: Path, mock_fabric_api, branch: str, expected: str
+    ):
+        """A mapping picks the deploy environment's value, then `_ALL_`."""
+        _build_repo(
+            tmp_path,
+            'workspace_base_name: "ws"\n'
+            "manual_parameters:\n"
+            f'  - find_value: "{DETECTED_UUID}"\n'
+            "    replace_value:\n"
+            '      dev: "dev-value"\n'
+            '      prod: "prod-value"\n'
+            '      _ALL_: "any-value"\n',
+        )
+
+        d = WorkspaceDeployer(tmp_path, branch_override=branch)
+
+        assert d.environment == branch
+        assert d._detector.parameters[DETECTED_UUID].dynamic_variable == expected
+
+    def test_override_without_a_value_for_the_environment_keeps_the_detected_rule(
+        self, tmp_path: Path, mock_fabric_api
+    ):
         _build_repo(
             tmp_path,
             'workspace_base_name: "ws"\n'
@@ -179,6 +204,38 @@ class TestManualParameters:
         )
 
         d = WorkspaceDeployer(tmp_path, branch_override="dev")
+
+        assert d._detector.parameters[DETECTED_UUID].dynamic_variable == "$workspace.$id"
+        assert d._manual_count == 0
+
+    def test_injection_without_a_value_for_the_environment_is_skipped(
+        self, tmp_path: Path, mock_fabric_api
+    ):
+        _build_repo(
+            tmp_path,
+            'workspace_base_name: "ws"\n'
+            "manual_parameters:\n"
+            f'  - find_value: "{UNRELATED_UUID}"\n'
+            "    replace_value:\n"
+            '      prod: "prod-value"\n',
+        )
+        (tmp_path / "n1.Notebook" / "notebook-content.py").write_text(f"x = '{UNRELATED_UUID}'\n")
+
+        d = WorkspaceDeployer(tmp_path, branch_override="dev")
+
+        assert UNRELATED_UUID not in d._detector.parameters
+
+    def test_explicit_environment_overrides_the_branch(self, tmp_path: Path, mock_fabric_api):
+        _build_repo(
+            tmp_path,
+            'workspace_base_name: "ws"\n'
+            "manual_parameters:\n"
+            f'  - find_value: "{DETECTED_UUID}"\n'
+            "    replace_value:\n"
+            '      Production: "prod-value"\n',
+        )
+
+        d = WorkspaceDeployer(tmp_path, branch_override="main", environment="Production")
 
         assert d._detector.parameters[DETECTED_UUID].dynamic_variable == "prod-value"
 

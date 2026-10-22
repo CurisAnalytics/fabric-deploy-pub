@@ -346,7 +346,7 @@ class TestSemanticModelExtraction:
             e["find_value"]: e["replace_value"] for e in d.generate_parameter_yml()["find_replace"]
         }
         assert rules["HOST-AAAA.datawarehouse.pbidedicated.windows.net"] == {
-            "prod": "$items.Lakehouse.lh.$sqlendpoint"
+            "_ALL_": "$items.Lakehouse.lh.$sqlendpoint"
         }
         assert not any("pbidedicated" in str(v) for v in rules.values())
 
@@ -1388,3 +1388,15 @@ class TestSaveParameterYml:
         d.save_parameter_yml(out)
 
         assert yaml.safe_load(out.read_text(encoding="utf-8")) == d.generate_parameter_yml()
+
+    def test_rules_apply_to_every_environment_by_default(self, tmp_path: Path):
+        """A saved file is for the repo's own parameter.yml, used by every
+        environment: fabric-cicd's `_ALL_` key, not one environment's name."""
+        _make_lakehouse(tmp_path, "lh")
+        _make_notebook(tmp_path, "nb", _lakehouse_meta(WORKSPACE_ID, LAKEHOUSE_ID))
+        d = ParameterDetector(tmp_path)
+        out = tmp_path / "parameter.yml"
+        d.save_parameter_yml(out)
+
+        entries = yaml.safe_load(out.read_text(encoding="utf-8"))["find_replace"]
+        assert [list(e["replace_value"]) for e in entries] == [["_ALL_"], ["_ALL_"]]

@@ -139,6 +139,9 @@ class WorkspaceDeployer:
     new_workspace: bool = False  # Create workspace if it doesn't exist
     max_retries: int = 1  # Max retries for transient errors
     skip_lakehouse: bool = False  # Skip its parameter replacement (feature branch mode)
+    # fabric-cicd environment: selects environment-keyed replace_values and the
+    # Variable Library value set. Empty means the target branch name.
+    environment: str = ""
 
     # Configuration fields - auto-loaded in __post_init__
     workspace_id: str = field(init=False, repr=False)
@@ -188,6 +191,7 @@ class WorkspaceDeployer:
             self._repo_dir_resolved, branch_override=self.branch_override
         )
         self.workspace_name = self.config.workspace_name
+        self.environment = self.environment or self.config.branch
         self._apply_tenant_pin()
         self._resolve_workspace_id()
         self._resolve_source_anchors()
@@ -360,7 +364,7 @@ class WorkspaceDeployer:
                 )
 
         self._manual_count = apply_manual_overrides(
-            detector, self.config.manual_parameters, self.logger
+            detector, self.config.manual_parameters, self.logger, self.environment
         )
 
         # MountedWarehouse bindings need a literal GUID from the target
@@ -628,6 +632,7 @@ class WorkspaceDeployer:
             self._paramfile.write(
                 self._detector,
                 self.workspace_id,
+                self.environment,
                 self._manual_count,
                 self._skipped_lakehouse_count,
             )
@@ -691,7 +696,7 @@ class WorkspaceDeployer:
         target_workspace = FabricWorkspace(
             workspace_id=self.workspace_id,
             repository_directory=str(self._repo_dir_resolved),
-            environment="fabdep",
+            environment=self.environment,
             item_type_in_scope=item_types,
             token_credential=fabric_credential(),
         )

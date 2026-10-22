@@ -112,6 +112,9 @@ class TestFabricWorkspaceConstruction:
         # The resolved workspace id / repo dir are passed straight through.
         assert kwargs.get("workspace_id") == FAKE_WORKSPACE_ID
         assert kwargs.get("repository_directory") == str(deployer._repo_dir_resolved)
+        # The target branch is the fabric-cicd environment (Variable Library
+        # value sets, environment-keyed parameter.yml entries).
+        assert kwargs.get("environment") == "MAIN"
 
     def test_publish_called_with_returned_workspace(self, deployer):
         """publish_all_items must receive the FabricWorkspace instance, not a kwarg."""
@@ -327,7 +330,9 @@ class TestParameterFileWriter:
                 dynamic_variable="$items.Lakehouse.lh.$id",
             ),
         }
-        ParameterFile(tmp_path, deployer.logger).write(deployer._detector, FAKE_WORKSPACE_ID, 0, 0)
+        ParameterFile(tmp_path, deployer.logger).write(
+            deployer._detector, FAKE_WORKSPACE_ID, "MAIN", 0, 0
+        )
 
         # Both detected entries survive — scope no longer filters auto-detected.
         assert set(deployer._detector.parameters) == {wsid, lhid}
@@ -346,12 +351,15 @@ class TestParameterFileWriter:
                 dynamic_variable="$workspace.$id",
             ),
         }
-        ParameterFile(tmp_path, deployer.logger).write(deployer._detector, FAKE_WORKSPACE_ID, 0, 0)
+        ParameterFile(tmp_path, deployer.logger).write(
+            deployer._detector, FAKE_WORKSPACE_ID, "MAIN", 0, 0
+        )
 
         param_file = tmp_path / "parameter.yml"
         assert param_file.exists()
         data = yaml.safe_load(param_file.read_text())
         assert "item_type" not in data["find_replace"][0]
+        assert data["find_replace"][0]["replace_value"] == {"MAIN": "$workspace.$id"}
 
     def test_emitted_yaml_includes_item_type_for_manually_scoped_entries(self, deployer, tmp_path):
         """Manual overrides set item_types — those must round-trip into yaml."""
@@ -367,7 +375,9 @@ class TestParameterFileWriter:
                 dynamic_variable="$workspace.$id",
             ),
         }
-        ParameterFile(tmp_path, deployer.logger).write(deployer._detector, FAKE_WORKSPACE_ID, 0, 0)
+        ParameterFile(tmp_path, deployer.logger).write(
+            deployer._detector, FAKE_WORKSPACE_ID, "MAIN", 0, 0
+        )
 
         param_file = tmp_path / "parameter.yml"
         data = yaml.safe_load(param_file.read_text())

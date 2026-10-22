@@ -123,7 +123,7 @@ class DetectedParameter:
     description: str = ""
     dynamic_variable: str = ""
 
-    def to_dict(self, environment: str = "prod") -> dict:
+    def to_dict(self, environment: str = "_ALL_") -> dict:
         """The fabric-cicd find_replace entry, its replace_value keyed by `environment`."""
         entry: dict = {"find_value": self.find_value}
         if self.item_types:
@@ -855,17 +855,19 @@ class ParameterDetector:
         if not self._detected:
             self.detect_all()
 
-    def generate_parameter_yml(self, environment: str = "prod") -> dict:
+    def generate_parameter_yml(self, environment: str = "_ALL_") -> dict:
         """The find_replace document for every parameter with a replacement.
 
-        Parameters without one (external connections, cross-workspace
-        references, unresolved bindings) deploy unchanged and are left out.
+        Replacements are keyed by `environment`; the default `_ALL_` applies
+        them to whatever environment fabric-cicd deploys. Parameters without
+        one (external connections, cross-workspace references, unresolved
+        bindings) deploy unchanged and are left out.
         """
         self._ensure_detected()
         params = sorted(self.parameters.values(), key=lambda p: (p.description, p.find_value))
         return {"find_replace": [p.to_dict(environment) for p in params if p.dynamic_variable]}
 
-    def save_parameter_yml(self, output_path: Path | str, environment: str = "prod") -> None:
+    def save_parameter_yml(self, output_path: Path | str, environment: str = "_ALL_") -> None:
         """Write generate_parameter_yml(environment) to `output_path`."""
         document = self.generate_parameter_yml(environment)
         Path(output_path).write_text(
