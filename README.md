@@ -293,15 +293,16 @@ GitHub one (the job needs `permissions: id-token: write`):
     client-id: ${{ vars.AZURE_CLIENT_ID }}
     tenant-id: ${{ vars.AZURE_TENANT_ID }}
     allow-no-subscriptions: true
-- if: github.event_name == 'pull_request'
-  run: fabdep plan . --branch "$GITHUB_BASE_REF" --auth cli
+- if: github.event_name == 'pull_request'   # $GITHUB_SHA: the PR's merge commit
+  run: fabdep plan . --branch "$GITHUB_BASE_REF" --auth cli --pr "$GITHUB_SHA"
 - if: github.event_name == 'push'
   run: fabdep deploy . --branch "$GITHUB_REF_NAME" --auth cli --pr
 ```
 
-`--pr` needs the history: in a shallow clone it fails, asking you to fetch it, rather than
-deploying everything. As it never unpublishes, run a full `fabdep` from time to time to
-remove items deleted from the repo.
+The plan previews what the push's `--pr` deploys once the pull request is merged: the
+items it changes, nothing unpublished. `--pr` needs the history: in a shallow clone it
+fails, asking you to fetch it, rather than deploying everything. As it never unpublishes,
+run a full `fabdep` from time to time to remove items deleted from the repo.
 
 ## Output and troubleshooting
 

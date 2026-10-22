@@ -1,7 +1,7 @@
 # Deploys a Microsoft Fabric workspace from this repository with fabdep.
-# A pull request into main or dev gets a plan of what a deploy would change in the
-# workspace of the branch it merges into; a push to main or dev deploys the items
-# the merged pull request changed. Prerequisites: see examples/README.md.
+# A pull request into main or dev gets a plan of deploying the items it changes to the
+# workspace of the branch it merges into; once it is merged, the push to main or dev
+# deploys those items. Neither unpublishes anything. Prerequisites: see examples/README.md.
 #
 # Copy to .github/workflows/ in the workspace repository.
 name: Fabric workspace
@@ -20,7 +20,7 @@ env:
   # The folder holding fabdep.yml and the item folders, relative to the repository root.
   FABDEP_DIR: .
   # OWNER is a placeholder: fabric-deploy's public repository isn't settled yet.
-  # Pin a release by appending @<tag>.
+  # Pin a release by appending @<tag> (from the first public release on).
   FABDEP_PACKAGE: git+https://github.com/OWNER/fabric-deploy
 
 jobs:
@@ -32,6 +32,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # --pr reads the merge commit and its parent
       - uses: astral-sh/setup-uv@v6
       - run: uv tool install "$FABDEP_PACKAGE"
       - uses: azure/login@v2
@@ -40,8 +42,10 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           allow-no-subscriptions: true # the service principal needs no Azure subscription
       # --auth cli: sign in as the identity azure/login gave az, whatever fabdep.yml's
-      # auth: says. Add --output json for a plan other tools can read.
-      - run: fabdep plan "$FABDEP_DIR" --branch "$GITHUB_BASE_REF" --auth cli
+      # auth: says. --pr "$GITHUB_SHA": the merge commit GitHub builds for the pull
+      # request, so the plan shows what the deploy job's --pr will deploy after the
+      # merge. Add --output json for a plan other tools can read.
+      - run: fabdep plan "$FABDEP_DIR" --branch "$GITHUB_BASE_REF" --auth cli --pr "$GITHUB_SHA"
 
   deploy:
     if: github.event_name == 'push'
