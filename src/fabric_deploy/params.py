@@ -10,8 +10,9 @@ from __future__ import annotations
 import logging
 import shutil
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
@@ -28,7 +29,7 @@ __all__ = [
 ]
 
 
-def for_environment(replace_value: str | dict, environment: str) -> str | None:
+def for_environment(replace_value: str | dict[str, str], environment: str) -> str | None:
     """The replacement `replace_value` gives `environment`, or None.
 
     A string applies everywhere. A mapping is looked up by environment name,
@@ -45,7 +46,9 @@ def _is_str_list(value: object) -> bool:
     return isinstance(value, list) and all(isinstance(v, str) and v for v in value)
 
 
-def _manual_entries(manual_params: list) -> list[tuple[str, str | dict, set[str], str]]:
+def _manual_entries(
+    manual_params: Sequence[object],
+) -> list[tuple[str, str | dict[str, str], set[str], str]]:
     """(find_value, replace_value, item_types, description) for each find_value
     in fabdep.yml manual_parameters; a find_value list yields one per value.
 
@@ -84,7 +87,7 @@ def _manual_entries(manual_params: list) -> list[tuple[str, str | dict, set[str]
 
 def apply_manual_overrides(
     detector: ParameterDetector,
-    manual_params: list[dict],
+    manual_params: Sequence[object],
     logger: logging.Logger,
     environment: str,
 ) -> int:
@@ -261,7 +264,7 @@ def _plural(count: int, noun: str) -> str:
     return f"{count} {noun}{'s' if count != 1 else ''}"
 
 
-def _load_parameter_file(path: Path) -> dict:
+def _load_parameter_file(path: Path) -> dict[str, Any]:
     with path.open(encoding="utf-8-sig") as f:
         document = yaml.safe_load(f) or {}
     if not isinstance(document, dict) or not all(

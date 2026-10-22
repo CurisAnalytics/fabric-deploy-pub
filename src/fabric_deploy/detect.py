@@ -14,6 +14,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from typing import TypeGuard
 
 import yaml
 
@@ -248,7 +249,7 @@ class ParameterDetector:
         context_str = f" {context} from" if context else ""
         self.logger.warning(f"Failed to read{context_str} {file_path}: {error}")
 
-    def _is_id(self, value: object) -> bool:
+    def _is_id(self, value: object) -> TypeGuard[str]:
         """Whether `value` is a real item/workspace GUID (not the null placeholder)."""
         return (
             isinstance(value, str)
@@ -588,7 +589,7 @@ class ParameterDetector:
             for item in obj:
                 self._extract_connections_recursive(item, source_file)
 
-    def _anchor_workspace(self, ws_id: str, source_file: str | None = None) -> None:
+    def _anchor_workspace(self, ws_id: object, source_file: str | None = None) -> None:
         """Record `ws_id` as a workspace this repo's content was exported from.
 
         Anchors come from notebook attachments to repo lakehouses, Direct
@@ -651,7 +652,7 @@ class ParameterDetector:
                 param.description = kind
                 param.dynamic_variable = dynamic_variable
 
-    def _classify_workspace(self, ws_id, source_file: str) -> bool:
+    def _classify_workspace(self, ws_id: object, source_file: str) -> bool:
         """Remap or preserve a workspace id that no repo item of its own anchors.
 
         Returns True if the id already points at the deploy target: a source
