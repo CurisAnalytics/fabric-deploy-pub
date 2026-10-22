@@ -165,11 +165,6 @@ class ParameterDetector:
     # databases) or the bare item id (Direct Lake on a SQL endpoint).
     DB_ITEM_PATTERN = re.compile(rf"(?:(.+)-)?({UUID})", re.IGNORECASE)
 
-    WORKSPACE_ID_PATTERN = re.compile(
-        r'"default_lakehouse_workspace_id":\s*"([0-9a-f-]+)"', re.IGNORECASE
-    )
-    LAKEHOUSE_ID_PATTERN = re.compile(r'"default_lakehouse":\s*"([0-9a-f-]+)"', re.IGNORECASE)
-
     # DirectLake semantic models reference the lakehouse via OneLake DFS URL:
     #   https://onelake.dfs.fabric.microsoft.com/<workspace_id>/<lakehouse_id>
     ONELAKE_DFS_PATTERN = re.compile(
@@ -212,9 +207,6 @@ class ParameterDetector:
         self._items: list[tuple[Path, dict]] = []
         # Item type -> display names of the repo's items of that type.
         self._names: defaultdict[str, list[str]] = defaultdict(list)
-        # logicalId → displayName for the repo's Lakehouse items. Auto-bound
-        # notebook metadata names its lakehouse by logicalId, not item id.
-        self._lakehouse_logical_ids: dict[str, str] = {}
         # Repo-relative notebook dirs whose notebook-settings.json turns
         # Fabric's lakehouse auto-binding on.
         self.auto_bound_notebooks: list[str] = []
@@ -347,24 +339,18 @@ class ParameterDetector:
         """
         self._items = []
         self._names = defaultdict(list)
-        self._lakehouse_logical_ids = {}
         for platform_file in sorted(
             self.repo_dir.glob("**/.platform"), key=lambda p: (len(p.parts), str(p))
         ):
             try:
-                data = json.loads(platform_file.read_text(encoding="utf-8"))
-                metadata = data.get("metadata", {})
+                metadata = json.loads(platform_file.read_text(encoding="utf-8"))["metadata"]
                 item_type, name = metadata.get("type"), metadata.get("displayName")
             except Exception as e:
                 self._log_file_warning(platform_file, e, "item metadata")
                 continue
             self._items.append((platform_file.parent, metadata))
-            if not name:
-                continue
-            self._names[item_type].append(name)
-            logical_id = (data.get("config") or {}).get("logicalId")
-            if item_type == "Lakehouse" and self._is_id(logical_id):
-                self._lakehouse_logical_ids[logical_id] = name
+            if name:
+                self._names[item_type].append(name)
 
     def _platform_items(self, item_type: str) -> list[tuple[Path, dict]]:
         """(item_dir, .platform metadata) for the repo's items of `item_type`."""
@@ -410,8 +396,8 @@ class ParameterDetector:
     ) -> DetectedParameter:
         """Record `find_value`, seen in `source_file`, as a reference of `kind`.
 
-        `name` names the repo item the source says it refers to. The first
-        sighting decides the replacement; later ones add their file.
+        `name` is the repo item the source says it refers to, if it says. The
+        first sighting decides the replacement; later ones add their file.
         """
         param = self.parameters.get(find_value)
         if param is None:
@@ -426,46 +412,74 @@ class ParameterDetector:
 
     def _dynamic(self, kind: Kind, find_value: str, name: str | None = None) -> str:
         """The fabric-cicd dynamic variable a `kind` reference maps to, or ""
-        when no repo item answers for it."""
+        when no repo item answers for it.
+
+        A named reference binds to the repo item of that name, or to nothing
+        (it lives outside the repo). An unnamed one that needs one specific
+        item binds to the repo's only candidate; with several, guessing could
+        rewire it to the wrong item, so it is left unchanged and warned about.
+        """
         if kind is Kind.WORKSPACE:
             return "$workspace.$id"
         if kind not in ITEM_RULES:
             return ""
-        item_types, attr, _ = ITEM_RULES[kind]
+        item_types, attr, specific = ITEM_RULES[kind]
         if name:
             item_type = next((t for t in item_types if name in self._names[t]), None)
             return f"$items.{item_type}.{name}.{attr}" if item_type else ""
         item_type = next((t for t in item_types if self._names[t]), None)
-        return f"$items.{item_type}.{self._names[item_type][0]}.{attr}" if item_type else ""
+        if item_type is None:
+            return ""
+        names = self._names[item_type]
+        if len(names) > 1 and specific:
+            self.logger.warning(
+                f"{kind} {find_value}: nothing says which of the repo's {item_type} items "
+                f"({', '.join(names)}) it refers to, so it deploys unchanged. Map it with a "
+                f"manual_parameters entry in fabdep.yml."
+            )
+            return ""
+        return f"$items.{item_type}.{names[0]}.{attr}"
 
     def _extract_from_notebook(self, file_path: Path, content: str) -> None:
-        """Extract workspace and lakehouse IDs from notebook metadata."""
+        """Extract the lakehouse and warehouse attachments from notebook metadata."""
         source_file = str(file_path.relative_to(self.repo_dir))
-
-        # Unattached notebooks carry the null-UUID sentinel. Emitting a rule
-        # for it would globally rewrite every placeholder fabric-cicd manages
-        # itself (e.g. TridentNotebook workspaceIds in pipeline JSON).
-        for workspace_id in self.WORKSPACE_ID_PATTERN.findall(content):
-            # A legacy attachment names the workspace the repo was exported
-            # from — an anchor for pipeline/copyjob workspaceIds.
-            self._anchor_workspace(workspace_id, source_file)
-
-        for lakehouse_id in self.LAKEHOUSE_ID_PATTERN.findall(content):
-            if self._is_id(lakehouse_id):
-                # Auto-bound metadata carries the lakehouse's logicalId.
-                # fabric-cicd resolves logicalIds itself before parameters
-                # apply; this rule is the backstop, and it names the owning
-                # lakehouse rather than the repo's first one.
-                owner = self._lakehouse_logical_ids.get(lakehouse_id)
-                _ = self._add_parameter(lakehouse_id, source_file, Kind.LAKEHOUSE, owner)
+        for block in _iter_meta_blocks(content):
+            try:
+                dependencies = json.loads(block).get("dependencies")
+            except (json.JSONDecodeError, AttributeError):
+                continue
+            if not isinstance(dependencies, dict):
+                continue
+            if isinstance(lakehouse := dependencies.get("lakehouse"), dict):
+                self._extract_lakehouse_attachment(source_file, lakehouse)
+            if isinstance(warehouse := dependencies.get("warehouse"), dict):
+                self._extract_warehouse_attachments(source_file, warehouse)
 
         if self._auto_binding_enabled(file_path.parent):
             self.auto_bound_notebooks.append(str(file_path.parent.relative_to(self.repo_dir)))
 
-        self._extract_warehouse_attachments(source_file, content)
+    def _extract_lakehouse_attachment(self, source_file: str, lakehouse: dict) -> None:
+        """Map a notebook's default lakehouse and the workspace it lives in.
 
-    def _extract_warehouse_attachments(self, source_file: str, content: str) -> None:
-        """Detect `dependencies.warehouse` bindings from notebook metadata.
+        An attachment to one of the repo's lakehouses also anchors its
+        workspace as the one the repo was exported from. One naming no repo
+        lakehouse (a shared lakehouse in another workspace, say) deploys
+        unchanged. The null-UUID workspace is auto-binding's form: the
+        lakehouse is named by its git logicalId, which fabric-cicd resolves
+        before any parameter applies, so neither id needs a rule.
+        """
+        ws_id = lakehouse.get("default_lakehouse_workspace_id")
+        lh_id = lakehouse.get("default_lakehouse")
+        if ws_id == self.NULL_UUID or not self._is_id(lh_id):
+            return
+        name = lakehouse.get("default_lakehouse_name") or self._seed_lakehouse_ids.get(lh_id)
+        if self._add_parameter(lh_id, source_file, Kind.LAKEHOUSE, name).dynamic_variable:
+            self._anchor_workspace(ws_id, source_file)
+        else:
+            _ = self._classify_workspace(ws_id, source_file)
+
+    def _extract_warehouse_attachments(self, source_file: str, warehouse: dict) -> None:
+        """Map a notebook's `dependencies.warehouse` bindings.
 
         T-SQL notebooks attach to a lakehouse SQL analytics endpoint
         (`type: Lakewarehouse`) or a SQL database's endpoint
@@ -474,48 +488,32 @@ class ParameterDetector:
         left unreplaced, the deployed notebook stays wired to the *source*
         workspace's endpoint (visible as a cross-workspace link in lineage).
         """
-        for block in _iter_meta_blocks(content):
-            try:
-                data = json.loads(block)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(data, dict):
-                continue
-            warehouse_meta = data.get("dependencies", {}).get("warehouse", {})
-            if not isinstance(warehouse_meta, dict):
-                continue
+        known = warehouse.get("known_warehouses") or []
+        types_by_id: dict[str, str] = {
+            k["id"]: (k.get("type") or "") for k in known if isinstance(k, dict) and k.get("id")
+        }
+        if default_wh := warehouse.get("default_warehouse"):
+            types_by_id.setdefault(default_wh, "")
 
-            known = warehouse_meta.get("known_warehouses") or []
-            types_by_id: dict[str, str] = {
-                k["id"]: (k.get("type") or "") for k in known if isinstance(k, dict) and k.get("id")
-            }
-            default_wh = warehouse_meta.get("default_warehouse")
-            if default_wh:
-                types_by_id.setdefault(default_wh, "")
+        for wh_id, wh_type in types_by_id.items():
+            if not self._is_id(wh_id):
+                continue
+            kind = self.WAREHOUSE_ATTACHMENT_KINDS.get(wh_type.lower(), Kind.WAREHOUSE_ATTACHMENT)
+            param = self._add_parameter(wh_id, source_file, kind)
 
-            for wh_id, wh_type in types_by_id.items():
-                if not self._is_id(wh_id):
-                    continue
-                kind = self.WAREHOUSE_ATTACHMENT_KINDS.get(
-                    wh_type.lower(), Kind.WAREHOUSE_ATTACHMENT
+            # MountedWarehouse is resolved to a literal at deploy time —
+            # but only if the repo has a SQLDatabase item to resolve from.
+            resolvable_later = kind is Kind.SQLDB_ENDPOINT_ID and bool(self._names["SQLDatabase"])
+            if not param.dynamic_variable and not resolvable_later:
+                self.unresolved_warehouse_bindings.append((source_file, wh_id, wh_type))
+                self.logger.warning(
+                    f"{source_file}: warehouse attachment {wh_id} "
+                    f"(type={wh_type or 'unknown'}) has no replacement mapping — "
+                    f"the source-workspace GUID will deploy verbatim and the "
+                    f"target notebook will stay bound to the source endpoint. "
+                    f"Add the matching item to the repo or a manual_parameters "
+                    f"entry in fabdep.yml."
                 )
-                param = self._add_parameter(wh_id, source_file, kind)
-
-                # MountedWarehouse is resolved to a literal at deploy time —
-                # but only if the repo has a SQLDatabase item to resolve from.
-                resolvable_later = kind is Kind.SQLDB_ENDPOINT_ID and bool(
-                    self._names["SQLDatabase"]
-                )
-                if not param.dynamic_variable and not resolvable_later:
-                    self.unresolved_warehouse_bindings.append((source_file, wh_id, wh_type))
-                    self.logger.warning(
-                        f"{source_file}: warehouse attachment {wh_id} "
-                        f"(type={wh_type or 'unknown'}) has no replacement mapping — "
-                        f"the source-workspace GUID will deploy verbatim and the "
-                        f"target notebook will stay bound to the source endpoint. "
-                        f"Add the matching item to the repo or a manual_parameters "
-                        f"entry in fabdep.yml."
-                    )
 
     def _extract_from_semantic_model(self, file_path: Path, content: str) -> None:
         """Extract SQL connection strings and endpoint IDs from semantic models."""
@@ -526,7 +524,8 @@ class ParameterDetector:
             # a source-workspace anchor.
             self._anchor_workspace(workspace_id, source_file)
             if self._is_id(lakehouse_id):
-                _ = self._add_parameter(lakehouse_id, source_file, Kind.LAKEHOUSE)
+                name = self._seed_lakehouse_ids.get(lakehouse_id)
+                _ = self._add_parameter(lakehouse_id, source_file, Kind.LAKEHOUSE, name)
 
         for host, domain_type, database in self.SQL_HOST_PATTERN.findall(content):
             is_sql_database = domain_type.lower() == "database"
@@ -535,7 +534,7 @@ class ParameterDetector:
             )
             if item := self.DB_ITEM_PATTERN.fullmatch(database):
                 kind = Kind.SQLDB_ID if is_sql_database else Kind.SQL_ENDPOINT_ID
-                _ = self._add_parameter(item[2], source_file, kind)
+                _ = self._add_parameter(item[2], source_file, kind, name=item[1])
 
     def _extract_from_pipeline(self, file_path: Path, data: dict) -> None:
         """Extract connection IDs from pipeline JSON."""
@@ -551,7 +550,7 @@ class ParameterDetector:
 
             # workspaceId appears in TridentNotebook / InvokePipeline activities.
             if "workspaceId" in obj:
-                _ = self._classify_activity_workspace(obj["workspaceId"], source_file)
+                _ = self._classify_workspace(obj["workspaceId"], source_file)
 
             for value in obj.values():
                 self._extract_connections_recursive(value, source_file)
@@ -622,18 +621,15 @@ class ParameterDetector:
                 param.description = kind
                 param.dynamic_variable = dynamic_variable
 
-    def _classify_activity_workspace(self, ws_id, source_file: str) -> bool:
-        """Remap or preserve a pipeline/copyjob workspaceId. Returns True if
-        the id already points at the deploy target: the source workspace
-        (parameterized to `$workspace.$id`) or the null-UUID "this workspace"
-        placeholder (environment-independent, needs no rule — see NULL_UUID).
+    def _classify_workspace(self, ws_id, source_file: str) -> bool:
+        """Remap or preserve a workspace id that no repo item of its own anchors.
 
-        Only ids the repo's own items anchor (notebook attachments,
-        semantic-model OneLake URLs) map to `$workspace.$id`. Anything else is
-        a deliberate cross-workspace reference — e.g. a pipeline invoking a
-        notebook in another workspace — recorded with no dynamic variable so
-        it deploys verbatim. It still lands in `parameters`, so a fabdep.yml
-        manual_parameters entry can remap one.
+        Returns True if the id already points at the deploy target: a source
+        workspace (parameterized to `$workspace.$id`) or the null-UUID "this
+        workspace" placeholder (environment-independent, needs no rule — see
+        NULL_UUID). Anything else is a deliberate cross-workspace reference —
+        e.g. a pipeline invoking a notebook in another workspace — recorded
+        with no dynamic variable so it deploys verbatim.
         """
         if ws_id == self.NULL_UUID:
             return True
@@ -667,7 +663,7 @@ class ParameterDetector:
             artifact_id = type_properties.get("artifactId")
             if not self._is_id(artifact_id):
                 artifact_id = None
-            if ws_id and not self._classify_activity_workspace(ws_id, source_file):
+            if ws_id and not self._classify_workspace(ws_id, source_file):
                 # The artifact lives in that foreign workspace too — mapping
                 # it to the repo's Lakehouse would corrupt the reference.
                 if artifact_id:

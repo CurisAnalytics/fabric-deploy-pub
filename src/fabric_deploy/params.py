@@ -171,11 +171,13 @@ def resolve_warehouse_endpoint_params(
     from .client import find_item_by_name
 
     try:
-        # The repo's first SQL database, as detection binds it.
+        # The binding names no database, so only a repo with one can answer.
+        if len(db_names) > 1:
+            raise ValueError(f"the repo has several SQL databases ({', '.join(db_names)})")
         endpoint = find_item_by_name(workspace_id, "SQLEndpoint", db_names[0])
     except (ValueError, RuntimeError) as e:
         logger.warning(
-            f"Could not resolve SQLEndpoint for SQL database '{db_names[0]}' "
+            f"Could not resolve the SQLEndpoint of SQL database '{db_names[0]}' "
             f"in the target workspace — {len(pending)} warehouse binding(s) "
             f"will deploy with source GUIDs: {e}"
         )

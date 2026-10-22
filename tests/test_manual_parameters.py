@@ -34,8 +34,13 @@ def _build_repo(repo: Path, fabdep_yml: str, detected_uuid: str = DETECTED_UUID)
     (nb / ".platform").write_text(
         json.dumps({"metadata": {"displayName": "n1", "type": "Notebook"}})
     )
+    meta = {
+        "default_lakehouse": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+        "default_lakehouse_name": "lh",
+        "default_lakehouse_workspace_id": detected_uuid,
+    }
     (nb / "notebook-content.py").write_text(
-        f'"default_lakehouse_workspace_id": "{detected_uuid}"\n'
+        "# META " + json.dumps({"dependencies": {"lakehouse": meta}}) + "\n"
     )
 
     (repo / "fabdep.yml").write_text(fabdep_yml)

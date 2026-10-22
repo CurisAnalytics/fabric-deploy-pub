@@ -68,6 +68,17 @@ def _make_copyjob(repo: Path, name: str, content: dict) -> None:
     (item / "copyjob-content.json").write_text(json.dumps(content))
 
 
+def _lakehouse_meta(
+    workspace_id: str, lakehouse_id: str, name: str | None = "lh", prefix: str = "#"
+) -> str:
+    """Notebook META attaching a default lakehouse, as Fabric writes it."""
+    lakehouse = {"default_lakehouse": lakehouse_id, "default_lakehouse_workspace_id": workspace_id}
+    if name is not None:
+        lakehouse["default_lakehouse_name"] = name
+    body = json.dumps({"dependencies": {"lakehouse": lakehouse}}, indent=2)
+    return "".join(f"{prefix} META {line}\n" for line in body.splitlines())
+
+
 # --- notebook extraction ---------------------------------------------------
 
 
@@ -133,8 +144,7 @@ class TestNotebookExtraction:
         _make_notebook(
             tmp_path,
             "n1",
-            f'"default_lakehouse_workspace_id": "{WORKSPACE_ID}"\n'
-            f'"default_lakehouse": "{LAKEHOUSE_ID}"\n',
+            _lakehouse_meta(WORKSPACE_ID, LAKEHOUSE_ID),
             dir_suffix="SynapseNotebook",
         )
         d = ParameterDetector(tmp_path)
@@ -148,11 +158,7 @@ class TestNotebookExtraction:
         rule for it would clobber fabric-cicd-managed placeholders globally."""
         _make_lakehouse(tmp_path, "lh")
         null = ParameterDetector.NULL_UUID
-        _make_notebook(
-            tmp_path,
-            "n1",
-            f'"default_lakehouse_workspace_id": "{null}"\n"default_lakehouse": "{null}"\n',
-        )
+        _make_notebook(tmp_path, "n1", _lakehouse_meta(null, null))
         d = ParameterDetector(tmp_path)
         d.detect_all()
 
@@ -160,12 +166,7 @@ class TestNotebookExtraction:
 
     def test_dynamic_variable_for_workspace_and_lakehouse(self, tmp_path: Path):
         _make_lakehouse(tmp_path, "lh")
-        _make_notebook(
-            tmp_path,
-            "n1",
-            f'"default_lakehouse_workspace_id": "{WORKSPACE_ID}"\n'
-            f'"default_lakehouse": "{LAKEHOUSE_ID}"\n',
-        )
+        _make_notebook(tmp_path, "n1", _lakehouse_meta(WORKSPACE_ID, LAKEHOUSE_ID))
         d = ParameterDetector(tmp_path)
         d.detect_all()
 
@@ -221,7 +222,8 @@ class TestSemanticModelExtraction:
         assert set(d.parameters) == {host, ENDPOINT_ID}
 
     def test_extracts_onelake_dfs_url(self, tmp_path: Path):
-        """DirectLake semantic models reference OneLake via DFS URL."""
+        """A Direct Lake model reading one of this repo's workspaces maps its
+        OneLake URL to the target workspace and lakehouse."""
         _make_lakehouse(tmp_path, "lh")
         body = (
             "expression 'DirectLake - lh' = let\n"
@@ -231,7 +233,7 @@ class TestSemanticModelExtraction:
         )
         _make_semantic_model(tmp_path, "sm", body)
 
-        d = ParameterDetector(tmp_path)
+        d = ParameterDetector(tmp_path, source_workspace_ids=[WORKSPACE_ID])
         d.detect_all()
 
         assert WORKSPACE_ID in d.parameters
@@ -246,12 +248,7 @@ class TestSemanticModelExtraction:
         """When the same IDs appear in a Notebook AND a SemanticModel, both
         source files are recorded against a single deduped parameter."""
         _make_lakehouse(tmp_path, "lh")
-        _make_notebook(
-            tmp_path,
-            "nb",
-            f'# META  "default_lakehouse_workspace_id": "{WORKSPACE_ID}",\n'
-            f'# META  "default_lakehouse": "{LAKEHOUSE_ID}",\n',
-        )
+        _make_notebook(tmp_path, "nb", _lakehouse_meta(WORKSPACE_ID, LAKEHOUSE_ID))
         body = (
             "expression Source = AzureStorage.DataLake("
             f'"https://onelake.dfs.fabric.microsoft.com/{WORKSPACE_ID}/{LAKEHOUSE_ID}",'
@@ -382,11 +379,7 @@ class TestPipelineExtraction:
         """A pipeline workspaceId anchored by a notebook attachment (the
         repo's own workspace) is remapped to the target."""
         _make_lakehouse(tmp_path, "lh")
-        _make_notebook(
-            tmp_path,
-            "nb",
-            f'# META  "default_lakehouse_workspace_id": "{WORKSPACE_ID}"',
-        )
+        _make_notebook(tmp_path, "nb", _lakehouse_meta(WORKSPACE_ID, LAKEHOUSE_ID))
         _make_pipeline(
             tmp_path,
             "pl",
@@ -416,11 +409,7 @@ class TestPipelineExtraction:
         deploy target. It is recorded with no dynamic variable — verbatim on
         deploy, but still overridable via manual_parameters."""
         _make_lakehouse(tmp_path, "lh")
-        _make_notebook(
-            tmp_path,
-            "nb",
-            f'# META  "default_lakehouse_workspace_id": "{WORKSPACE_ID}"',
-        )
+        _make_notebook(tmp_path, "nb", _lakehouse_meta(WORKSPACE_ID, LAKEHOUSE_ID))
         _make_pipeline(
             tmp_path,
             "pl",
@@ -477,11 +466,7 @@ class TestCopyJobExtraction:
         cross-workspace copy target) deploys verbatim — including its
         artifactId, which must NOT map to the repo's Lakehouse."""
         _make_lakehouse(tmp_path, "lh")
-        _make_notebook(
-            tmp_path,
-            "nb",
-            f'# META  "default_lakehouse_workspace_id": "{WORKSPACE_ID}"',
-        )
+        _make_notebook(tmp_path, "nb", _lakehouse_meta(WORKSPACE_ID, LAKEHOUSE_ID))
         _make_copyjob(
             tmp_path,
             "cj",
@@ -583,7 +568,7 @@ class TestShouldSkipReplacement:
     ):
         _make_lakehouse(tmp_path, "lh")
         if detected_wsid is not None:
-            _make_notebook(tmp_path, "n1", f'"default_lakehouse_workspace_id": "{detected_wsid}"')
+            _make_notebook(tmp_path, "n1", _lakehouse_meta(detected_wsid, LAKEHOUSE_ID))
         d = ParameterDetector(tmp_path)
         d.detect_all()
         assert d.should_skip_replacement(target_wsid) is expected
@@ -1054,26 +1039,23 @@ def _auto_bound_repo(repo: Path) -> None:
 
 
 class TestLakehouseAutoBinding:
-    def test_logical_id_maps_to_owning_lakehouse(self, tmp_path: Path):
-        """An auto-bound notebook's default_lakehouse is the lakehouse's git
-        logicalId; the rule names that lakehouse, not the first one found."""
+    def test_auto_bound_reference_needs_no_rule(self, tmp_path: Path):
+        """An auto-bound notebook names its lakehouse by git logicalId in the
+        null-UUID workspace; fabric-cicd swaps logicalIds for the deployed
+        ids before parameters apply, so a rule would never match."""
         _make_lakehouse_with_logical_id(tmp_path, "first", OTHER_LOGICAL_ID)
         _make_lakehouse_with_logical_id(tmp_path, "second", LOGICAL_ID)
         _make_notebook(tmp_path, "nb", _auto_bound_meta(LOGICAL_ID, "second"))
         d = ParameterDetector(tmp_path)
         d.detect_all()
 
-        assert d.parameters[LOGICAL_ID].dynamic_variable == "$items.Lakehouse.second.$id"
+        assert d.parameters == {}
 
     def test_auto_bound_notebooks_are_listed(self, tmp_path: Path):
         _make_lakehouse_with_logical_id(tmp_path, "lh", LOGICAL_ID)
         _make_notebook(tmp_path, "nb", _auto_bound_meta(LOGICAL_ID))
         _enable_auto_binding(tmp_path, "nb.Notebook")
-        _make_notebook(
-            tmp_path,
-            "legacy",
-            f'# META  "default_lakehouse_workspace_id": "{WORKSPACE_ID}"',
-        )
+        _make_notebook(tmp_path, "legacy", _lakehouse_meta(WORKSPACE_ID, LAKEHOUSE_ID))
         d = ParameterDetector(tmp_path)
         d.detect_all()
 
@@ -1218,12 +1200,7 @@ class TestLakehouseAutoBinding:
     def test_legacy_metadata_still_anchors(self, tmp_path: Path):
         """Repos without auto-binding keep working with no seed at all."""
         _make_lakehouse(tmp_path, "lh")
-        _make_notebook(
-            tmp_path,
-            "nb",
-            f'# META  "default_lakehouse_workspace_id": "{WORKSPACE_ID}"\n'
-            f'# META  "default_lakehouse": "{LAKEHOUSE_ID}"',
-        )
+        _make_notebook(tmp_path, "nb", _lakehouse_meta(WORKSPACE_ID, LAKEHOUSE_ID))
         _make_pipeline(tmp_path, "pl", _pinned_notebook_activity(WORKSPACE_ID))
         d = ParameterDetector(tmp_path)
         d.detect_all()
@@ -1232,3 +1209,86 @@ class TestLakehouseAutoBinding:
         assert d.parameters[LAKEHOUSE_ID].dynamic_variable == "$items.Lakehouse.lh.$id"
         assert d.offtarget_workspace_refs == []
         assert d.auto_bound_notebooks == []
+
+
+# --- binding a reference to its own repo item --------------------------------
+
+HUB_LAKEHOUSE_ID = "99999999-9999-9999-9999-999999999999"
+
+
+class TestItemBinding:
+    def test_notebook_binds_to_its_named_lakehouse(self, tmp_path: Path):
+        _make_lakehouse(tmp_path, "first")
+        _make_lakehouse(tmp_path, "second")
+        _make_notebook(tmp_path, "nb", _lakehouse_meta(WORKSPACE_ID, LAKEHOUSE_ID, "second"))
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert d.parameters[LAKEHOUSE_ID].dynamic_variable == "$items.Lakehouse.second.$id"
+        assert d.parameters[WORKSPACE_ID].dynamic_variable == "$workspace.$id"
+
+    def test_unnamed_reference_is_not_bound_to_one_of_several(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        """Nothing says which lakehouse a same-workspace CopyJob artifact is,
+        so with several in the repo it is left unmapped, loudly."""
+        _make_lakehouse(tmp_path, "first")
+        _make_lakehouse(tmp_path, "second")
+        _make_copyjob(
+            tmp_path,
+            "cj",
+            {
+                "properties": {
+                    "source": {
+                        "connectionSettings": {"typeProperties": {"artifactId": LAKEHOUSE_ID}}
+                    }
+                }
+            },
+        )
+        d = ParameterDetector(tmp_path)
+        with caplog.at_level("WARNING", logger="fabric_deploy.detect"):
+            d.detect_all()
+
+        assert d.parameters[LAKEHOUSE_ID].dynamic_variable == ""
+        assert any(LAKEHOUSE_ID in r.message and "second" in r.message for r in caplog.records)
+
+    def test_direct_lake_model_binds_to_the_lakehouse_a_notebook_names(self, tmp_path: Path):
+        _make_lakehouse(tmp_path, "first")
+        _make_lakehouse(tmp_path, "second")
+        _make_notebook(tmp_path, "nb", _lakehouse_meta(WORKSPACE_ID, LAKEHOUSE_ID, "second"))
+        _make_semantic_model(
+            tmp_path,
+            "sm",
+            f'Source = AzureStorage.DataLake("https://onelake.dfs.fabric.microsoft.com/'
+            f'{WORKSPACE_ID}/{LAKEHOUSE_ID}")',
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert d.parameters[LAKEHOUSE_ID].dynamic_variable == "$items.Lakehouse.second.$id"
+        assert len(d.parameters[LAKEHOUSE_ID].source_files) == 2
+
+    def test_sql_database_binds_by_the_database_name(self, tmp_path: Path):
+        _make_sqldb(tmp_path, "db1")
+        _make_sqldb(tmp_path, "db2")
+        _make_semantic_model(
+            tmp_path,
+            "sm",
+            f'Source = Sql.Database("HOST-YYYY.database.fabric.microsoft.com", "db2-{ENDPOINT_ID}")',
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert d.parameters[ENDPOINT_ID].dynamic_variable == "$items.SQLDatabase.db2.$id"
+
+    def test_notebook_attached_outside_the_repo_deploys_unchanged(self, tmp_path: Path):
+        """A lakehouse no repo item matches (a shared hub elsewhere) is not
+        rewired to the repo's lakehouse, and its workspace is not an anchor."""
+        _make_lakehouse(tmp_path, "lh")
+        _make_notebook(tmp_path, "nb", _lakehouse_meta(OTHER_WORKSPACE_ID, HUB_LAKEHOUSE_ID, "hub"))
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert d.parameters[HUB_LAKEHOUSE_ID].dynamic_variable == ""
+        assert d.parameters[OTHER_WORKSPACE_ID].dynamic_variable == ""
+        assert OTHER_WORKSPACE_ID not in d._source_workspace_ids

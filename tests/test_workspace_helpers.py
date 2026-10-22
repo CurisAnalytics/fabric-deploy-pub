@@ -154,6 +154,19 @@ class TestResolveWarehouseEndpointParams:
         assert params_mod.resolve_warehouse_endpoint_params(d, self.WS, LOG) == 0
         assert d.parameters[self.EP_GUID].dynamic_variable == "manually-set"
 
+    def test_several_sql_databases_are_not_guessed_between(self, tmp_path: Path, monkeypatch):
+        from fabric_deploy import params as params_mod
+
+        d = self._detector_with_binding(tmp_path)
+        d._names["SQLDatabase"] = ["db1", "db2"]
+
+        def boom(*a, **k):
+            raise AssertionError("should not pick one of several databases")
+
+        monkeypatch.setattr("fabric_deploy.client.find_item_by_name", boom)
+        assert params_mod.resolve_warehouse_endpoint_params(d, self.WS, LOG) == 0
+        assert [b[1] for b in d.unresolved_warehouse_bindings] == [self.EP_GUID]
+
     def test_lookup_failure_records_unresolved(self, tmp_path: Path, monkeypatch):
         from fabric_deploy import params as params_mod
 
