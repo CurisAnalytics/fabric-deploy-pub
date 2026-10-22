@@ -7,11 +7,11 @@ from typing import TypedDict
 
 from .identity import FABRIC_SCOPE, POWERBI_SCOPE
 from .transport import (
-    FABRIC_HOST,
-    POWERBI_HOST,
     fabric_api_request,
+    fabric_url,
     http_request,
     poll_fabric_lro,
+    powerbi_url,
 )
 
 # pyright: reportMissingTypeArgument=false
@@ -334,7 +334,7 @@ def refresh_sql_endpoint_metadata(
         Per-table sync statuses: `[{tableName, status, error?}, ...]`.
     """
     status, headers, body = http_request(
-        f"{FABRIC_HOST}/v1/workspaces/{workspace_id}/sqlEndpoints/{sql_endpoint_id}/refreshMetadata",
+        fabric_url(f"/v1/workspaces/{workspace_id}/sqlEndpoints/{sql_endpoint_id}/refreshMetadata"),
         method="POST",
         scope=FABRIC_SCOPE,
         error_context="refresh SQL endpoint metadata",
@@ -365,7 +365,7 @@ def refresh_semantic_model(
     """
     body = {"type": "automatic", "commitMode": "transactional", "objects": []}
     _status, headers, _resp = http_request(
-        f"{POWERBI_HOST}/v1.0/myorg/groups/{workspace_id}/datasets/{dataset_id}/refreshes",
+        powerbi_url(f"/v1.0/myorg/groups/{workspace_id}/datasets/{dataset_id}/refreshes"),
         method="POST",
         data=body,
         scope=POWERBI_SCOPE,
@@ -375,11 +375,10 @@ def refresh_semantic_model(
     location = headers.get("Location") or headers.get("location")
     request_id = headers.get("x-ms-request-id") or headers.get("RequestId")
     if location and location.startswith("/"):
-        location = f"{POWERBI_HOST}{location}"
+        location = powerbi_url(location)
     if not location:
-        location = (
-            f"{POWERBI_HOST}/v1.0/myorg/groups/{workspace_id}"
-            f"/datasets/{dataset_id}/refreshes/{request_id}"
+        location = powerbi_url(
+            f"/v1.0/myorg/groups/{workspace_id}/datasets/{dataset_id}/refreshes/{request_id}"
         )
 
     waited = 0
@@ -429,8 +428,9 @@ def get_semantic_model_definition(
         its UTF-8-decoded text.
     """
     status, headers, body = http_request(
-        f"{FABRIC_HOST}/v1/workspaces/{workspace_id}/semanticModels/{item_id}"
-        "/getDefinition?format=TMDL",
+        fabric_url(
+            f"/v1/workspaces/{workspace_id}/semanticModels/{item_id}/getDefinition?format=TMDL"
+        ),
         method="POST",
         scope=FABRIC_SCOPE,
         error_context="get semantic model definition",

@@ -10,11 +10,13 @@ import time
 import urllib.error
 import urllib.request
 
+from fabric_cicd import constants
+
 from .identity import FABRIC_SCOPE, get_access_token
 
 __all__ = [
-    "FABRIC_HOST",
-    "POWERBI_HOST",
+    "fabric_url",
+    "powerbi_url",
     "http_request",
     "fabric_api_request",
     "poll_fabric_lro",
@@ -25,8 +27,18 @@ __all__ = [
 # pyright: reportUnknownParameterType=false
 # pyright: reportUnknownVariableType=false
 
-FABRIC_HOST = "https://api.fabric.microsoft.com"
-POWERBI_HOST = "https://api.powerbi.com"
+
+# fabric-cicd's API roots, read per call: its `FABRIC_API_ROOT_URL` and
+# `DEFAULT_API_ROOT_URL` overrides then send fabdep's own calls to the same
+# hosts as the deployment.
+def fabric_url(path: str) -> str:
+    """Absolute Fabric REST URL for `path` (e.g. "/v1/workspaces")."""
+    return f"{constants.FABRIC_API_ROOT_URL}{path}"
+
+
+def powerbi_url(path: str) -> str:
+    """Absolute Power BI REST URL for `path` (e.g. "/v1.0/myorg/groups")."""
+    return f"{constants.DEFAULT_API_ROOT_URL}{path}"
 
 
 def http_request(
@@ -107,7 +119,7 @@ def fabric_api_request(
         RuntimeError: If API call fails
     """
     _status, _headers, body = http_request(
-        f"{FABRIC_HOST}{endpoint}",
+        fabric_url(endpoint),
         method=method,
         data=data,
         scope=FABRIC_SCOPE,
@@ -151,7 +163,7 @@ def poll_fabric_lro(
             if op_id:
                 try:
                     _s, _h, result = http_request(
-                        f"{FABRIC_HOST}/v1/operations/{op_id}/result",
+                        fabric_url(f"/v1/operations/{op_id}/result"),
                         scope=FABRIC_SCOPE,
                         error_context=f"fetch {error_context} result",
                     )

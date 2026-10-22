@@ -1,4 +1,4 @@
-"""Unit tests for api.py: item lookup, pagination, LRO/refresh polling, scopes.
+"""Unit tests for client.py: item lookup, pagination, refresh polling, API roots.
 
 Network is mocked at the `http_request` / `fabric_api_request` seam and
 `time.sleep` is stubbed, so these run with no Fabric access and no real waits.
@@ -11,12 +11,15 @@ import json
 import time
 
 import pytest
+from fabric_cicd import constants
 
 from fabric_deploy.client import (
     find_item_by_name,
+    get_semantic_model_definition,
     get_sqldatabase_server_host,
     list_workspace_items,
     refresh_semantic_model,
+    refresh_sql_endpoint_metadata,
 )
 from fabric_deploy.identity import POWERBI_SCOPE, get_access_token
 from fabric_deploy.transport import poll_fabric_lro
@@ -209,3 +212,34 @@ def test_sqldatabase_host_missing_fqdn_raises(monkeypatch):
     _sqldbs(monkeypatch, [{"displayName": "mydb", "properties": {}}])
     with pytest.raises(ValueError, match="no serverFqdn"):
         get_sqldatabase_server_host("ws", "mydb")
+
+
+# --- API roots -------------------------------------------------------------
+
+
+def test_endpoint_calls_use_fabric_cicd_api_roots(monkeypatch):
+    """Fabric calls go to FABRIC_API_ROOT_URL, Power BI calls to DEFAULT_API_ROOT_URL."""
+    monkeypatch.setattr(constants, "FABRIC_API_ROOT_URL", "https://fabric.contoso.example")
+    monkeypatch.setattr(constants, "DEFAULT_API_ROOT_URL", "https://pbi.contoso.example")
+    monkeypatch.setattr("fabric_deploy.client.time.sleep", lambda _s: None)
+    urls: list[str] = []
+
+    def fake_http(url, method="GET", data=None, scope=None, error_context=""):
+        urls.append(url)
+        if url.endswith("/refreshes"):
+            return 202, {"x-ms-request-id": "r1"}, {}
+        if "/refreshes/" in url:
+            return 200, {}, {"status": "Completed"}
+        return 200, {}, {"definition": {"parts": []}}
+
+    monkeypatch.setattr("fabric_deploy.client.http_request", fake_http)
+    refresh_sql_endpoint_metadata("ws", "ep")
+    refresh_semantic_model("ws", "ds")
+    get_semantic_model_definition("ws", "sm")
+
+    assert urls == [
+        "https://fabric.contoso.example/v1/workspaces/ws/sqlEndpoints/ep/refreshMetadata",
+        "https://pbi.contoso.example/v1.0/myorg/groups/ws/datasets/ds/refreshes",
+        "https://pbi.contoso.example/v1.0/myorg/groups/ws/datasets/ds/refreshes/r1",
+        "https://fabric.contoso.example/v1/workspaces/ws/semanticModels/sm/getDefinition?format=TMDL",
+    ]
