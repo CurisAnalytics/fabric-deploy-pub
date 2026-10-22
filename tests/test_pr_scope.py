@@ -208,21 +208,11 @@ class TestItemsForChangedPaths:
 # --- deployer wiring -------------------------------------------------------
 
 
-def _seed_workspace(repo: Path) -> None:
-    """Minimum a WorkspaceDeployer needs: a lakehouse item and a fabdep.yml."""
-    lh = repo / "lh.Lakehouse"
-    lh.mkdir()
-    (lh / ".platform").write_text(
-        json.dumps({"metadata": {"displayName": "lh", "type": "Lakehouse"}})
-    )
-    (repo / "fabdep.yml").write_text('workspace_base_name: "ws"\n')
-
-
 @pytest.fixture
 def deployer(tmp_path: Path, mock_fabric_api):
     from fabric_deploy.workspace import WorkspaceDeployer
 
-    _seed_workspace(tmp_path)
+    (tmp_path / "fabdep.yml").write_text('workspace_base_name: "ws"\n')
     _item(tmp_path, "Load GL", "Notebook")
     return WorkspaceDeployer(tmp_path, branch_override="dev")
 

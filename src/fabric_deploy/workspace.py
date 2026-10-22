@@ -7,7 +7,6 @@
 import logging
 import re
 from dataclasses import dataclass, field
-from json import loads
 from pathlib import Path
 
 from fabric_cicd import (
@@ -124,7 +123,6 @@ class WorkspaceDeployer:
     - Makes network calls to Fabric API (workspace ID resolution, the repo's
       sibling workspaces, and the lakehouses of those the content references)
     - Scans workspace files to detect source IDs (stored, not written to disk)
-    - Auto-detects lakehouse metadata
 
     The parameter file is written to a temporary directory during deploy(),
     never into the repo.
@@ -144,7 +142,6 @@ class WorkspaceDeployer:
     workspace_name: str = field(
         init=False, repr=False
     )  # Resolved workspace name (base_name [branch])
-    lakehouse_name: str = field(init=False, repr=False)
     # This repo's workspaces (target + siblings) and the lakehouses of the
     # siblings the content references, by item id — the detector's anchors
     # (see _resolve_source_anchors). `source_workspaces` is the referenced
@@ -175,7 +172,6 @@ class WorkspaceDeployer:
         4. Makes network calls to the Fabric REST API: the target workspace ID,
            the repo's sibling workspaces, and lakehouses of referenced siblings
         5. Scans workspace files to detect source IDs (stored in memory, not written to disk)
-        6. Scans for .Lakehouse directories and reads .platform metadata
 
         Parameter file writing is deferred to deploy() when the item scope is known.
         """
@@ -193,7 +189,6 @@ class WorkspaceDeployer:
         self._resolve_source_anchors()
         self._detect_parameters()
         self.repo_item_types = repo_item_types(self._repo_dir_resolved)
-        self._detect_lakehouse()
 
     def _apply_tenant_pin(self) -> None:
         """Adopt fabdep.yml's identity keys before any Fabric API call."""
@@ -374,20 +369,6 @@ class WorkspaceDeployer:
             _ = resolve_sqldatabase_hostname_params(detector, self.workspace_id, self.logger)
 
         self._detector = detector
-
-    def _detect_lakehouse(self) -> None:
-        """Set self.lakehouse_name from the first *.Lakehouse/.platform file."""
-        lakehouses = list(self._repo_dir_resolved.glob("*.Lakehouse"))
-        if len(lakehouses) == 0:
-            raise ValueError("No lakehouse found in repository directory")
-        elif len(lakehouses) > 1:
-            self.logger.warning(f"Multiple lakehouses found: {[d.name for d in lakehouses]}")
-        platform_file = lakehouses[0] / ".platform"
-        try:
-            metadata = loads(platform_file.read_text())
-        except Exception as e:
-            raise RuntimeError(f"Failed to read lakehouse metadata: {e}") from e
-        self.lakehouse_name = metadata["metadata"]["displayName"]
 
     def _guard_rls(
         self,
@@ -699,6 +680,4 @@ class WorkspaceDeployer:
         # include_items + unpublish is a footgun: if names don't match, nothing
         # publishes and orphan cleanup would wipe the workspace.
         if not no_cleanup and not include_items:
-            unpublish_all_orphan_items(
-                target_workspace, item_name_exclude_regex=self.lakehouse_name
-            )
+            unpublish_all_orphan_items(target_workspace)

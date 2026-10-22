@@ -11,7 +11,6 @@ Covers:
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -19,17 +18,6 @@ import pytest
 from fabric_deploy.workspace import WorkspaceDeployer
 
 # --- helpers ---------------------------------------------------------------
-
-
-def _seed_workspace(repo: Path, *, lakehouse: bool = True) -> None:
-    """Create the minimum filesystem layout that satisfies WorkspaceDeployer
-    init checks (a .Lakehouse dir with a .platform file)."""
-    if lakehouse:
-        lh = repo / "test_lh.Lakehouse"
-        lh.mkdir()
-        (lh / ".platform").write_text(
-            json.dumps({"metadata": {"displayName": "test_lh", "type": "Lakehouse"}})
-        )
 
 
 def _write_fabdep_yml(repo: Path, body: str) -> None:
@@ -41,7 +29,6 @@ def _write_fabdep_yml(repo: Path, body: str) -> None:
 
 class TestLoadConfig:
     def test_yaml_present_resolves_workspace(self, tmp_path: Path, mock_fabric_api):
-        _seed_workspace(tmp_path)
         _write_fabdep_yml(tmp_path, 'workspace_base_name: "myws"\n')
 
         d = WorkspaceDeployer(tmp_path, branch_override="prod")
@@ -53,7 +40,6 @@ class TestLoadConfig:
         # No fabdep.yml. The deployer should fall back to the directory name.
         repo = tmp_path / "fallback_ws"
         repo.mkdir()
-        _seed_workspace(repo)
 
         d = WorkspaceDeployer(repo, branch_override="dev")
 
@@ -66,7 +52,6 @@ class TestLoadConfig:
         # No fabdep.yml AND the directory-name workspace doesn't exist either.
         repo = tmp_path / "missing_ws"
         repo.mkdir()
-        _seed_workspace(repo)
 
         def _missing(_name: str) -> str:
             raise ValueError("Workspace not found: 'missing_ws [DEV]'")
@@ -77,7 +62,6 @@ class TestLoadConfig:
             WorkspaceDeployer(repo, branch_override="dev")
 
     def test_yaml_missing_workspace_base_name_raises(self, tmp_path: Path, mock_fabric_api):
-        _seed_workspace(tmp_path)
         # Empty fabdep.yml — yaml.safe_load returns None → handled as {}
         _write_fabdep_yml(tmp_path, "")
 
@@ -86,7 +70,6 @@ class TestLoadConfig:
 
     def test_branch_override_skips_git(self, tmp_path: Path, monkeypatch, mock_fabric_api):
         """When branch_override is set, git must not be consulted at all."""
-        _seed_workspace(tmp_path)
         _write_fabdep_yml(tmp_path, 'workspace_base_name: "ws"\n')
 
         # config.py resolves the branch via git.current_branch — if it's
@@ -101,7 +84,6 @@ class TestLoadConfig:
         assert d.workspace_name == "ws [STAGING]"
 
     def test_new_workspace_creates_via_capacity(self, tmp_path: Path, mock_fabric_api):
-        _seed_workspace(tmp_path)
         _write_fabdep_yml(
             tmp_path,
             f'workspace_base_name: "newws"\ncapacity_id: "{mock_fabric_api.capacity_id}"\n',

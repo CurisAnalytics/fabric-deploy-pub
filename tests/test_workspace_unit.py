@@ -131,6 +131,38 @@ class TestFabricWorkspaceConstruction:
         assert fake_publish.call_args.args[0] is instance
 
 
+class TestOrphanCleanup:
+    def _deploy(self, deployer, **kwargs) -> MagicMock:
+        with (
+            patch("fabric_deploy.workspace.FabricWorkspace") as fake_fw,
+            patch("fabric_deploy.workspace.publish_all_items"),
+            patch("fabric_deploy.workspace.unpublish_all_orphan_items") as unpublish,
+            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
+        ):
+            deployer.deploy(**kwargs)
+        assert not unpublish.called or unpublish.call_args.args == (fake_fw.return_value,)
+        return unpublish
+
+    def test_repo_without_a_lakehouse_deploys(self, tmp_path: Path, mock_fabric_api):
+        (tmp_path / "fabdep.yml").write_text('workspace_base_name: "Base"\n')
+        nb = tmp_path / "nb.Notebook"
+        nb.mkdir()
+        (nb / ".platform").write_text('{"metadata": {"displayName": "nb", "type": "Notebook"}}')
+
+        unpublish = self._deploy(WorkspaceDeployer(tmp_path, branch_override="dev"))
+
+        assert unpublish.called
+
+    def test_no_item_is_kept_by_name(self, deployer):
+        """Every item missing from the repo is an orphan, whatever its name."""
+        unpublish = self._deploy(deployer, item_types=["Notebook"])
+        assert unpublish.call_args.kwargs == {}
+
+    def test_skipped_for_include_items(self, deployer):
+        unpublish = self._deploy(deployer, include_items=["Fill Lakehouse.Notebook"])
+        assert not unpublish.called
+
+
 class TestFeatureFlags:
     def test_appended_flags_are_still_supported_upstream(self):
         """fabdep appends these flags for --include-items deploys. fabric-cicd
