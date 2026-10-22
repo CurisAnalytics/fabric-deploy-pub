@@ -2,6 +2,7 @@
 
 import base64
 import difflib
+import logging
 import time
 from typing import TypedDict
 
@@ -19,6 +20,8 @@ from .transport import (
 # pyright: reportUnknownMemberType=false
 # pyright: reportUnknownParameterType=false
 # pyright: reportUnknownVariableType=false
+
+_logger = logging.getLogger(__name__)
 
 
 class FabricWorkspaceInfo(TypedDict):
@@ -81,34 +84,46 @@ def list_capacities() -> list[dict]:
 
 def get_default_capacity_id() -> str:
     """
-    Get the first active capacity ID available to the user.
+    Get the capacity for a new workspace when fabdep.yml sets no `capacity_id`.
+
+    Only an unambiguous choice is made: the one active capacity the identity
+    can see.
 
     Returns:
-        Capacity ID (GUID) of the first active capacity
+        Capacity ID (GUID) of the only active capacity
 
     Raises:
-        ValueError: If no active capacities are found
+        ValueError: If no capacity, or more than one, is active
         RuntimeError: If API call fails
     """
     capacities = list_capacities()
-    active_capacities = [c for c in capacities if c.get("state") == "Active"]
+    active = [c for c in capacities if c.get("state") == "Active"]
 
-    if not active_capacities:
-        available = [f"{c['displayName']} ({c['sku']}, {c['state']})" for c in capacities]
-        if available:
-            raise ValueError(
-                "No active capacities found.\n\n"
-                f"Available capacities ({len(available)}):\n"
-                + "\n".join(f"  - {name}" for name in available)
-                + "\n\nPlease activate a capacity or specify capacity_id in fabdep.yml"
-            )
+    if len(active) == 1:
+        _logger.info(f"Using the only active capacity: {_describe_capacity(active[0])}")
+        return active[0]["id"]
+    if active:
         raise ValueError(
-            "No capacities found.\n\n"
-            "You don't have access to any Fabric capacities.\n"
-            "Please create a capacity or request access, then specify capacity_id in fabdep.yml"
+            f"{len(active)} active capacities are available; set capacity_id in "
+            "fabdep.yml to choose one:\n"
+            + "\n".join(f"  - {_describe_capacity(c)}" for c in active)
         )
+    if capacities:
+        raise ValueError(
+            "No active capacities found.\n\n"
+            f"Available capacities ({len(capacities)}):\n"
+            + "\n".join(f"  - {_describe_capacity(c)}" for c in capacities)
+            + "\n\nActivate a capacity or set capacity_id in fabdep.yml."
+        )
+    raise ValueError(
+        "No capacities found.\n\n"
+        "This identity has access to no Fabric capacity. Create one or request "
+        "access, then set capacity_id in fabdep.yml."
+    )
 
-    return active_capacities[0]["id"]
+
+def _describe_capacity(capacity: dict) -> str:
+    return f"{capacity['displayName']} ({capacity['sku']}, {capacity['state']}): {capacity['id']}"
 
 
 def find_workspace_id_by_name(workspace_name: str) -> str | None:

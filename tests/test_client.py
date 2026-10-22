@@ -15,6 +15,7 @@ from fabric_cicd import constants
 
 from fabric_deploy.client import (
     find_item_by_name,
+    get_default_capacity_id,
     get_semantic_model_definition,
     get_sqldatabase_server_host,
     get_workspace_id_by_name,
@@ -67,6 +68,43 @@ def test_list_workspace_items_keeps_the_type_filter_across_pages(monkeypatch):
     list_workspace_items("ws", "SemanticModel")
     assert all("type=SemanticModel" in url for url in seen)
     assert "continuationToken=tok2" in seen[1]
+
+
+# --- get_default_capacity_id -----------------------------------------------
+
+
+def _capacity(name: str, state: str = "Active") -> dict:
+    return {"id": f"id-{name}", "displayName": name, "sku": "F2", "state": state}
+
+
+def _capacities(monkeypatch, capacities: list[dict]) -> None:
+    monkeypatch.setattr("fabric_deploy.client.list_capacities", lambda: capacities)
+
+
+def test_default_capacity_is_the_only_active_one(monkeypatch, caplog):
+    _capacities(monkeypatch, [_capacity("Paused", state="Inactive"), _capacity("Contoso F2")])
+    with caplog.at_level("INFO", logger="fabric_deploy"):
+        assert get_default_capacity_id() == "id-Contoso F2"
+    assert "Contoso F2" in caplog.text
+
+
+def test_default_capacity_refuses_to_pick_among_several(monkeypatch):
+    _capacities(monkeypatch, [_capacity("Contoso F2"), _capacity("Fabrikam F4")])
+    with pytest.raises(ValueError, match="capacity_id") as err:
+        get_default_capacity_id()
+    assert "Contoso F2" in str(err.value) and "Fabrikam F4" in str(err.value)
+
+
+def test_default_capacity_none_active(monkeypatch):
+    _capacities(monkeypatch, [_capacity("Paused", state="Inactive")])
+    with pytest.raises(ValueError, match="(?s)No active capacities.*Paused"):
+        get_default_capacity_id()
+
+
+def test_default_capacity_none_visible(monkeypatch):
+    _capacities(monkeypatch, [])
+    with pytest.raises(ValueError, match="No capacities found"):
+        get_default_capacity_id()
 
 
 # --- get_workspace_id_by_name ----------------------------------------------
