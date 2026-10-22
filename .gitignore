@@ -1,41 +1,32 @@
-# Mac file manager caches
-**/.DS_Store
-
-# CI/CD error log 
-**/fabric_cicd.error.log
-
-# Python environment
-.venv/
-venv/
-env/
-
-# Byte-compiled / optimized / DLL files
-**/__pycache__/
+# Python
+__pycache__/
 *.py[codz]
 *$py.class
+.venv/
+venv/
 
 # Distribution / packaging
 dist/
 build/
 *.egg-info/
-.ropeproject
 
-# Testing
+# Test, lint and type-check caches
 .pytest_cache/
+.ruff_cache/
 .coverage
 htmlcov/
 
-# Type checking
-.mypy_cache/
-.pytype/
-.pyright/
+# Files fabdep and fabric-cicd write next to the deployed repository
+fabric_cicd.error.log
+parameter.yml.detected
 
-# IDE
+# Editors and OS
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+.DS_Store
 
 # Build tools
 # uv.lock is tracked for reproducible builds
