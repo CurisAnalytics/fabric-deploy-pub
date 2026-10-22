@@ -80,7 +80,7 @@ def handle_command_error(error: Exception, context: str) -> None:
             "(or `az login` again for a user account) — switching accounts "
             "won't help.\n"
         )
-    elif is_auth_error(error_msg):
+    elif is_auth_error(error):
         all_accounts = list_accounts()
         auth_help = format_auth_error_message(all_accounts)
         print_error(auth_help)

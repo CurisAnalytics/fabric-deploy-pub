@@ -7,8 +7,9 @@ and Azure account information display utilities.
 
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 
+from azure.core.exceptions import ClientAuthenticationError
 from fabric_cicd._common._color import Fore, Style
 
 from .identity import AzureAccount
@@ -19,6 +20,7 @@ __all__ = [
     "print_error",
     "format_auth_error_message",
     "format_account_list",
+    "http_status",
     "is_auth_error",
     "is_expired_credential_error",
     "is_connection_error",
@@ -287,79 +289,69 @@ def is_connection_error(error_msg: str) -> bool:
     return any(pattern in error_lower for pattern in connection_patterns)
 
 
-def is_transient_error(error_msg: str) -> bool:
+_HTTP_STATUS = re.compile(r"\bHTTP (\d{3})\b")
+# How Entra and fabric-cicd word auth failures, for errors that arrive as text
+# only (fabric-cicd's 401 handler raises a bare Exception with no status).
+_AUTH_MESSAGES = re.compile(
+    r"\bAADSTS\d+|Microsoft Entra token|executing identity is not authorized", re.IGNORECASE
+)
+_TRANSIENT_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+# Fabric's generic retry-worthy failures (its own message misspells "occurred").
+_TRANSIENT_MESSAGES = re.compile(
+    r"\ban error occurr?ed|internal server error|service unavailable|gateway timeout"
+    r"|bad gateway|temporarily unavailable",
+    re.IGNORECASE,
+)
+
+
+def _chain(error: BaseException) -> Iterator[BaseException]:
+    """`error` and the exceptions behind it, as a traceback would print them."""
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        suppressed = current.__cause__ is None and current.__suppress_context__
+        current = current.__cause__ or (None if suppressed else current.__context__)
+
+
+def http_status(error: BaseException | str) -> int | None:
+    """The HTTP status an error carries, or None.
+
+    Reads a status attribute anywhere in the exception chain (`status_code`,
+    `status`, or urllib's `code`), else an `HTTP nnn` marker in the message.
     """
-    Check if error message indicates a transient/retryable API error.
+    if isinstance(error, BaseException):
+        for exc in _chain(error):
+            for attr in ("status_code", "status", "code"):
+                value = getattr(exc, attr, None)
+                if isinstance(value, int) and 100 <= value <= 599:
+                    return value
+    match = _HTTP_STATUS.search(str(error))
+    return int(match.group(1)) if match else None
 
-    These are typically intermittent Fabric API errors that may succeed on retry.
 
-    Args:
-        error_msg: Error message string to check
+def is_auth_error(error: BaseException | str) -> bool:
+    """True when no token could be had, or the API refused the identity (401/403)."""
+    if isinstance(error, BaseException) and any(
+        isinstance(exc, ClientAuthenticationError) for exc in _chain(error)
+    ):
+        return True
+    return http_status(error) in (401, 403) or bool(_AUTH_MESSAGES.search(str(error)))
 
-    Returns:
-        True if error appears transient and retryable, False otherwise
-    """
-    error_lower = error_msg.lower()
 
-    # Transient error patterns - API glitches, temporary failures, network issues
-    transient_patterns = [
-        "unhandled error occurred",
-        "an error occured",  # Note: API typo is intentional
-        "an error occurred",
-        "internal server error",
-        "service unavailable",
-        "gateway timeout",
-        "bad gateway",
-        "connection reset",
-        "connection timed out",
-        "connection aborted",
-        "remote end closed connection",
-        "remotedisconnected",
-        "temporarily unavailable",
-    ]
-
-    # Don't retry if it's clearly an auth or connection config error
-    if is_auth_error(error_msg) or is_connection_error(error_msg):
+def is_transient_error(error: BaseException | str) -> bool:
+    """True for failures worth retrying: throttling, 5xx, dropped connections."""
+    if is_auth_error(error) or is_connection_error(str(error)):
         return False
-
-    return any(pattern in error_lower for pattern in transient_patterns)
-
-
-def is_auth_error(error_msg: str) -> bool:
-    """
-    Check if error message indicates an authentication/authorization issue.
-
-    Args:
-        error_msg: Error message string to check
-
-    Returns:
-        True if error is auth-related, False otherwise
-    """
-    error_lower = error_msg.lower()
-
-    # Common authentication/authorization error patterns
-    auth_patterns = [
-        "401",  # Unauthorized HTTP status
-        "403",  # Forbidden HTTP status
-        "404",  # Not Found (can indicate auth issues with workspace access)
-        "unauthorized",
-        "forbidden",
-        "not found",
-        "authentication",
-        "credential",
-        "token",
-        "login",
-        "aadsts",  # Azure AD error codes (e.g., AADSTS50173 for expired tokens)
-        "expired",  # Expired tokens or grants
-        "revoked",  # Revoked tokens or grants
-        "defaultazurecredential failed",
-        "no response from the imds endpoint",
-        "shared token cache credential",
-        "azure cli credential",
-        "managed identity credential",
-    ]
-
-    return any(pattern in error_lower for pattern in auth_patterns)
+    status = http_status(error)
+    if status is not None:
+        return status in _TRANSIENT_STATUSES
+    if isinstance(error, BaseException) and any(
+        isinstance(exc, ConnectionError | TimeoutError) for exc in _chain(error)
+    ):
+        return True
+    return bool(_TRANSIENT_MESSAGES.search(str(error)))
 
 
 def is_expired_credential_error(error_msg: str) -> bool:

@@ -1,54 +1,97 @@
 """Unit tests for log.py error-classification predicates.
 
-These are pure string predicates with no external state, so each case is a
-single line of expected behavior.
+Auth and transient checks read HTTP statuses structurally: a status attribute
+anywhere in the exception chain, or an `HTTP nnn` marker in the message.
+Everything else is a plain message predicate.
 """
 
 from __future__ import annotations
 
+import http.client
+import urllib.error
+
 import pytest
+from azure.core.exceptions import ClientAuthenticationError
 
 from fabric_deploy.log import (
     error_hint,
+    http_status,
     is_auth_error,
     is_connection_error,
     is_expired_credential_error,
     is_transient_error,
 )
 
+
+class _StatusError(Exception):
+    def __init__(self, status: int) -> None:
+        super().__init__("request failed")
+        self.status_code = status
+
+
+def _raised_from(outer: str, cause: BaseException) -> RuntimeError:
+    """A RuntimeError(outer) whose __cause__ is `cause`, as `raise ... from` leaves it."""
+    try:
+        try:
+            raise cause
+        except BaseException as e:
+            raise RuntimeError(outer) from e
+    except RuntimeError as e:
+        return e
+
+
+# --- http_status ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("error", "status"),
+    [
+        ("Failed to list workspaces (HTTP 403).", 403),
+        (_StatusError(429), 429),
+        (urllib.error.HTTPError("https://x", 401, "Unauthorized", None, None), 401),  # type: ignore[arg-type]
+        (_raised_from("deploy failed", _StatusError(503)), 503),
+        ("Plan 401k rollout failed", None),
+        (RuntimeError("no status here"), None),
+    ],
+)
+def test_http_status(error, status):
+    assert http_status(error) == status
+
+
 # --- is_auth_error -------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    "msg",
+    "error",
     [
-        "401 Unauthorized",
-        "403 Forbidden",
-        "404 Not Found",
-        "Token has expired",
-        "Token revoked",
-        "AADSTS50173: token has expired",
-        "DefaultAzureCredential failed to retrieve a token",
-        "AzureCliCredential could not authenticate",
-        "Login required",
-        "No response from the IMDS endpoint",
+        "Failed to list workspaces (HTTP 401).",
+        'Failed to create workspace (HTTP 403).\n{"errorCode": "InsufficientPrivileges"}',
+        "The executing identity is not authorized to call GET on 'https://x/v1/workspaces'.",
+        "Failed to acquire Microsoft Entra token. Please run 'az login' to set up an account",
+        "AADSTS7000222: The provided client secret keys for app 'x' are expired.",
+        _StatusError(403),
+        ClientAuthenticationError("no token"),
+        _raised_from("deploy failed", ClientAuthenticationError("no token")),
     ],
 )
-def test_is_auth_error_true(msg: str):
-    assert is_auth_error(msg) is True
+def test_is_auth_error_true(error):
+    assert is_auth_error(error) is True
 
 
 @pytest.mark.parametrize(
-    "msg",
+    "error",
     [
+        "Workspace 'Token Sales [DEV]' not found",  # words, not statuses
+        "Login page item failed to publish: credential connection missing",
+        "Failed to get item (HTTP 404).",
+        "Refresh of model 'Plan 401k' failed",
         "Internal server error",
-        "Pipeline failed at step 3",
-        "Workspace foo does not exist",  # plain "does not exist" is not an auth pattern
+        _StatusError(404),
         "",
     ],
 )
-def test_is_auth_error_false(msg: str):
-    assert is_auth_error(msg) is False
+def test_is_auth_error_false(error):
+    assert is_auth_error(error) is False
 
 
 # --- is_expired_credential_error ------------------------------------------
@@ -57,7 +100,7 @@ def test_is_auth_error_false(msg: str):
 @pytest.mark.parametrize(
     "msg",
     [
-        # Verbatim shape of the live failure that motivated this predicate.
+        # As `az` prints it.
         (
             "ERROR: AADSTS7000222: The provided client secret keys for app "
             "'bbbbbbbb-...' are expired. Visit the Azure portal to create new keys."
@@ -117,48 +160,40 @@ def test_is_connection_error_false(msg: str):
 
 
 @pytest.mark.parametrize(
-    "msg",
+    "error",
     [
-        "An unhandled error occurred during deployment",
-        "An error occured while processing",  # API typo
-        "An error occurred while processing",
+        "Failed to list items (HTTP 503).",
+        "Failed to list items (HTTP 429).",
+        _StatusError(502),
+        ConnectionResetError("Connection reset by peer"),
+        TimeoutError("timed out"),
+        http.client.RemoteDisconnected("Remote end closed connection without response"),
+        _raised_from("publish failed", ConnectionResetError()),
+        "Unhandled error occurred calling POST on 'x'. Message: An error occured while processing.",
         "Internal server error",
         "Service unavailable",
         "Gateway timeout",
         "Bad gateway",
-        "Connection reset by peer",
-        "Connection timed out",
-        "Connection aborted",
-        "Remote end closed connection without response",
-        "RemoteDisconnected: server closed the connection",
-        "Resource temporarily unavailable",
     ],
 )
-def test_is_transient_error_true(msg: str):
-    assert is_transient_error(msg) is True
-
-
-def test_is_transient_error_does_not_retry_auth_error():
-    """Even when the message contains 'internal server error', auth wins → no retry."""
-    assert is_transient_error("401 Unauthorized: internal server error") is False
-
-
-def test_is_transient_error_does_not_retry_connection_error():
-    """Connection misconfig is permanent — don't retry."""
-    msg = "User does not have access to the connection used in pipeline. Internal server error"
-    assert is_transient_error(msg) is False
+def test_is_transient_error_true(error):
+    assert is_transient_error(error) is True
 
 
 @pytest.mark.parametrize(
-    "msg",
+    "error",
     [
+        "Failed to update item (HTTP 400).",
+        _StatusError(409),
+        "Failed (HTTP 401). Internal server error",  # auth wins: retrying won't help
+        "User does not have access to the connection used in pipeline. Internal server error",
+        "Unhandled error occurred calling POST on 'x'. Message: Requested item not found.",
         "Pipeline syntax invalid",
-        "Item type not supported",
         "",
     ],
 )
-def test_is_transient_error_false(msg: str):
-    assert is_transient_error(msg) is False
+def test_is_transient_error_false(error):
+    assert is_transient_error(error) is False
 
 
 # --- error_hint ----------------------------------------------------------
