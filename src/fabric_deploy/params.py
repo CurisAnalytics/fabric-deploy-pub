@@ -11,8 +11,9 @@ import logging
 import shutil
 import tempfile
 from collections.abc import Sequence
+from difflib import get_close_matches
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import yaml
 
@@ -23,11 +24,15 @@ if TYPE_CHECKING:
     from .detect import ParameterDetector
 
 __all__ = [
+    "MANUAL_PARAMETER_KEYS",
     "ParameterFile",
     "apply_manual_overrides",
     "resolve_sqldatabase_hostname_params",
     "resolve_warehouse_endpoint_params",
 ]
+
+# The keys of a fabdep.yml manual_parameters entry.
+MANUAL_PARAMETER_KEYS = ("find_value", "replace_value", "item_type", "description")
 
 
 def for_environment(replace_value: str | dict[str, str], environment: str) -> str | None:
@@ -61,6 +66,16 @@ def _manual_entries(
         where = f"fabdep.yml manual_parameters entry {n}"
         if not isinstance(entry, dict):
             raise ValueError(f"{where}: expected a mapping with find_value and replace_value")
+        # Unknown keys fail rather than being ignored: parameter.yml's file_path or
+        # item_name, or a misspelt item_type, would otherwise widen the rule silently.
+        for key in cast(dict[object, object], entry):
+            if key not in MANUAL_PARAMETER_KEYS:
+                hint = get_close_matches(str(key), MANUAL_PARAMETER_KEYS, n=1, cutoff=0.6)
+                raise ValueError(
+                    f"{where}: unknown key '{key}'"
+                    + (f" — did you mean '{hint[0]}'?" if hint else "")
+                    + f" (known keys: {', '.join(MANUAL_PARAMETER_KEYS)})"
+                )
         find, replace = entry.get("find_value"), entry.get("replace_value")
         finds = [find] if isinstance(find, str) else find
         if not finds or not _is_str_list(finds):
@@ -82,6 +97,8 @@ def _manual_entries(
         if not _is_str_list(item_types):
             raise ValueError(f"{where}: item_type must be a string or list of strings")
         description = entry.get("description") or "Manual parameter"
+        if not isinstance(description, str):
+            raise ValueError(f"{where}: description must be a string")
         entries += [(f, replace, set(item_types), description) for f in finds]
     return entries
 

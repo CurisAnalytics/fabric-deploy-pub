@@ -194,6 +194,23 @@ class TestManualParameters:
                 "item_type",
                 id="mapping-item-type",
             ),
+            pytest.param(
+                f'  - find_value: "{DETECTED_UUID}"\n    replace_value: "x"\n'
+                "    item_types: [Notebook]\n",
+                "unknown key 'item_types' — did you mean 'item_type'",
+                id="misspelt-key",
+            ),
+            pytest.param(
+                f'  - find_value: "{DETECTED_UUID}"\n    replace_value: "x"\n'
+                "    file_path: Report/definition.pbir\n",
+                "unknown key 'file_path'",
+                id="parameter-yml-only-key",
+            ),
+            pytest.param(
+                f'  - find_value: "{DETECTED_UUID}"\n    replace_value: "x"\n    description: 5\n',
+                "description",
+                id="int-description",
+            ),
         ],
     )
     def test_malformed_entry_fails_naming_the_problem(self, tmp_path: Path, entry_yaml, problem):
