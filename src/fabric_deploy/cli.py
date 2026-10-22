@@ -1,6 +1,7 @@
 """CLI interface for fabric-deploy package."""
 
 import argparse
+import io
 import logging
 import sys
 from pathlib import Path
@@ -536,6 +537,11 @@ def handle_rls_command(args: argparse.Namespace) -> None:
 
 def main() -> None:
     """CLI entry point - routes to appropriate command handler."""
+    # A console that can't encode a character (✓ on a Windows cp1252 console)
+    # prints '?' for it instead of failing the command.
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(errors="replace")
     args = parse_args()
     set_auth_mode(getattr(args, "auth", None))
 

@@ -1,5 +1,6 @@
 """CLI tests against the sample workspace fixture."""
 
+import io
 import logging
 import os
 import shutil
@@ -330,3 +331,14 @@ class TestCommandErrors:
         assert captured.out == ""
         assert "Deployment failed: Failed to list workspaces (HTTP 403)." in captured.err
         assert "Contributor" in captured.err
+
+
+def test_a_legacy_console_encoding_does_not_crash_output(monkeypatch, sample_ws):
+    """A cp1252 console (Windows) can't encode '✓'; it prints a placeholder instead."""
+    stdout = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+    stderr = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", stderr)
+    _run(monkeypatch, "detect", "--save", str(sample_ws))
+    stdout.flush()
+    assert "? Saved" in stdout.buffer.getvalue().decode("cp1252")  # type: ignore[attr-defined]
