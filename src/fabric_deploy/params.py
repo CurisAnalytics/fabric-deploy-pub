@@ -324,9 +324,10 @@ class ParameterFile:
 
     It is the repo's own parameter.yml with the detected rules added, written
     to a temporary directory: the repo is never modified. The user's entries
-    win. A detected rule whose find_value the user's file (or a template it
-    extends) already lists is dropped, and the user's find_replace entries
-    come first, so they apply first. With nothing to add, `path` stays None
+    win. A detected rule is dropped when the user's file (or a template it
+    extends) has an entry for its find_value that applies to every file in
+    this environment; the user's find_replace entries come first, so where a
+    narrower entry of theirs applies, it applies first. With nothing to add, `path` stays None
     and fabric-cicd reads the repo's parameter.yml, if any, itself.
     """
 
@@ -389,8 +390,8 @@ class ParameterFile:
         covered = {
             entry.get("find_value")
             for document in [user, *(d for _, d in extended)]
-            for entry in document.get("find_replace") or []
-            if isinstance(entry, dict)
+            for entry in _entries(document)
+            if _applies_everywhere(entry, environment)
         }
         added = [rule for rule in rules if rule["find_value"] not in covered]
         if user_file.is_file():
@@ -455,6 +456,23 @@ class ParameterFile:
             if path.is_relative_to(self.repo_dir)
             else str(path)
         )
+
+
+def _applies_everywhere(entry: dict[str, Any], environment: str) -> bool:
+    """Whether a user's find_replace entry rewrites its find_value in every file
+    of a deploy to `environment`, making a detected rule for it redundant.
+
+    That takes a value for the environment (its own key, else `_ALL_`, as
+    fabric-cicd looks it up) and no item_type, item_name or file_path filter.
+    """
+    replace_value = entry.get("replace_value")
+    return (
+        isinstance(replace_value, dict)
+        and entry.get("item_type") is None
+        and entry.get("item_name") is None
+        and not entry.get("file_path")
+        and bool(for_environment(cast(dict[str, str], replace_value), environment))
+    )
 
 
 def _entries(document: dict[str, Any]) -> list[dict[str, Any]]:

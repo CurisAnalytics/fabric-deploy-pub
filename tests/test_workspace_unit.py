@@ -364,6 +364,39 @@ class TestParameterFile:
         }
         assert seen["repo_files"] == repo_files
         assert user_file.read_text() == self.USER_FILE
+        assert "it overrides 1 detected rule" in deployer._paramfile.summary[-1]
+
+    @pytest.mark.parametrize(
+        "user_entry",
+        [
+            '    replace_value:\n      PROD: "user-lakehouse"\n',
+            '    item_type: "Notebook"\n    replace_value:\n      _ALL_: "user-lakehouse"\n',
+            '    item_name: "Fill Lakehouse"\n    replace_value:\n      MAIN: "user-lakehouse"\n',
+            '    file_path: "x/notebook-content.py"\n    replace_value:\n      MAIN: "user-lakehouse"\n',
+        ],
+        ids=["other-environment", "item_type", "item_name", "file_path"],
+    )
+    def test_user_entry_that_does_not_apply_everywhere_keeps_the_detected_rule(
+        self, deployer, fabric_cicd, user_entry
+    ):
+        """Elsewhere (other items, other environments) only the detected rule rewrites
+        the id; where the user's entry applies, it applies first."""
+        (deployer._repo_dir_resolved / "parameter.yml").write_text(
+            f'find_replace:\n  - find_value: "{SAMPLE_LAKEHOUSE_ID}"\n{user_entry}'
+        )
+
+        document = self._deploy(deployer, fabric_cicd)["document"]
+
+        assert isinstance(document, dict)
+        rules = document["find_replace"]
+        assert [rule["find_value"] for rule in rules] == [
+            SAMPLE_LAKEHOUSE_ID,
+            SAMPLE_LAKEHOUSE_ID,
+            SAMPLE_DEV_WORKSPACE_ID,
+        ]
+        assert list(rules[0]["replace_value"].values()) == ["user-lakehouse"]
+        assert rules[1]["replace_value"] == {"MAIN": "$items.Lakehouse.fabdep_lakehouse.$id"}
+        assert "overrides" not in deployer._paramfile.summary[-1]
 
     def test_template_paths_resolve_from_the_repo(self, deployer, fabric_cicd):
         repo = deployer._repo_dir_resolved
