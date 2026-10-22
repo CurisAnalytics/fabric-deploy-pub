@@ -1,8 +1,7 @@
 """Unit tests for WorkspaceDeployer that mock fabric-cicd internals.
 
-These tests exercise the deployment call site without hitting the live
-Fabric API, so they run anywhere `az login` is set up (or even with no
-account at all, since the `az` calls are mocked too).
+These tests exercise the deployment call site with the Fabric API and
+fabric-cicd mocked, so they need no sign-in.
 
 The key contract pinned here is the fabric-cicd 1.0 API: `FabricWorkspace`
 must be constructed with a keyword-only `token_credential` argument.
@@ -253,7 +252,7 @@ class TestDeployedSummaryLine:
 
 class TestIncludeItemsValidation:
     """Pin the --include-items guard: a name that matches nothing must raise
-    instead of silently deploying zero items (fabric-cicd's old behavior)."""
+    instead of silently deploying zero items."""
 
     def test_repo_items_keys_on_display_name(self, deployer):
         index = _repo_items(deployer._repo_dir_resolved)

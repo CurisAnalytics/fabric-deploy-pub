@@ -62,8 +62,9 @@ class WorkspaceDeployer:
 
     IMPORTANT: Initialization has side effects!
     - Reads fabdep.yml from disk
-    - Makes network calls to Fabric API (workspace ID resolution, the repo's
-      sibling workspaces, and the lakehouses of those the content references)
+    - Makes network calls to Fabric API (workspace ID resolution or creation,
+      the repo's sibling workspaces, and the lakehouses of those the content
+      references)
     - Scans workspace files to detect source IDs (stored, not written to disk)
 
     The parameter file is written to a temporary directory during deploy(),
@@ -108,8 +109,9 @@ class WorkspaceDeployer:
         1. Resolves repository directory path
         2. Initializes logger
         3. Reads fabdep.yml from disk
-        4. Makes network calls to the Fabric REST API: the target workspace ID,
-           the repo's sibling workspaces, and lakehouses of referenced siblings
+        4. Makes network calls to the Fabric REST API: the target workspace ID
+           (creating the workspace when asked to), the repo's sibling
+           workspaces, and lakehouses of referenced siblings
         5. Scans workspace files to detect source IDs (stored in memory, not written to disk)
 
         Parameter file writing is deferred to deploy() when the item scope is known.
@@ -409,8 +411,8 @@ class WorkspaceDeployer:
             include_items: Include only specific items (format: "ItemName.ItemType")
             fail_on_stale: Raise instead of warning when a notebook has a
                 warehouse attachment that can't be remapped to the target
-                workspace. Intended for CI / autonomous
-                agent loops where the inline warning would get buried in logs.
+                workspace. Intended for CI, where the inline warning would get
+                buried in logs.
             allow_rls_change: Permit a deploy to change a model's live row-level
                 security. By default, if the repo carries RLS and the target's
                 live RLS differs, the deploy is blocked (someone may have edited

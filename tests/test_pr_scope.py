@@ -197,7 +197,7 @@ class TestItemsForChangedPaths:
         assert unmatched == []
 
     def test_display_name_wins_over_directory_name(self, tmp_path: Path):
-        """fabric-cicd matches displayName — the -i silent no-op footgun."""
+        """fabric-cicd matches displayName, not the folder name."""
         item = tmp_path / "weird_dir_name.Notebook"
         item.mkdir()
         (item / ".platform").write_text(

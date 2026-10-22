@@ -51,8 +51,8 @@ def _repo_items(repo_dir: Path) -> dict[str, str]:
 
     Keyed on the `.platform` displayName and type — which is what
     fabric-cicd's `items_to_include` matches on, NOT the directory name (the
-    two can differ, and that mismatch is exactly the `-i` silent no-op
-    footgun; a `*.SynapseNotebook/` dir is addressed as `<name>.Notebook`).
+    two can differ, and fabric-cicd silently skips a name it doesn't find; a
+    `*.SynapseNotebook/` dir is addressed as `<name>.Notebook`).
     """
     items: dict[str, str] = {}
     for platform_file in repo_dir.rglob(".platform"):
@@ -193,8 +193,7 @@ def validate_include_items(
     if not matched:
         raise RuntimeError(
             "--include-items matched no items by display name, so nothing "
-            "would deploy (the silent no-op fabdep used to hide). "
-            f"Requested: {', '.join(include_items)}. "
+            f"would deploy. Requested: {', '.join(include_items)}. "
             "Names are '<displayName>.<ItemType>' — check the displayName in "
             "each item's .platform, not the folder name."
         )
