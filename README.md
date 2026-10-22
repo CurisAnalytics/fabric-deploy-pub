@@ -194,10 +194,13 @@ orphan cleanup. `deploy` is the default command.
 | Afterwards | `--frame` refresh the semantic models the deploy published (see `refresh`) |
 | Dry run | `--dry-run [--output json]`, the same as `fabdep plan` |
 
-`--pr` looks back up to 50 commits from `HEAD` for one worded as a merged pull request by
-Azure DevOps, GitHub (merge or squash), GitLab or Bitbucket; a plain `git merge` doesn't
-count, and a rebase merge leaves nothing to find. Changed files outside any item are
-ignored, and `--pr` never unpublishes an item the pull request deleted. `-i` and `--pr`
+`--pr` looks back up to 50 commits along `HEAD`'s first-parent history for one worded as a
+merged pull request by Azure DevOps, GitHub (merge or squash), GitLab or Bitbucket; a plain
+`git merge` doesn't count, and a rebase merge leaves nothing to find. If `HEAD` has commits
+on top of that one (a direct push, a rebase merge), `--pr` fails rather than redeploy an
+older pull request: name the commit with `--pr <commit>` (`--pr HEAD` is `HEAD`'s own
+changes). Changed files outside any item are ignored, a pull request that changed no item
+deploys nothing, and `--pr` never unpublishes an item the pull request deleted. `-i` and `--pr`
 rely on fabric-cicd's experimental `items_to_include`, which publishes only the items named:
 name what they depend on too.
 

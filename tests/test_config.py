@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from fabric_deploy.config import FabdepConfig
-from fabric_deploy.workspace import WorkspaceDeployer
+from fabric_deploy.workspace import PR_LATEST, WorkspaceDeployer
 
 BASE = "workspace_base_name: Base\n"
 MAP = """\
@@ -275,7 +275,7 @@ class TestTargetWorkspace:
         ("new_workspace", "options", "error"),
         [
             pytest.param(True, {"item_types": ["Notebok"]}, "Notebok", id="-N-unknown-type"),
-            pytest.param(True, {"pr": "HEAD"}, "no pull-request commit", id="-N-no-pr-commit"),
+            pytest.param(True, {"pr": PR_LATEST}, "no pull-request commit", id="-N-no-pr-commit"),
             pytest.param(
                 False, {"include_items": ["Nope.Notebook"]}, "Nope", id="create-unknown-item"
             ),

@@ -196,6 +196,15 @@ class TestItems:
         assert plan.cleanup == cleanup
         assert "unpublish" not in {action for action, _, _ in _actions(plan)}
 
+    def test_pr_that_touched_no_item_plans_nothing(self, sample_ws, fabric, monkeypatch):
+        monkeypatch.setattr(
+            "fabric_deploy.workspace.changed_paths_in", lambda _r, _c: ["README.md"]
+        )
+        plan = _plan(sample_ws, pr="abc1234")
+
+        assert (plan.items, plan.cleanup, plan.blocked) == ((), "--pr", False)
+        assert any("nothing to deploy" in w for w in plan.warnings)
+
     def test_type_scope_limits_publishing_and_cleanup(self, sample_ws, fabric):
         fabric.items[TARGET_ID].append(_item("Old Notebook", "Notebook"))
 

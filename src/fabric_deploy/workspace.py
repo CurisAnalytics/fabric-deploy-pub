@@ -49,7 +49,9 @@ from .scope import (
 
 # Sentinel for a bare `--pr`: search back from HEAD for the PR commit, rather
 # than treating a specific commit-ish as the PR.
-PR_HEAD = "HEAD"
+# `--pr` with no commit: search back from HEAD for the pull-request commit. Not a
+# valid git ref, so an explicit `--pr HEAD` still means HEAD's own changes.
+PR_LATEST = "<latest pull request>"
 
 
 @dataclass(frozen=True)
@@ -429,11 +431,14 @@ class WorkspaceDeployer:
         deploying more than the PR changed is the failure mode this flag exists
         to avoid.
 
+        Returns:
+            The items the PR touched; empty when it touched none (a docs-only
+            PR), which deploys nothing.
+
         Raises:
-            RuntimeError: If no PR commit is found, HEAD is past it, or it
-                touched no item.
+            RuntimeError: If no PR commit is found, or HEAD is past it.
         """
-        if pr == PR_HEAD:
+        if pr == PR_LATEST:
             found = latest_pr_commit(self._repo_dir_resolved)
             if not found:
                 raise RuntimeError(
@@ -471,11 +476,7 @@ class WorkspaceDeployer:
                 + (" ..." if len(unmatched) > 5 else "")
             )
         if not matched:
-            raise RuntimeError(
-                f"--pr: {label} changed no deployable item, so there is "
-                "nothing to publish. Deploy without --pr to push the whole "
-                "workspace."
-            )
+            self.logger.warning(f"--pr: {label} changed no deployable item; nothing to deploy.")
         return matched
 
     def resolve_scope(
@@ -501,6 +502,13 @@ class WorkspaceDeployer:
                     "name items yourself — not both."
                 )
             include_items = self._items_from_pr(pr)
+            if not include_items:
+                return DeployScope(
+                    item_types=resolve_item_scope(item_types, exclude_types, None),
+                    include_items=[],
+                    items=[],
+                    cleanup=False,
+                )
 
         if include_items:
             self.logger.warning(
@@ -561,9 +569,10 @@ class WorkspaceDeployer:
                 deploy, because the button would ship still calling the SOURCE
                 workspace's function.
             pr: Restrict the deploy to the items a pull request touched.
-                PR_HEAD ("HEAD") searches back from HEAD for the PR commit; any
-                other value is used as the commit-ish directly. Resolves into
-                `include_items`, so it cannot be combined with it.
+                PR_LATEST searches back from HEAD for the PR commit; any other
+                value is used as the commit-ish directly. Resolves into
+                `include_items`, so it cannot be combined with it; a PR that
+                touched no item deploys nothing.
 
         Raises:
             RuntimeError: If the scope can't be resolved (see `resolve_scope`)
@@ -590,6 +599,9 @@ class WorkspaceDeployer:
             pr=pr,
         )
         item_type_in_scope, include_items = scope.item_types, scope.include_items
+        if include_items == []:  # --pr touched no item
+            self.deployed_items = []
+            return
 
         # Every guard runs before anything is written.
         for _, verdict in self.guard_verdicts(

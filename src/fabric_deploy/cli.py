@@ -37,7 +37,7 @@ from .refresh import frame_models
 from .rls import pull_rls
 from .scaffold import schema_text, write_starter
 from .scope import repo_items
-from .workspace import PR_HEAD, WorkspaceDeployer
+from .workspace import PR_LATEST, WorkspaceDeployer
 
 _SEP = "=" * 100
 # Deploy flags echoed under the banner, in this order.
@@ -73,7 +73,7 @@ def format_deploy_options(args: argparse.Namespace) -> str:
     for dest in _ECHOED_FLAGS:
         value = getattr(args, dest)
         flag = "--" + dest.replace("_", "-")
-        if value is True or (dest == "pr" and value == PR_HEAD):
+        if value is True or (dest == "pr" and value == PR_LATEST):
             opts.append(flag)
         elif isinstance(value, list):
             opts.append(shlex.join([flag, *cast(list[str], value)]))
@@ -301,11 +301,12 @@ def parse_args() -> argparse.Namespace:
     _ = deploy_options.add_argument(
         "--pr",
         nargs="?",
-        const=PR_HEAD,
+        const=PR_LATEST,
         metavar="COMMIT",
         help="Deploy only the items a pull request changed: those of the newest "
-        "pull-request commit reachable from HEAD (as Azure DevOps, GitHub, GitLab or "
-        "Bitbucket word it; a plain merge commit doesn't count), or of COMMIT. Not with -i.",
+        "pull-request commit in HEAD's first-parent history (as Azure DevOps, GitHub, "
+        "GitLab or Bitbucket word it; a plain merge commit doesn't count; fails if HEAD "
+        "has commits on top of it), or of COMMIT. Not with -i.",
     )
     _ = deploy_options.add_argument(
         "-n",

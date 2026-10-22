@@ -15,6 +15,7 @@ import pytest
 
 from fabric_deploy.git import changed_paths_in, commits_after, current_branch, latest_pr_commit
 from fabric_deploy.scope import items_for_changed_paths
+from fabric_deploy.workspace import PR_LATEST
 
 from .conftest import make_item
 
@@ -315,7 +316,7 @@ class TestItemsFromPr:
             "fabric_deploy.workspace.changed_paths_in",
             lambda _d, _c: ["Load GL.Notebook/notebook-content.py", "README.md"],
         )
-        assert deployer._items_from_pr("HEAD") == ["Load GL.Notebook"]
+        assert deployer._items_from_pr(PR_LATEST) == ["Load GL.Notebook"]
 
     def test_head_past_the_pr_commit_is_an_error(self, deployer, monkeypatch):
         """After a rebase merge or a direct push, the newest PR-worded commit is an
@@ -330,7 +331,7 @@ class TestItemsFromPr:
             lambda _d, _c: pytest.fail("should stop before reading the older PR's changes"),
         )
         with pytest.raises(RuntimeError, match=r"3 commit\(s\) past.*--pr <commit>"):
-            deployer._items_from_pr("HEAD")
+            deployer._items_from_pr(PR_LATEST)
 
     def test_explicit_commit_skips_the_search(self, deployer, monkeypatch):
         monkeypatch.setattr(
@@ -348,20 +349,45 @@ class TestItemsFromPr:
     def test_raises_when_no_pr_commit_found(self, deployer, monkeypatch):
         monkeypatch.setattr("fabric_deploy.workspace.latest_pr_commit", lambda _d: None)
         with pytest.raises(RuntimeError, match="found no pull-request commit"):
-            deployer._items_from_pr("HEAD")
+            deployer._items_from_pr(PR_LATEST)
 
-    def test_raises_when_pr_touched_no_item(self, deployer, monkeypatch):
-        """Deploying everything would be the wrong recovery — say nothing matched."""
+    def test_explicit_head_is_heads_own_commit(self, deployer, monkeypatch):
+        """`--pr HEAD` names a commit; only a bare `--pr` searches for the PR commit."""
+        monkeypatch.setattr(
+            "fabric_deploy.workspace.latest_pr_commit",
+            lambda _d: pytest.fail("should not search when a commit is given"),
+        )
+        monkeypatch.setattr(
+            "fabric_deploy.workspace.changed_paths_in",
+            lambda _d, commit: ["Load GL.Notebook/notebook-content.py"] if commit == "HEAD" else [],
+        )
+        assert deployer._items_from_pr("HEAD") == ["Load GL.Notebook"]
+
+    def test_pr_that_touched_no_item_deploys_nothing(
+        self, deployer, monkeypatch, fabric_cicd, caplog
+    ):
+        """A docs-only PR is a no-op, never a deploy of everything."""
         monkeypatch.setattr(
             "fabric_deploy.workspace.latest_pr_commit",
             lambda _d: ("abc123def", "Merged PR 7: docs"),
         )
         monkeypatch.setattr(
-            "fabric_deploy.workspace.changed_paths_in",
-            lambda _d, _c: ["README.md"],
+            "fabric_deploy.workspace.changed_paths_in", lambda _d, _c: ["README.md"]
         )
-        with pytest.raises(RuntimeError, match="changed no deployable item"):
-            deployer._items_from_pr("HEAD")
+        monkeypatch.setattr(
+            "fabric_deploy.workspace.create_workspace",
+            lambda *_a: pytest.fail("created a workspace with nothing to deploy"),
+        )
+        scope = deployer.resolve_scope(pr=PR_LATEST)
+        assert (scope.items, scope.include_items, scope.cleanup) == ([], [], False)
+
+        with caplog.at_level("WARNING"):
+            deployer.deploy(pr=PR_LATEST)
+        assert "nothing to deploy" in caplog.text
+        assert deployer.deployed_items == []
+        fabric_cicd.workspace.assert_not_called()
+        fabric_cicd.publish.assert_not_called()
+        fabric_cicd.unpublish.assert_not_called()
 
 
 def test_workspace_in_a_subfolder_of_the_git_repo(tmp_path: Path, mock_fabric_api):
@@ -379,9 +405,9 @@ def test_workspace_in_a_subfolder_of_the_git_repo(tmp_path: Path, mock_fabric_ap
 
     deployer = WorkspaceDeployer(ws, branch_override="dev")
 
-    assert deployer._items_from_pr("HEAD") == ["Load GL.Notebook"]
+    assert deployer._items_from_pr(PR_LATEST) == ["Load GL.Notebook"]
 
 
 def test_pr_and_include_items_conflict(deployer):
     with pytest.raises(RuntimeError, match="--pr and --include-items"):
-        deployer.deploy(pr="HEAD", include_items=["Load GL.Notebook"])
+        deployer.deploy(pr=PR_LATEST, include_items=["Load GL.Notebook"])

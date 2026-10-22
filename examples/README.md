@@ -87,7 +87,7 @@ of the examples above, which stores no secret at all.
   pull requests. The plan jobs name the merge commit the pull-request build checks out
   instead. Both need the history, hence `fetch-depth: 0` / `fetchDepth: 0`.
 - `--pr` never unpublishes, and a pull request that changes no item (only
-  documentation, say) fails both jobs, as there is nothing to deploy. A full
+  documentation, say) plans and deploys nothing. A full
   `fabdep deploy`, previewed with `fabdep plan`, removes the items the repository no
   longer has.
 - Add `--output json` to `fabdep plan` for a plan other tools can read.
