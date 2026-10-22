@@ -431,6 +431,7 @@ def get_semantic_model_definition(
         method="POST",
         scope=FABRIC_SCOPE,
         error_context="get semantic model definition",
+        idempotent=True,  # it only reads, though it is a POST
     )
     if status == 202:
         body = poll_fabric_lro(

@@ -32,7 +32,7 @@ def _two_pages(monkeypatch) -> list[str]:
     """Serve every list endpoint as two pages; return the requested URLs."""
     seen: list[str] = []
 
-    def fake_http(url, method="GET", data=None, scope=None, error_context=""):
+    def fake_http(url, method="GET", data=None, scope=None, error_context="", idempotent=False):
         seen.append(url)
         if "continuationToken=" in url:
             return 200, {}, {"value": [{"id": "2", "displayName": "b"}]}
@@ -184,7 +184,7 @@ def _refresh(monkeypatch, post_headers, states):
     polls = iter(states)
     monkeypatch.setattr("fabric_deploy.client.time.sleep", lambda s: events.append(f"sleep {s}"))
 
-    def fake_http(url, method="GET", data=None, scope=None, error_context=""):
+    def fake_http(url, method="GET", data=None, scope=None, error_context="", idempotent=False):
         if method == "POST":
             return 202, post_headers, {}
         events.append(f"poll {url}")
@@ -221,11 +221,23 @@ def test_refresh_semantic_model_needs_a_refresh_id(monkeypatch):
 # --- get_semantic_model_definition -----------------------------------------
 
 
-def _definition_response(monkeypatch, body):
-    monkeypatch.setattr(
-        "fabric_deploy.client.http_request",
-        lambda url, method="GET", data=None, scope=None, error_context="": (200, {}, body),
-    )
+def _definition_response(monkeypatch, body) -> list[dict[str, object]]:
+    """Answer getDefinition with `body`; returns each call's keyword arguments."""
+    calls: list[dict[str, object]] = []
+
+    def fake_http(url, **kwargs):
+        calls.append(kwargs)
+        return 200, {}, body
+
+    monkeypatch.setattr("fabric_deploy.client.http_request", fake_http)
+    return calls
+
+
+def test_semantic_model_definition_is_retried_as_a_read(monkeypatch):
+    """getDefinition is a POST that changes nothing, so a server error may be retried."""
+    calls = _definition_response(monkeypatch, {"definition": {"parts": []}})
+    get_semantic_model_definition("ws", "sm")
+    assert [(c["method"], c["idempotent"]) for c in calls] == [("POST", True)]
 
 
 def test_semantic_model_definition_decodes_parts(monkeypatch):
@@ -304,7 +316,7 @@ def test_endpoint_calls_use_fabric_cicd_api_roots(monkeypatch):
     monkeypatch.setattr("fabric_deploy.client.time.sleep", lambda _s: None)
     urls: list[str] = []
 
-    def fake_http(url, method="GET", data=None, scope=None, error_context=""):
+    def fake_http(url, method="GET", data=None, scope=None, error_context="", idempotent=False):
         urls.append(url)
         if url.endswith("/refreshes"):
             return 202, {"x-ms-request-id": "r1"}, {}

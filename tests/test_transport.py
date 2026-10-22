@@ -95,7 +95,7 @@ def roots(monkeypatch):
 def _fake_http(monkeypatch, handler):
     calls: list[str] = []
 
-    def fake(url, method="GET", data=None, scope=None, error_context=""):
+    def fake(url, method="GET", data=None, scope=None, error_context="", idempotent=False):
         calls.append(url)
         return handler(url)
 
@@ -135,12 +135,33 @@ def test_read_timeout_is_a_runtime_error(urlopen):
         http_request("https://api.example/x", error_context="list things")
 
 
-@pytest.mark.parametrize("code", [429, 500, 503])
-def test_retries_throttling_and_server_errors_honouring_retry_after(urlopen, sleeps, code):
+@pytest.mark.parametrize(
+    ("code", "method", "idempotent"),
+    [
+        (429, "POST", False),  # throttled: the service did nothing
+        (500, "GET", False),
+        (503, "POST", True),  # a POST that only reads
+    ],
+)
+def test_retries_throttling_and_server_errors_honouring_retry_after(
+    urlopen, sleeps, code, method, idempotent
+):
     urlopen.queue = [_http_error(code, {"Retry-After": "7"}), _Response(body='{"ok": true}')]
-    assert http_request("https://api.example/x", method="POST")[2] == {"ok": True}
+    response = http_request("https://api.example/x", method=method, idempotent=idempotent)
+    assert response[2] == {"ok": True}
     assert sleeps == [7]
     assert len(urlopen.calls) == 2
+
+
+@pytest.mark.parametrize("code", [502, 504])
+def test_server_errors_are_not_retried_for_a_post_that_acts(urlopen, sleeps, code):
+    """The service may have acted before failing: a retry could create a workspace
+    twice or start a second refresh."""
+    urlopen.queue = [_http_error(code)]
+    with pytest.raises(RuntimeError, match=rf"create things \(HTTP {code}\)"):
+        http_request("https://api.example/x", method="POST", error_context="create things")
+    assert len(urlopen.calls) == 1
+    assert sleeps == []
 
 
 def test_retry_after_http_date(urlopen, sleeps, monkeypatch):

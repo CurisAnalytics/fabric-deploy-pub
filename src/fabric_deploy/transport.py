@@ -1,7 +1,7 @@
 """HTTP transport for the Fabric / Power BI REST APIs.
 
 A thin request layer: authenticated calls with a timeout and bounded retries
-on throttling / server errors, status + header exposure for long-running
+on throttling and, for reads, server errors, status + header exposure for long-running
 operations, the Fabric LRO poller and list pagination. No knowledge of
 specific endpoints (that's the `client` module) and no auth logic (that's
 `identity`).
@@ -31,9 +31,9 @@ __all__ = [
 
 
 REQUEST_TIMEOUT_S = 60
-# Attempts per request when the service answers 429 or 5xx. Each wait follows
-# the response's Retry-After, else doubles from BACKOFF_BASE_S, and is capped
-# at MAX_RETRY_WAIT_S so a long throttling window fails instead of hanging.
+# Attempts per request when the service answers 429, or 5xx to a read. Each wait
+# follows the response's Retry-After, else doubles from BACKOFF_BASE_S, and is
+# capped at MAX_RETRY_WAIT_S so a long throttling window fails instead of hanging.
 MAX_ATTEMPTS = 5
 BACKOFF_BASE_S = 2
 MAX_RETRY_WAIT_S = 60
@@ -60,6 +60,7 @@ def http_request(
     data: dict[str, Any] | None = None,
     scope: str = FABRIC_SCOPE,
     error_context: str = "API request",
+    idempotent: bool = False,
 ) -> tuple[int, dict[str, str], dict[str, Any]]:
     """Make an authenticated HTTP request and return (status, headers, body).
 
@@ -67,8 +68,9 @@ def http_request(
     headers — needed to follow long-running operations (202 + `Location` /
     `Retry-After`). Header names are lower-cased (HTTP header names are
     case-insensitive). An empty response body parses to `{}`. Throttled
-    (429) and server-error (5xx) responses are retried up to `MAX_ATTEMPTS`
-    times.
+    (429) responses are retried up to `MAX_ATTEMPTS` times, server errors
+    (5xx) only for a GET or an `idempotent` call: the service may have acted
+    before failing, and repeating a create or a refresh would act twice.
 
     Args:
         url: Absolute request URL.
@@ -78,6 +80,8 @@ def http_request(
             (some Fabric endpoints require it).
         scope: OAuth scope for the token (Fabric vs Power BI).
         error_context: Context string for error messages.
+        idempotent: Repeating the call changes nothing (a POST that only
+            reads), so a server error may be retried.
 
     Returns:
         (status_code, headers_dict, parsed_body)
@@ -96,7 +100,7 @@ def http_request(
         request_data = None
 
     req = urllib.request.Request(url, data=request_data, headers=headers, method=method)
-    status, resp_headers, body = _send(req, error_context)
+    status, resp_headers, body = _send(req, error_context, idempotent or method == "GET")
     if not body.strip():
         return status, resp_headers, {}
     try:
@@ -107,8 +111,11 @@ def http_request(
         ) from e
 
 
-def _send(req: urllib.request.Request, error_context: str) -> tuple[int, dict[str, str], str]:
-    """Open `req` and return (status, lower-cased headers, body text), retrying 429/5xx."""
+def _send(
+    req: urllib.request.Request, error_context: str, idempotent: bool
+) -> tuple[int, dict[str, str], str]:
+    """Open `req` and return (status, lower-cased headers, body text), retrying
+    429, and 5xx when `idempotent`."""
     attempt = 1
     while True:
         try:
@@ -116,7 +123,7 @@ def _send(req: urllib.request.Request, error_context: str) -> tuple[int, dict[st
                 headers = {name.lower(): value for name, value in response.headers.items()}
                 return response.status, headers, response.read().decode()
         except urllib.error.HTTPError as e:
-            retryable = e.code == 429 or e.code >= 500
+            retryable = e.code == 429 or (e.code >= 500 and idempotent)
             if retryable and attempt < MAX_ATTEMPTS:
                 delay = _retry_after_s(e.headers.get("Retry-After"))
                 if delay is None:

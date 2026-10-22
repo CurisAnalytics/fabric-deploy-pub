@@ -53,7 +53,7 @@ class FakeFabric:
         ]
         self.requests: list[str] = []
 
-    def send(self, req: Any, _context: str) -> tuple[int, dict[str, str], str]:
+    def send(self, req: Any, _context: str, _idempotent: bool) -> tuple[int, dict[str, str], str]:
         method, url = req.get_method(), urlsplit(req.full_url)
         parts = url.path.strip("/").split("/")
         self.requests.append(f"{method} {url.path}")
