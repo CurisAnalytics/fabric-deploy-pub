@@ -37,6 +37,47 @@ def for_environment(replace_value: str | dict, environment: str) -> str | None:
     return next((v for k, v in replace_value.items() if str(k).lower() == "_all_"), None)
 
 
+def _is_str_list(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(v, str) and v for v in value)
+
+
+def _manual_entries(manual_params: list) -> list[tuple[str, str | dict, set[str], str]]:
+    """(find_value, replace_value, item_types, description) for each find_value
+    in fabdep.yml manual_parameters; a find_value list yields one per value.
+
+    Raises:
+        ValueError: An entry is malformed; the message names it and the key.
+    """
+    entries = []
+    for n, entry in enumerate(manual_params, start=1):
+        where = f"fabdep.yml manual_parameters entry {n}"
+        if not isinstance(entry, dict):
+            raise ValueError(f"{where}: expected a mapping with find_value and replace_value")
+        find, replace = entry.get("find_value"), entry.get("replace_value")
+        finds = [find] if isinstance(find, str) else find
+        if not finds or not _is_str_list(finds):
+            raise ValueError(f"{where}: find_value must be a non-empty string or list of strings")
+        if not (
+            _is_str_list([replace])
+            or (
+                isinstance(replace, dict)
+                and replace
+                and _is_str_list([*replace, *replace.values()])
+            )
+        ):
+            raise ValueError(
+                f"{where}: replace_value must be a non-empty string, or a mapping of "
+                "environment names (or _ALL_) to strings"
+            )
+        item_type = entry.get("item_type") or []
+        item_types = [item_type] if isinstance(item_type, str) else item_type
+        if not _is_str_list(item_types):
+            raise ValueError(f"{where}: item_type must be a string or list of strings")
+        description = entry.get("description") or "Manual parameter"
+        entries += [(f, replace, set(item_types), description) for f in finds]
+    return entries
+
+
 def apply_manual_overrides(
     detector: ParameterDetector,
     manual_params: list[dict],
@@ -61,21 +102,17 @@ def apply_manual_overrides(
     find_replace to; fabdep.yml itself is not one) is the typo gate.
 
     Returns the number of parameters overridden or injected.
+
+    Raises:
+        ValueError: An entry is malformed.
     """
-    entries = []
-    for entry in manual_params:
-        if not entry.get("find_value") or not entry.get("replace_value"):
-            logger.warning("Skipping manual parameter with missing find_value or replace_value")
-            continue
-        entries.append(entry)
+    entries = _manual_entries(manual_params)
     found = find_in_item_files(
-        detector.repo_dir,
-        [e["find_value"] for e in entries if e["find_value"] not in detector.parameters],
+        detector.repo_dir, [v for v, *_ in entries if v not in detector.parameters]
     )
 
     count = 0
-    for entry in entries:
-        find_value = entry["find_value"]
+    for find_value, replace_value, item_types, description in entries:
         param = detector.parameters.get(find_value)
         if param is None and not found[find_value]:
             logger.warning(
@@ -84,7 +121,7 @@ def apply_manual_overrides(
                 "must match the item source files exactly."
             )
             continue
-        value = for_environment(entry["replace_value"], environment)
+        value = for_environment(replace_value, environment)
         if value is None:
             logger.info(
                 f"Manual parameter '{find_value}' has no replace_value for "
@@ -94,7 +131,7 @@ def apply_manual_overrides(
         if param is None:
             param = DetectedParameter(
                 find_value=find_value,
-                description=entry.get("description") or "Manual parameter",
+                description=description,
                 source_files=set(found[find_value]),
             )
             detector.parameters[find_value] = param
@@ -103,8 +140,8 @@ def apply_manual_overrides(
                 f"{find_value} -> {value}"
             )
         param.dynamic_variable = value
-        if item_type := entry.get("item_type"):
-            param.item_types = {item_type} if isinstance(item_type, str) else set(item_type)
+        if item_types:
+            param.item_types = item_types
         param.source_files.add("fabdep.yml")
         count += 1
     return count

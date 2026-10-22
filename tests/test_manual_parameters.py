@@ -239,28 +239,65 @@ class TestManualParameters:
 
         assert d._detector.parameters[DETECTED_UUID].dynamic_variable == "prod-value"
 
-    def test_missing_find_value_or_replace_value_is_skipped(
-        self, tmp_path: Path, mock_fabric_api, caplog
+    @pytest.mark.parametrize(
+        ("entry_yaml", "problem"),
+        [
+            ('  - "not-a-mapping"\n', "mapping"),
+            ('  - replace_value: "x"\n', "find_value"),
+            ('  - find_value: 12345\n    replace_value: "x"\n', "find_value"),
+            ('  - find_value: ""\n    replace_value: "x"\n', "find_value"),
+            (f'  - find_value: "{DETECTED_UUID}"\n', "replace_value"),
+            (f'  - find_value: "{DETECTED_UUID}"\n    replace_value: ["a"]\n', "replace_value"),
+            (
+                f'  - find_value: "{DETECTED_UUID}"\n    replace_value:\n      prod: 5\n',
+                "replace_value",
+            ),
+            (
+                f'  - find_value: "{DETECTED_UUID}"\n    replace_value: "x"\n'
+                "    item_type: {a: b}\n",
+                "item_type",
+            ),
+        ],
+        ids=[
+            "not-a-mapping",
+            "no-find",
+            "int-find",
+            "empty-find",
+            "no-replace",
+            "list-replace",
+            "int-env-value",
+            "mapping-item-type",
+        ],
+    )
+    def test_malformed_entry_fails_naming_the_problem(
+        self, tmp_path: Path, mock_fabric_api, entry_yaml: str, problem: str
     ):
+        """A malformed entry stops the deploy before anything is published,
+        rather than being skipped or crashing on an unhashable value."""
+        _build_repo(
+            tmp_path,
+            'workspace_base_name: "ws"\nmanual_parameters:\n'
+            f'  - find_value: "{DETECTED_UUID}"\n    replace_value: "fine"\n' + entry_yaml,
+        )
+
+        with pytest.raises(ValueError, match=rf"manual_parameters entry 2: .*{problem}"):
+            WorkspaceDeployer(tmp_path, branch_override="dev")
+
+    def test_find_value_list_applies_the_entry_to_each(self, tmp_path: Path, mock_fabric_api):
         _build_repo(
             tmp_path,
             'workspace_base_name: "ws"\n'
             "manual_parameters:\n"
-            '  - replace_value: "no-find"\n'
-            f'  - find_value: "{DETECTED_UUID}"\n'
-            '  - find_value: "valid-but-unmatched"\n'
-            '    replace_value: "x"\n',
+            f'  - find_value: ["{DETECTED_UUID}", "{UNRELATED_UUID}"]\n'
+            '    replace_value: "shared"\n',
+        )
+        (tmp_path / "n1.Notebook" / "notebook-content.py").write_text(
+            (tmp_path / "n1.Notebook" / "notebook-content.py").read_text()
+            + f"x = '{UNRELATED_UUID}'\n"
         )
 
-        with caplog.at_level("WARNING"):
-            d = WorkspaceDeployer(tmp_path, branch_override="dev")
+        d = WorkspaceDeployer(tmp_path, branch_override="dev")
 
-        # Only the third entry was complete, but its find_value is neither
-        # detected nor present in any item file — so the manual count is 0.
-        assert d._manual_count == 0
-
-        # The two malformed entries should produce skip warnings.
-        skip_warnings = [
-            r for r in caplog.records if "missing find_value or replace_value" in r.message
-        ]
-        assert len(skip_warnings) >= 2
+        assert d._detector.parameters[DETECTED_UUID].dynamic_variable == "shared"
+        assert d._detector.parameters[UNRELATED_UUID].dynamic_variable == "shared"
+        assert d._manual_count == 2
