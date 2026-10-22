@@ -503,11 +503,15 @@ class ParameterFile:
         )
         if document is None:
             return
-        path = Path(tempfile.mkdtemp(prefix="fabdep-")) / "parameter.yml"
-        path.write_text(
-            yaml.safe_dump(document, sort_keys=False, allow_unicode=True), encoding="utf-8"
-        )
-        self.path = str(path)
+        directory = Path(tempfile.mkdtemp(prefix="fabdep-"))
+        try:
+            (directory / "parameter.yml").write_text(
+                yaml.safe_dump(document, sort_keys=False, allow_unicode=True), encoding="utf-8"
+            )
+        except BaseException:
+            shutil.rmtree(directory, ignore_errors=True)
+            raise
+        self.path = str(directory / "parameter.yml")
 
     def cleanup(self) -> None:
         """Remove the temporary file, if `write()` made one."""

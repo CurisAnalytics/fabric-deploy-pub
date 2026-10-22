@@ -516,6 +516,47 @@ class TestParameterFile:
             ]
         }
 
+    def test_file_is_removed_when_the_deploy_fails_after_writing_it(
+        self, deployer, fabric_cicd, monkeypatch
+    ):
+        written: list[str | None] = []
+        write = deployer._paramfile.write
+
+        def write_and_record(*args: object) -> None:
+            write(*args)
+            written.append(deployer._paramfile.path)
+
+        monkeypatch.setattr(deployer._paramfile, "write", write_and_record)
+        monkeypatch.setattr(
+            "fabric_deploy.workspace.patch_fabric_cicd_logger",
+            MagicMock(side_effect=RuntimeError("logger")),
+        )
+        with pytest.raises(RuntimeError, match="logger"):
+            deployer.deploy()
+
+        path = written[0]
+        assert path is not None
+        assert not Path(path).parent.exists()
+
+    def test_directory_is_removed_when_writing_the_file_fails(
+        self, deployer, fabric_cicd, monkeypatch, tmp_path
+    ):
+        made = tmp_path / "fabdep-temp"
+
+        def mkdtemp(prefix: str) -> str:
+            made.mkdir()
+            return str(made)
+
+        monkeypatch.setattr("fabric_deploy.params.tempfile.mkdtemp", mkdtemp)
+        monkeypatch.setattr(
+            "fabric_deploy.params.yaml.safe_dump", MagicMock(side_effect=OSError("disk full"))
+        )
+        with pytest.raises(OSError, match="disk full"):
+            deployer.deploy()
+
+        assert not made.exists()
+        fabric_cicd.workspace.assert_not_called()
+
     def test_nothing_to_add_leaves_fabric_cicd_on_the_repo_file(self, deployer, fabric_cicd):
         deployer._detector.parameters = {}
         seen = self._deploy(deployer, fabric_cicd)

@@ -587,34 +587,34 @@ class WorkspaceDeployer:
             if verdict.status == "warn":
                 self.logger.warning(verdict.message)
 
-        if self._detector is not None:
-            self._paramfile.write(
-                self._detector,
-                self.workspace_id,
-                self.environment,
-                self._manual_count,
-                self._skipped_lakehouse_count,
-            )
-
-        for line in self._paramfile.summary:
-            self.logger.info(line)
-
-        if item_type_in_scope:
-            types_to_deploy = sorted(
-                set(item_type_in_scope) & repo_item_types(self._repo_dir_resolved)
-            )
-            if types_to_deploy:
-                self.logger.info(f"Item types in scope: {', '.join(types_to_deploy)}")
-            else:
-                self.logger.warning("No matching item types found in repository")
-        if include_items:
-            self.logger.info(f"Including items: {', '.join(include_items)}")
-
-        # fabric-cicd configures its own logger at import time; swap in our
-        # formatter that omits timestamps on header lines.
-        patch_fabric_cicd_logger()
-
         try:
+            if self._detector is not None:
+                self._paramfile.write(
+                    self._detector,
+                    self.workspace_id,
+                    self.environment,
+                    self._manual_count,
+                    self._skipped_lakehouse_count,
+                )
+
+            for line in self._paramfile.summary:
+                self.logger.info(line)
+
+            if item_type_in_scope:
+                types_to_deploy = sorted(
+                    set(item_type_in_scope) & repo_item_types(self._repo_dir_resolved)
+                )
+                if types_to_deploy:
+                    self.logger.info(f"Item types in scope: {', '.join(types_to_deploy)}")
+                else:
+                    self.logger.warning("No matching item types found in repository")
+            if include_items:
+                self.logger.info(f"Including items: {', '.join(include_items)}")
+
+            # fabric-cicd configures its own logger at import time; swap in our
+            # formatter that omits timestamps on header lines.
+            patch_fabric_cicd_logger()
+
             self._deploy_items(scope)
             self.deployed_items = [item.key for item in scope.items]
             # One-line confirmation of what actually deployed — fabric-cicd's
