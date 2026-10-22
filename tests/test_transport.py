@@ -304,3 +304,24 @@ def test_list_without_query_sends_the_token_as_the_first_parameter(monkeypatch):
     }
     _fake_http(monkeypatch, lambda url: (200, {}, pages[url]))
     assert fabric_api_list("/v1/things", "list things") == [1]
+
+
+def test_list_stops_when_a_continuation_token_repeats(monkeypatch):
+    pages = {
+        fabric_url("/v1/things"): {"value": [1], "continuationToken": "t2"},
+        fabric_url("/v1/things?continuationToken=t2"): {"value": [2], "continuationToken": "t2"},
+    }
+    calls = _fake_http(monkeypatch, lambda url: (200, {}, pages[url]))
+    with pytest.raises(RuntimeError, match="list things.*continuation token"):
+        fabric_api_list("/v1/things", "list things")
+    assert len(calls) == 2
+
+
+def test_list_page_count_is_capped(monkeypatch):
+    monkeypatch.setattr(transport, "MAX_LIST_PAGES", 3)
+    calls = _fake_http(
+        monkeypatch, lambda url: (200, {}, {"value": [1], "continuationToken": f"t{len(calls)}"})
+    )
+    with pytest.raises(RuntimeError, match="list things.*3 pages"):
+        fabric_api_list("/v1/things", "list things")
+    assert len(calls) == 3

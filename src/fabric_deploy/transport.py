@@ -37,6 +37,8 @@ REQUEST_TIMEOUT_S = 60
 MAX_ATTEMPTS = 5
 BACKOFF_BASE_S = 2
 MAX_RETRY_WAIT_S = 60
+# Pages fabric_api_list follows before giving up on a service that never stops.
+MAX_LIST_PAGES = 1000
 
 _logger = logging.getLogger(__name__)
 
@@ -217,17 +219,31 @@ def fabric_api_list(endpoint: str, error_context: str) -> list[Any]:
         endpoint: API path, optionally with a query string (e.g.
             "/v1/workspaces/{id}/items?type=Lakehouse").
         error_context: Context string for error messages.
+
+    Raises:
+        RuntimeError: A call fails, or the pages don't end: a continuation
+            token comes back a second time, or `MAX_LIST_PAGES` pass.
     """
     items: list[Any] = []
     url = fabric_url(endpoint)
     separator = "&" if "?" in endpoint else "?"
-    while True:
+    tokens: set[str] = set()
+    for _ in range(MAX_LIST_PAGES):
         _status, _headers, page = http_request(url, error_context=error_context)
         items.extend(page.get("value", []))
         token = page.get("continuationToken")
         if not token:
             return items
+        if token in tokens:
+            raise RuntimeError(
+                f"Failed to {error_context}: the service sent the same continuation token "
+                "twice, so the list would never end."
+            )
+        tokens.add(token)
         url = fabric_url(f"{endpoint}{separator}continuationToken={urllib.parse.quote(token)}")
+    raise RuntimeError(
+        f"Failed to {error_context}: the list did not end after {MAX_LIST_PAGES} pages."
+    )
 
 
 def poll_fabric_lro(
