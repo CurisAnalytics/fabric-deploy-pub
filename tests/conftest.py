@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import socket
 from pathlib import Path
 from unittest.mock import patch
 
@@ -83,15 +84,26 @@ def sample_ws(tmp_path) -> Path:
 
 @pytest.fixture(autouse=True)
 def _isolate_azure_identity(monkeypatch, tmp_path):
-    """Keep every test off the developer's az login, fabdep profile and env.
+    """Keep every test off the network, the developer's az login, fabdep profile and env.
 
     apply_tenant_pin writes os.environ["AZURE_CONFIG_DIR"] and the module-level
     pin/credential caches directly; recording them here restores both at teardown.
     """
     from fabric_deploy import identity
 
-    monkeypatch.setenv("AZURE_CONFIG_DIR", "unset")  # records the original for restore
-    monkeypatch.delenv("AZURE_CONFIG_DIR")
+    # An unset AZURE_CONFIG_DIR means ~/.azure: point az at an empty one instead.
+    (tmp_path / "azure-config").mkdir()
+    monkeypatch.setenv("AZURE_CONFIG_DIR", str(tmp_path / "azure-config"))
+
+    connect = socket.socket.connect
+
+    def _loopback_only(sock: socket.socket, address: object) -> None:
+        host = address[0] if isinstance(address, tuple) else None
+        if sock.family != socket.AF_UNIX and host not in ("127.0.0.1", "::1", "localhost"):
+            pytest.fail(f"test tried to reach the network: {address!r}")
+        connect(sock, address)
+
+    monkeypatch.setattr(socket.socket, "connect", _loopback_only)
     for var in ("FABRIC_BEARER_TOKEN", "POWERBI_BEARER_TOKEN"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(identity, "_ACTIVE_PIN", None)
