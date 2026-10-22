@@ -24,7 +24,6 @@ from .log import (
     is_expired_credential_error,
     print_error,
 )
-from .rename import rename_items_by_display_name
 from .workspace import WorkspaceDeployer, format_deploy_options, log_banner
 
 
@@ -131,31 +130,6 @@ def parse_args() -> argparse.Namespace:
         default=".",
         type=Path,
         help="Workspace directory whose fabdep.yml applies (defaults to current directory)",
-    )
-
-    rename_items_parser = subparsers.add_parser(
-        "rename",
-        help="Rename workspace item directories to match display names",
-        description="Rename workspace item directories based on their .platform displayName metadata",
-    )
-    _ = rename_items_parser.add_argument(
-        "directory",
-        nargs="?",
-        default=".",
-        type=Path,
-        help="Workspace directory (defaults to current directory)",
-    )
-    _ = rename_items_parser.add_argument(
-        "--execute",
-        "-e",
-        action="store_true",
-        help="Actually perform renames (default is dry-run)",
-    )
-    _ = rename_items_parser.add_argument(
-        "--clean",
-        "-c",
-        action="store_true",
-        help="Apply .lower().replace(' ', '_') to directory names",
     )
 
     detect_parser = subparsers.add_parser(
@@ -371,7 +345,7 @@ def parse_args() -> argparse.Namespace:
     # argparse can't natively pick a default subparser or treat unknown
     # leading args as a subcommand's options — so resolve it ourselves
     # and feed argparse a normalized argv.
-    known_commands = {"auth", "deploy", "rename", "detect", "refresh", "rls"}
+    known_commands = {"auth", "deploy", "detect", "refresh", "rls"}
     help_flags = {"-h", "--help", "-V", "--version"}
 
     raw = sys.argv[1:]
@@ -397,24 +371,6 @@ def handle_auth_command(args: argparse.Namespace) -> None:
         handle_command_error(e, "auth status")
     for label, value in identity.items():  # pyright: ignore[reportPossiblyUnboundVariable]
         print(f"{label + ':':<12} {value}")
-
-
-def handle_rename_command(args: argparse.Namespace) -> None:
-    """Handle rename subcommand execution."""
-    try:
-        rename_items_by_display_name(
-            repo_dir=args.directory,
-            dry_run=not args.execute,
-            clean=args.clean,
-        )
-    except FileNotFoundError as e:
-        print_error(f"\n{e}\n")
-        print("Usage: fabdep rename [DIRECTORY] [OPTIONS]")
-        print("Run 'fabdep rename -h' for more information.\n")
-        sys.exit(1)
-    except Exception as e:
-        print_error(f"\nRename failed: {e}\n")
-        sys.exit(1)
 
 
 def handle_detect_command(args: argparse.Namespace) -> None:
@@ -579,8 +535,6 @@ def main() -> None:
 
     if args.command == "auth":
         handle_auth_command(args)
-    elif args.command == "rename":
-        handle_rename_command(args)
     elif args.command == "detect":
         handle_detect_command(args)
     elif args.command == "refresh":

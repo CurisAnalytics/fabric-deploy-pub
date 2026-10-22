@@ -95,19 +95,6 @@ class TestCLI:
         # Clean up
         detected_file.unlink()
 
-    @_REQUIRES_FABDEP
-    def test_rename_dry_run(self, test_workspace_dir):
-        """Test fabdep rename command in dry-run mode."""
-        result = subprocess.run(
-            [_FABDEP, "rename"],
-            cwd=test_workspace_dir,
-            capture_output=True,
-            text=True,
-        )
-
-        # Should succeed (dry-run doesn't make changes)
-        assert result.returncode == 0, f"Command failed: {result.stderr}"
-
 
 class TestDetectSourceWorkspaceFlag:
     """`fabdep detect --source-workspace-id` parses (repeatable) and runs."""
