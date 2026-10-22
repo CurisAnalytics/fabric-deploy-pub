@@ -1,33 +1,34 @@
-"""
-Logging and formatting utilities for fabric_cicd.
+"""Console output and the error classification behind the CLI's hints.
 
-This module provides custom logging formatters, error message formatting,
-and error classification for the CLI's troubleshooting output.
+fabdep writes its log lines to stderr: INFO bare, other levels behind a
+`[level]` tag. Colour is used only on a terminal, never when NO_COLOR is set
+(https://no-color.org), and fabric-cicd's console lines follow the same rule.
 """
 
 import logging
+import os
 import re
 import sys
 from collections.abc import Iterator
+from typing import TextIO
 
 from azure.core.exceptions import ClientAuthenticationError
-from fabric_cicd._common._color import Fore, Style
 
 from .identity import AuthError
 
 __all__ = [
+    "GREEN",
+    "RED",
+    "error_hint",
     "get_logger",
-    "patch_fabric_cicd_logger",
-    "print_error",
     "http_status",
     "is_auth_error",
-    "is_expired_credential_error",
     "is_connection_error",
-    "error_hint",
+    "is_expired_credential_error",
+    "patch_fabric_cicd_logger",
+    "print_error",
+    "use_color",
 ]
-
-SEP = "=" * 100
-
 
 # Known cryptic Fabric / fabric-cicd errors → a plain-language hint at the
 # actual cause. Each entry is (substrings, hint); a hint fires when ANY of its
@@ -111,92 +112,88 @@ def error_hint(error_msg: str) -> str | None:
     return None
 
 
-# ANSI escape code pattern for calculating visual length.
-_ANSI_RE: re.Pattern[str] = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+# ANSI colours, written only where use_color() allows.
+RED = "\033[31m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+RESET = "\033[0m"
+_ANSI = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
-_LEVEL_COLORS: dict[str, str] = {
-    "DEBUG": Fore.BLACK,
-    "INFO": Fore.WHITE + Style.BRIGHT,
-    "WARNING": Fore.YELLOW,
-    "ERROR": Fore.RED,
-    "CRITICAL": Style.BRIGHT + Fore.RED,
-}
-
-_LEVEL_NAMES: dict[str, str] = {
-    "WARNING": "warn",
-    "DEBUG": "debug",
-    "INFO": "info",
-    "ERROR": "error",
-    "CRITICAL": "crit",
+# Tag and colour per level; INFO lines print bare.
+_LEVELS: dict[int, tuple[str, str]] = {
+    logging.DEBUG: ("[debug]", ""),
+    logging.WARNING: ("[warn]", YELLOW),
+    logging.ERROR: ("[error]", RED),
+    logging.CRITICAL: ("[crit]", RED),
 }
 
 
-def _level_prefix(record: logging.LogRecord) -> str:
-    """Colored, width-padded '[level] ' prefix; empty for INFO."""
-    if record.levelname == "INFO":
-        return ""
-    color = _LEVEL_COLORS.get(record.levelname, "")
-    level_name = f"{color}[{_LEVEL_NAMES.get(record.levelname, 'unknown')}]"
-    # Pad based on visual width (after stripping ANSI escapes).
-    padding = " " * max(0, 8 - len(_ANSI_RE.sub("", level_name)))
-    return f"{level_name}{padding} "
+def use_color(stream: TextIO) -> bool:
+    """Whether to colour `stream`: only a terminal, and only while NO_COLOR is unset or empty."""
+    if os.environ.get("NO_COLOR"):
+        return False
+    try:
+        return stream.isatty()
+    except ValueError:  # closed
+        return False
 
 
-class CustomFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:  # pyright: ignore[reportImplicitOverride]
-        message = f"{record.getMessage()}{Style.RESET_ALL}"
-        if record.levelname == "INFO":
-            return message
-        return f"{_level_prefix(record)}{message}"
-
-
-class FabricCicdFormatter(logging.Formatter):
-    """Formatter for the fabric_cicd logger that omits timestamps on header/blank lines.
-
-    Header lines (containing '####') and blank separator lines are formatted
-    without timestamps to reduce visual noise. All other lines keep timestamps
-    for operational timing information.
-    """
+class _Formatter(logging.Formatter):
+    """A level tag (none for INFO), coloured by level or by `extra={"color": ...}`."""
 
     def format(self, record: logging.LogRecord) -> str:  # pyright: ignore[reportImplicitOverride]
-        raw_message = record.getMessage()
-        message = f"{raw_message}{Style.RESET_ALL}"
-        stripped = _ANSI_RE.sub("", raw_message).strip()
+        tag, color = _LEVELS.get(record.levelno, ("", ""))
+        message = f"{tag:<8} {record.getMessage()}" if tag else record.getMessage()
+        color = getattr(record, "color", color)
+        return f"{color}{message}{RESET}" if color else message
 
-        prefix = _level_prefix(record)
 
-        # Header lines (####) and blank separators get no timestamp.
-        if "####" in stripped or stripped == "":
-            return f"{prefix}{message}"
+class _Console(logging.Handler):
+    """Writes to sys.stderr as it is at each record, so redirecting it takes effect."""
 
-        timestamp = self.formatTime(record, self.datefmt)
+    def emit(self, record: logging.LogRecord) -> None:  # pyright: ignore[reportImplicitOverride]
+        stream = sys.stderr
+        try:
+            text = self.format(record)
+            _ = stream.write((text if use_color(stream) else _ANSI.sub("", text)) + "\n")
+            _ = stream.flush()
+        except Exception:
+            self.handleError(record)
 
-        # fabric_cicd marks indented lines with "->".
-        if "->" in raw_message:
-            message = message.replace("->", "")
 
-        return f"{prefix}{timestamp} - {message}"
+class _Uncolored(logging.Formatter):
+    """Another formatter's output without its ANSI colour."""
+
+    def __init__(self, inner: logging.Formatter) -> None:
+        super().__init__()
+        self.inner: logging.Formatter = inner
+
+    def format(self, record: logging.LogRecord) -> str:  # pyright: ignore[reportImplicitOverride]
+        return _ANSI.sub("", self.inner.format(record))
 
 
 def patch_fabric_cicd_logger() -> None:
-    """Replace fabric_cicd's logger formatter to omit timestamps on header lines.
+    """Hold fabric-cicd's console lines to the colour rule, keeping their format.
 
-    Call this AFTER importing fabric_cicd (which runs configure_logger() at
-    import time). Patches both the 'fabric_cicd' logger and 'console_only'
-    (used for exception messages).
+    fabric-cicd colours its console output unconditionally. Call after importing
+    fabric_cicd, which sets up its logger on import.
     """
-    for name in ("fabric_cicd", "console_only"):
-        logger = logging.getLogger(name)
-        for handler in logger.handlers:
-            if isinstance(handler, logging.StreamHandler):
-                handler.setFormatter(FabricCicdFormatter(datefmt="%H:%M:%S"))
-                break
+    for handler in logging.getLogger("fabric_cicd").handlers:
+        stream: TextIO | None = getattr(handler, "stream", None)
+        formatter = handler.formatter
+        if (
+            stream is not None
+            and formatter
+            and not isinstance(formatter, _Uncolored)
+            and not use_color(stream)
+        ):
+            handler.setFormatter(_Uncolored(formatter))
 
 
 def get_logger(name: str) -> logging.Logger:
-    """Configure and return logger with CustomFormatter.
+    """Return logger `name`, giving its top-level logger fabdep's console handler.
 
-    The console handler lives on the top-level logger of the requested name
+    The handler lives on the top-level logger of the requested name
     ("fabric_deploy" for "fabric_deploy.detect"), never on descendants: with
     one handler per tree a record prints exactly once no matter which logger
     in the chain emits it, and records still propagate to the root logger
@@ -204,16 +201,17 @@ def get_logger(name: str) -> logging.Logger:
     """
     top = logging.getLogger(name.split(".", 1)[0])
     if not top.handlers:
-        handler = logging.StreamHandler()
-        handler.setFormatter(CustomFormatter())
+        handler = _Console()
+        handler.setFormatter(_Formatter())
         top.addHandler(handler)
         top.setLevel(logging.INFO)
     return logging.getLogger(name)
 
 
 def print_error(message: str) -> None:
-    """Print an error message to stderr, without a log prefix."""
-    print(f"{Fore.RED}{message}{Style.RESET_ALL}", file=sys.stderr)
+    """Print an error message to stderr, without a log prefix; red on a terminal."""
+    color = use_color(sys.stderr)
+    print(f"{RED}{message}{RESET}" if color else message, file=sys.stderr)
 
 
 def is_connection_error(error_msg: str) -> bool:

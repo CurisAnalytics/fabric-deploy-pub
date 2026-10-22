@@ -1,4 +1,4 @@
-"""Unit tests for log.py error-classification predicates.
+"""log.py: error classification and console output.
 
 Auth checks read HTTP statuses structurally: a status attribute
 anywhere in the exception chain, or an `HTTP nnn` marker in the message.
@@ -7,6 +7,10 @@ Everything else is a plain message predicate.
 
 from __future__ import annotations
 
+import io
+import logging
+import re
+import sys
 import urllib.error
 
 import pytest
@@ -15,10 +19,14 @@ from azure.core.exceptions import ClientAuthenticationError
 from fabric_deploy.identity import AuthError
 from fabric_deploy.log import (
     error_hint,
+    get_logger,
     http_status,
     is_auth_error,
     is_connection_error,
     is_expired_credential_error,
+    patch_fabric_cicd_logger,
+    print_error,
+    use_color,
 )
 
 
@@ -169,7 +177,7 @@ def test_is_connection_error_false(msg: str):
             "compatibilityLevel",
         ),
         ("error: FailedToParseFile", "1604"),
-        # Verbatim strings captured from a live Northwind framing session.
+        # Verbatim service messages.
         (
             "The database compatibility level of 1601 is below the minimal "
             "compatability level of 1604 needed for [model Model].[table "
@@ -228,28 +236,94 @@ def test_error_hint_none_for_unknown(msg: str):
     assert error_hint(msg) is None
 
 
-# --- get_logger ----------------------------------------------------------
+# --- console output ------------------------------------------------------
 
 
-def test_get_logger_child_does_not_double_print(capsys):
+class _Tty(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
+def _closed() -> io.StringIO:
+    stream = io.StringIO()
+    stream.close()
+    return stream
+
+
+@pytest.mark.parametrize(
+    ("stream", "no_color", "expected"),
+    [
+        (_Tty(), None, True),
+        (_Tty(), "1", False),
+        (_Tty(), "", True),  # an empty NO_COLOR doesn't count (no-color.org)
+        (io.StringIO(), None, False),
+        (_closed(), None, False),
+    ],
+)
+def test_use_color(monkeypatch, stream, no_color, expected):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    if no_color is not None:
+        monkeypatch.setenv("NO_COLOR", no_color)
+    assert use_color(stream) is expected
+
+
+@pytest.mark.parametrize(("stream", "colored"), [(_Tty(), True), (io.StringIO(), False)])
+def test_log_lines_are_colored_only_on_a_terminal(monkeypatch, stream, colored):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(sys, "stderr", stream)
+    log = get_logger(f"fabdep_colortest_{colored}.cli")
+    log.info("plain")
+    log.warning("careful")
+    out = stream.getvalue()
+    assert out.startswith("plain\n")
+    assert "[warn]   careful" in out
+    assert ("\x1b[" in out) is colored
+
+
+def test_log_lines_follow_stderr(monkeypatch):
+    """Lines go to the current sys.stderr, so redirecting or capturing it catches them."""
+    log = get_logger("fabdep_followtest.cli")
+    for _ in range(2):
+        stream = io.StringIO()
+        monkeypatch.setattr(sys, "stderr", stream)
+        log.info("hello")
+        assert stream.getvalue() == "hello\n"
+
+
+@pytest.mark.parametrize(("stream", "colored"), [(_Tty(), True), (io.StringIO(), False)])
+def test_print_error_colors_only_a_terminal(monkeypatch, stream, colored):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(sys, "stderr", stream)
+    print_error("boom")
+    assert "boom" in stream.getvalue()
+    assert ("\x1b[" in stream.getvalue()) is colored
+
+
+@pytest.mark.parametrize(("stream", "colored"), [(_Tty(), True), (io.StringIO(), False)])
+def test_fabric_cicd_lines_follow_the_color_rule(monkeypatch, stream, colored):
+    import fabric_cicd  # noqa: F401 -- sets up its console handler on import
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    handler = next(
+        h for h in logging.getLogger("fabric_cicd").handlers if isinstance(h, logging.StreamHandler)
+    )
+    monkeypatch.setattr(handler, "formatter", handler.formatter)  # restored after the test
+    monkeypatch.setattr(handler, "stream", stream)
+    patch_fabric_cicd_logger()
+    patch_fabric_cicd_logger()
+
+    logging.getLogger("fabric_cicd.publish").warning("Publishing Notebook")
+    out = stream.getvalue()
+    assert ("\x1b[" in out) is colored
+    # fabric-cicd's own line format is kept: level tag, timestamp, message.
+    assert re.search(r"\[warn\]\s+\d\d:\d\d:\d\d - Publishing Notebook", out)
+
+
+def test_get_logger_child_does_not_double_print(monkeypatch):
     """A child record must print once even when an ancestor fabdep logger
     exists (identity creates 'fabric_deploy'; modules create children)."""
-    import io
-    import logging
-
-    from fabric_deploy.log import get_logger
-
-    parent = get_logger("fabric_deploy_dbltest")
-    child = get_logger("fabric_deploy_dbltest.detect")
-
-    streams = []
-    for lg in (parent, child):
-        stream = io.StringIO()
-        for h in lg.handlers:
-            if isinstance(h, logging.StreamHandler):
-                h.setStream(stream)
-        streams.append(stream)
-
-    child.warning("only-once")
-    total = "".join(s.getvalue() for s in streams)
-    assert total.count("only-once") == 1
+    stream = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", stream)
+    get_logger("fabric_deploy_dbltest")
+    get_logger("fabric_deploy_dbltest.detect").warning("only-once")
+    assert stream.getvalue().count("only-once") == 1

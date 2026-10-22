@@ -6,8 +6,6 @@ import sys
 from pathlib import Path
 from textwrap import dedent
 
-from fabric_cicd._common._logging import log_header
-
 from .config import AUTH_MODES, load_tenant_pin
 from .detect import ParameterDetector
 from .identity import (
@@ -19,7 +17,7 @@ from .identity import (
     set_auth_mode,
 )
 from .log import (
-    SEP,
+    GREEN,
     error_hint,
     get_logger,
     is_auth_error,
@@ -30,6 +28,7 @@ from .log import (
 from .refresh import frame_models
 from .workspace import PR_HEAD, WorkspaceDeployer
 
+SEP = "=" * 100
 _TOP_LEVEL_FLAGS = ("-h", "--help", "-V", "--version")
 # Named in an error instead of being read as deploy arguments (a directory "rename").
 _REMOVED_COMMANDS = ("rename", "auth list", "auth switch", "auth rename", "auth login", "auth bind")
@@ -87,7 +86,12 @@ def log_banner(logger: logging.Logger, options_line: str) -> None:
     """
     from . import __version__
 
-    log_header(logger, f"fabdep v{__version__}")
+    rule = "#" * 100
+    title = f"########## fabdep v{__version__} "
+    logger.info("")
+    for line in (rule, title + rule[len(title) :], rule):
+        logger.info(line, extra={"color": GREEN})
+    logger.info("")
     logger.info(options_line)
 
 
