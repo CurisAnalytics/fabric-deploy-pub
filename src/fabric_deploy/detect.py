@@ -307,7 +307,22 @@ class ParameterDetector:
         )
         self._register_source_ids()
         self._warn_skipped_udf_buttons()
+        self._warn_unread_formats()
         self._detected = True
+
+    def _warn_unread_formats(self) -> None:
+        """Detection reads TMDL models and .py/.sql notebooks; say which items it can't."""
+        unread = [
+            str(f.relative_to(self.repo_dir))
+            for f in self._item_files("SemanticModel", "model.bim")
+            + self._item_files("Notebook", "notebook-content.ipynb")
+        ]
+        if unread:
+            self.logger.warning(
+                f"Detection does not read model.bim models or .ipynb notebooks; ids in "
+                f"them deploy unchanged unless fabdep.yml manual_parameters map them: "
+                f"{', '.join(unread)}"
+            )
 
     def _warn_skipped_udf_buttons(self) -> None:
         """One warning per distinct skip reason, not one per visual file.
@@ -343,7 +358,7 @@ class ParameterDetector:
             self.repo_dir.glob("**/.platform"), key=lambda p: (len(p.parts), str(p))
         ):
             try:
-                metadata = json.loads(platform_file.read_text(encoding="utf-8"))["metadata"]
+                metadata = json.loads(platform_file.read_text(encoding="utf-8-sig"))["metadata"]
                 item_type, name = metadata.get("type"), metadata.get("displayName")
             except Exception as e:
                 self._log_file_warning(platform_file, e, "item metadata")
@@ -373,7 +388,7 @@ class ParameterDetector:
         if not settings.exists():
             return False
         try:
-            data = json.loads(settings.read_text(encoding="utf-8"))
+            data = json.loads(settings.read_text(encoding="utf-8-sig"))
         except Exception as e:
             self._log_file_warning(settings, e, "notebook settings")
             return False
@@ -386,7 +401,7 @@ class ParameterDetector:
         and skipped."""
         for file_path in files:
             try:
-                content = file_path.read_text(encoding="utf-8")
+                content = file_path.read_text(encoding="utf-8-sig")
                 extract_func(file_path, json.loads(content) if parse_json else content)
             except Exception as e:
                 self._log_file_warning(file_path, e)
@@ -703,7 +718,9 @@ class ParameterDetector:
             if not display_name or not definition.exists():
                 continue
             try:
-                functions = json.loads(definition.read_text(encoding="utf-8")).get("functions", [])
+                functions = json.loads(definition.read_text(encoding="utf-8-sig")).get(
+                    "functions", []
+                )
             except Exception as e:
                 self._log_file_warning(definition, e, "user data function definition")
                 continue

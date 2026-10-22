@@ -1334,3 +1334,39 @@ class TestForeignDirectLakeSource:
 
         assert d.parameters[OTHER_WORKSPACE_ID].dynamic_variable == "$workspace.$id"
         assert d.parameters[HUB_LAKEHOUSE_ID].dynamic_variable == "$items.Lakehouse.lh.$id"
+
+
+class TestFileReading:
+    def test_files_written_with_a_bom_are_read(self, tmp_path: Path):
+        """Some Fabric and Power BI writers prefix UTF-8 files with a BOM,
+        which json.loads rejects unless the read strips it."""
+        _make_lakehouse(tmp_path, "lh")
+        (tmp_path / "lh.Lakehouse" / ".platform").write_text(
+            "﻿" + json.dumps({"metadata": {"displayName": "lh", "type": "Lakehouse"}}),
+            encoding="utf-8",
+        )
+        _make_notebook(tmp_path, "nb", "﻿" + _lakehouse_meta(WORKSPACE_ID, LAKEHOUSE_ID))
+        _make_pipeline(tmp_path, "pl", {})
+        (tmp_path / "pl.DataPipeline" / "pipeline-content.json").write_text(
+            "﻿" + json.dumps({"externalReferences": {"connection": CONNECTION_ID}}),
+            encoding="utf-8",
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert d.parameters[LAKEHOUSE_ID].dynamic_variable == "$items.Lakehouse.lh.$id"
+        assert CONNECTION_ID in d.parameters
+
+    def test_warns_about_formats_detection_does_not_read(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        (_make_item(tmp_path, "sm", "SemanticModel") / "model.bim").write_text("{}")
+        (_make_item(tmp_path, "nb", "Notebook") / "notebook-content.ipynb").write_text("{}")
+        d = ParameterDetector(tmp_path)
+        with caplog.at_level("WARNING", logger="fabric_deploy.detect"):
+            d.detect_all()
+
+        warnings = [r.message for r in caplog.records if "model.bim" in r.message]
+        assert len(warnings) == 1
+        assert "sm.SemanticModel/model.bim" in warnings[0]
+        assert "nb.Notebook/notebook-content.ipynb" in warnings[0]
