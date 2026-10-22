@@ -10,5 +10,5 @@
 
 ## Checklist
 
-- [ ] `CHANGELOG.md` updated under `[Unreleased]` (or not user-facing)
+- [ ] `CHANGELOG.md` updated under `Unreleased` (or not user-facing)
 - [ ] No real tenant, workspace or item ids, tokens or secrets in code, tests or fixtures

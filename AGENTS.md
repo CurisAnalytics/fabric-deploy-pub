@@ -36,4 +36,4 @@ No real tenant, workspace, capacity or item ids, tokens, hostnames or company na
 use pattern GUIDs (`00000000-0000-0000-0000-0000000000xx`) and the names Contoso, Fabrikam,
 Northwind or Woodgrove. Build test items with `make_item` from `tests/conftest.py`.
 
-Conventional commits; user-visible changes get a line under `[Unreleased]` in CHANGELOG.md.
+Conventional commits; user-visible changes get a line under `Unreleased` in CHANGELOG.md.

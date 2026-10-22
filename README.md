@@ -64,7 +64,8 @@ $ fabdep
 
 ## Requirements
 
-- Python 3.11 or later and `git` on `PATH`, on Linux, macOS or Windows.
+- Python 3.11 or later (tested on 3.11–3.13) and `git` on `PATH`, on Linux, macOS or
+  Windows.
 - A Fabric workspace in git, in the folder layout of Fabric Git integration: one folder per
   item, each with a `.platform` file.
 - A way to sign in: the Azure CLI (`az login`) for the default `cli` mode, or another
@@ -77,8 +78,10 @@ $ fabdep
 
 ## Install
 
-fabdep is not on PyPI. Install it from a clone, or straight from git (pin a release with
-`@<tag>`); `OWNER` is a placeholder, as the repository's public location isn't settled yet.
+fabdep is not on PyPI. Install it from a clone, or straight from git; `OWNER` is a
+placeholder, as the repository's public location isn't settled yet. Pin a release by
+appending `@<tag>`, from the first public release on: older tags reference a test submodule
+that isn't public.
 
 ```sh
 # from a clone
@@ -240,9 +243,9 @@ environment variable, else `auth:` in fabdep.yml, else `cli`:
   identity can deploy. These checks read the token's claims; the Fabric API verifies it.
 - **Relayed tokens.** Where fabdep can't sign in itself, put an access token in
   `FABRIC_BEARER_TOKEN`, and one for the Power BI API (used by `refresh` and `--frame`) in
-  `POWERBI_BEARER_TOKEN`. A relayed token takes precedence over the mode, is logged and
-  checked against `tenant:` and `require_spn:`, and can't be renewed, so it has to last
-  the run.
+  `POWERBI_BEARER_TOKEN`. A relayed token takes precedence over the mode; its use is
+  logged (never its value), it is checked against `tenant:` and `require_spn:`, and it
+  can't be renewed, so it has to last the run.
 - **Secrets.** fabdep takes no secret on its command line. Prefer workload identity
   federation or a certificate; keep a client secret in environment variables from your
   secret store, never in a command line that ends up in shell history and logs.
@@ -329,8 +332,7 @@ Limitations:
 - fabdep relies on fabric-cicd internals, so it pins fabric-cicd below its next minor
   version (currently `>=1.4,<1.5`).
 - `fabdep plan` approximates fabric-cicd in places: it ignores `parameter.yml` `file_path`
-  filters, doesn't resolve `$` variables in a `find_value`, and only warns about an unknown
-  `-t` type, which the deploy then rejects.
+  filters and doesn't resolve `$` variables in a `find_value`.
 
 ## Contributing, security and license
 

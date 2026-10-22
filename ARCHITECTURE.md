@@ -175,7 +175,9 @@ Changes must keep these true.
 ## fabric-cicd coupling
 
 fabdep relies on `FabricWorkspace`, `publish_all_items`, `unpublish_all_orphan_items`,
-`append_feature_flag`, `constants.ACCEPTED_ITEM_TYPES`, the API root constants, the semantics
-of `parameter.yml` (dynamic variables, `_ALL_`, `extend`) and fabric-cicd's logger. That is
+`append_feature_flag`, `constants.ACCEPTED_ITEM_TYPES`, the API root constants, the constants
+`plan` uses to order items and to tell which orphans cleanup leaves
+(`SERIAL_ITEM_PUBLISH_ORDER`, `UNPUBLISH_FLAG_MAPPING`, `FEATURE_FLAG`), the semantics of
+`parameter.yml` (dynamic variables, `_ALL_`, `extend`) and fabric-cicd's logger. That is
 why `pyproject.toml` caps fabric-cicd below its next minor version: raise the cap only after
 the test suite passes against the new release.

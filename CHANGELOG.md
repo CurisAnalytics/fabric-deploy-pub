@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Releases before the first public one are summarized in a few lines each.
 
-## [Unreleased]
+## Unreleased
 
 ### Breaking
 
@@ -37,7 +37,7 @@ Releases before the first public one are summarized in a few lines each.
 
 ### Added
 
-- MIT license; public release preparation.
+- MIT license.
 - `environments:` maps branches (names or globs) to a `workspace`, an `environment` and
   `create: true`; `workspace_name_template` sets the default name.
 - `auth:`, `--auth` and `FABDEP_AUTH` choose the credential: `cli`, `env`, `workload`,
@@ -53,7 +53,8 @@ Releases before the first public one are summarized in a few lines each.
 
 - `refresh` and `--frame` sync every SQL endpoint the Direct Lake models read, and none for
   other models.
-- Tokens are cached and shared with fabric-cicd; a relayed token is logged.
+- Tokens are cached and shared with fabric-cicd; a relayed token's use is logged (never its
+  value).
 - "Workspace not found" suggests similar names; `fabdep -h` shows the deploy options.
 - A mistyped command (`fabdep refesh`) suggests the command, and a removed command or option
   says it was removed, instead of being read as the workspace directory.
