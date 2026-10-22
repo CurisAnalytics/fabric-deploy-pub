@@ -138,7 +138,7 @@ def credential(monkeypatch) -> FakeCredential:
 def _isolate_azure_identity(monkeypatch, tmp_path):
     """Keep every test off the network, the developer's sign-in and auth settings.
 
-    identity keeps the adopted fabdep.yml pin, the --auth override and the shared
+    identity keeps the adopted fabdep.yml auth settings, the --auth override and the shared
     credential in module globals; resetting them here restores them at teardown.
     A test that needs tokens uses the `credential` fixture.
     """
@@ -163,7 +163,7 @@ def _isolate_azure_identity(monkeypatch, tmp_path):
         connect(sock, address)
 
     monkeypatch.setattr(socket.socket, "connect", _loopback_only)
-    monkeypatch.setattr(identity, "_pin", None)
+    monkeypatch.setattr(identity, "_settings", None)
     monkeypatch.setattr(identity, "_mode_flag", None)
     monkeypatch.setattr(identity, "_credential", None)
 

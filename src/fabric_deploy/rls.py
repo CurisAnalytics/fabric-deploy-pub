@@ -40,7 +40,7 @@ from .client import (
     get_workspace_id_by_name,
 )
 from .config import FabdepConfig
-from .identity import apply_tenant_pin
+from .identity import apply_auth_settings
 from .log import get_logger
 from .scope import repo_items
 
@@ -279,7 +279,7 @@ def guard_deploy_rls(
     model's definition is a full getDefinition round trip) can only produce a
     warning about a decision already made. Models are read in parallel.
 
-    Assumes auth / tenant pin is already applied (the deployer does this).
+    Assumes fabdep.yml's auth settings are applied (the deployer does this).
 
     Args:
         workspace_id: Target workspace GUID (whatever this deploy targets).
@@ -468,7 +468,7 @@ def pull_rls(
     repo_dir = Path(repo_dir).resolve()
 
     config = FabdepConfig.from_path(repo_dir, branch_override=branch_override)
-    apply_tenant_pin(config.tenant, log)
+    apply_auth_settings(config.auth, log)
     workspace_id = get_workspace_id_by_name(config.workspace_name)
     log.info(f"Workspace: '{config.workspace_name}' ({workspace_id})")
 

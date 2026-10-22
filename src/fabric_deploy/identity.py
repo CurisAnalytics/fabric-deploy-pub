@@ -40,12 +40,13 @@ from azure.identity import (
     WorkloadIdentityCredential,
 )
 
-from .config import AUTH_MODES, TenantPin
+from .config import AUTH_MODES, AuthSettings
 
 __all__ = [
     "FABRIC_SCOPE",
     "POWERBI_SCOPE",
     "AuthError",
+    "apply_auth_settings",
     "apply_tenant_pin",
     "auth_hint",
     "auth_mode",
@@ -84,7 +85,7 @@ _SIGN_IN = {
 }
 
 _log = logging.getLogger(__name__)
-_pin: TenantPin | None = None  # fabdep.yml's identity keys, once a command adopts them
+_settings: AuthSettings | None = None  # fabdep.yml's identity keys, once a command adopts them
 _mode_flag: str | None = None  # the --auth flag
 _credential: _GuardedCredential | None = None
 
@@ -99,15 +100,18 @@ def set_auth_mode(mode: str | None) -> None:
     _mode_flag, _credential = mode, None
 
 
-def apply_tenant_pin(pin: TenantPin | None, logger: logging.Logger) -> None:
+def apply_auth_settings(settings: AuthSettings | None, logger: logging.Logger) -> None:
     """Adopt fabdep.yml's identity keys for every token minted from here on.
 
     Call before the first Fabric API call. An unknown FABDEP_AUTH value fails here;
     the tenant can only be checked on a token, which happens on first use.
     """
-    global _pin, _credential
-    _pin = pin
-    _credential = _GuardedCredential(*auth_mode(), pin=pin, logger=logger)
+    global _settings, _credential
+    _settings = settings
+    _credential = _GuardedCredential(*auth_mode(), settings=settings, logger=logger)
+
+
+apply_tenant_pin = apply_auth_settings  # the name cli.py imports
 
 
 def auth_mode() -> tuple[str, str]:
@@ -121,8 +125,8 @@ def auth_mode() -> tuple[str, str]:
                 f"{_AUTH_ENV}={env!r} is not a credential mode; use one of: {', '.join(AUTH_MODES)}."
             )
         return env, _AUTH_ENV
-    if _pin and _pin.auth:
-        return _pin.auth, "fabdep.yml"
+    if _settings and _settings.mode:
+        return _settings.mode, "fabdep.yml"
     return "cli", "default"
 
 
@@ -140,7 +144,7 @@ def auth_hint() -> str:
     relay = _relay_var(FABRIC_SCOPE)
     if relay:
         return f"Set {relay} to a fresh token for the right identity, or unset it to sign in."
-    return _sign_in_hint(auth_mode()[0], _pin.id if _pin else None)
+    return _sign_in_hint(auth_mode()[0], _settings.tenant if _settings else None)
 
 
 def get_access_token(scope: str = FABRIC_SCOPE) -> str:
@@ -161,7 +165,9 @@ def describe_identity() -> dict[str, str]:
     """Mint a Fabric token and describe whom it is for (`fabdep auth status`)."""
     claims = _claims(get_access_token(), "The Fabric token")
     tenant = str(claims.get("tid", "?"))
-    pinned = "pinned in fabdep.yml" if _pin and _pin.id else "fabdep.yml pins no tenant"
+    pinned = (
+        "pinned in fabdep.yml" if _settings and _settings.tenant else "fabdep.yml pins no tenant"
+    )
     expires = datetime.fromtimestamp(int(claims.get("exp", 0)), UTC)
     return {
         "Credential": credential_in_use(),
@@ -177,7 +183,7 @@ def describe_identity() -> dict[str, str]:
 def _shared() -> _GuardedCredential:
     global _credential
     if _credential is None:
-        _credential = _GuardedCredential(*auth_mode(), pin=_pin, logger=_log)
+        _credential = _GuardedCredential(*auth_mode(), settings=_settings, logger=_log)
     return _credential
 
 
@@ -186,7 +192,7 @@ def _new_credential(mode: str, tenant_id: str | None) -> TokenCredential:
 
     EnvironmentCredential takes its tenant from AZURE_TENANT_ID, a managed identity
     belongs to its host's tenant, and DefaultAzureCredential has no single tenant
-    setting; for those, the `tid` check on each token enforces the pin.
+    setting; for those, the `tid` check on each token enforces the pinned tenant.
     """
     if mode == "cli":
         return AzureCliCredential(tenant_id=tenant_id or "")  # "": the signed-in tenant
@@ -200,13 +206,13 @@ def _new_credential(mode: str, tenant_id: str | None) -> TokenCredential:
 
 
 class _GuardedCredential(TokenCredential):
-    """The mode's credential (or a relayed token), cached per scope and checked against the pin."""
+    """The mode's credential (or a relayed token), cached per scope and checked against fabdep.yml."""
 
     def __init__(
-        self, mode: str, source: str, *, pin: TenantPin | None, logger: logging.Logger
+        self, mode: str, source: str, *, settings: AuthSettings | None, logger: logging.Logger
     ) -> None:
         self._mode, self._source = mode, source
-        self._pin = pin
+        self._settings = settings
         self._logger = logger
         self._inner: TokenCredential | None = None
         self._cache: dict[tuple[str, ...], AccessToken] = {}
@@ -241,7 +247,7 @@ class _GuardedCredential(TokenCredential):
         return AccessToken(token, exp)
 
     def _mint(self, scopes: tuple[str, ...], kwargs: dict[str, Any]) -> AccessToken:
-        tenant = self._pin.id if self._pin else None
+        tenant = self._settings.tenant if self._settings else None
         try:
             if self._inner is None:
                 self._inner = _new_credential(self._mode, tenant)
@@ -253,22 +259,22 @@ class _GuardedCredential(TokenCredential):
             ) from e
 
     def _check(self, token: str, issuer: str, relay: str | None) -> None:
-        pin = self._pin
-        if not pin or not (pin.id or pin.require_spn):
+        settings = self._settings
+        if not settings or not (settings.tenant or settings.require_spn):
             return
         claims = _claims(token, f"The token from {issuer}")
         fix = (
             f"Set {relay} to a token for the right identity, or unset it."
             if relay
-            else _sign_in_hint(self._mode, pin.id)
+            else _sign_in_hint(self._mode, settings.tenant)
         )
         tid = str(claims.get("tid", "?"))
-        if pin.id and tid.lower() != pin.id:
+        if settings.tenant and tid.lower() != settings.tenant:
             raise AuthError(
-                f"fabdep.yml pins tenant {pin.id}, but {issuer} signed in as "
+                f"fabdep.yml pins tenant {settings.tenant}, but {issuer} signed in as "
                 f"{_who(claims)} in tenant {tid}.\n{fix}"
             )
-        if pin.require_spn and not _is_app_token(claims):
+        if settings.require_spn and not _is_app_token(claims):
             raise AuthError(
                 f"fabdep.yml sets require_spn: true, but {issuer} signed in as the user "
                 f"{_who(claims)}. Use a service principal or managed identity.\n{fix}"

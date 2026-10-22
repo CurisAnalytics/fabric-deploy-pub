@@ -28,7 +28,7 @@ from .client import (
     refresh_sql_endpoint_metadata,
 )
 from .config import FabdepConfig
-from .identity import apply_tenant_pin
+from .identity import apply_auth_settings
 from .log import get_logger
 from .scope import repo_items
 
@@ -175,7 +175,7 @@ def frame_models(
     repo_dir = Path(repo_dir).resolve()
 
     config = FabdepConfig.from_path(repo_dir, branch_override=branch_override)
-    apply_tenant_pin(config.tenant, log)
+    apply_auth_settings(config.auth, log)
     workspace_id = get_workspace_id_by_name(config.workspace_name)
     log.info(f"Workspace: '{config.workspace_name}' ({workspace_id})")
 

@@ -46,7 +46,7 @@ import yaml
 
 from .git import current_branch
 
-__all__ = ["AUTH_MODES", "FabdepConfig", "TenantPin", "load_tenant_pin"]
+__all__ = ["AUTH_MODES", "AuthSettings", "FabdepConfig", "load_auth_settings", "load_tenant_pin"]
 
 # Credential modes for `auth:`, --auth and FABDEP_AUTH (see `identity`).
 AUTH_MODES = ("cli", "env", "workload", "managed", "default")
@@ -74,19 +74,20 @@ _GUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 
 
 @dataclass(frozen=True)
-class TenantPin:
+class AuthSettings:
     """What fabdep.yml requires of the deploying identity.
 
-    `id` is the Microsoft Entra tenant every token must come from, `auth` the
-    credential mode (see `identity`), and `require_spn` rules out user sign-ins.
+    `tenant` is the Microsoft Entra tenant every token must come from, `mode` the
+    credential mode (`auth:`, see `identity`), and `require_spn` rules out user
+    sign-ins.
     """
 
-    id: str | None = None  # lower-case tenant GUID
-    auth: str | None = None
+    tenant: str | None = None  # lower-case tenant GUID
+    mode: str | None = None
     require_spn: bool = False
 
     @classmethod
-    def from_config(cls, config: Mapping[str, object]) -> TenantPin | None:
+    def from_config(cls, config: Mapping[str, object]) -> AuthSettings | None:
         """Read the identity keys of a parsed fabdep.yml; None when it sets none of them."""
         tenant, auth = config.get("tenant"), config.get("auth")
         require_spn = config.get("require_spn", False)
@@ -106,15 +107,18 @@ class TenantPin:
             )
         if tenant is None and auth is None and not require_spn:
             return None
-        return cls(id=tenant.lower() if tenant else None, auth=auth, require_spn=require_spn)
+        return cls(tenant=tenant.lower() if tenant else None, mode=auth, require_spn=require_spn)
 
 
-def load_tenant_pin(repo_dir: Path | str) -> TenantPin | None:
+def load_auth_settings(repo_dir: Path | str) -> AuthSettings | None:
     """The identity keys of `repo_dir`'s fabdep.yml, if it has one."""
     path = Path(repo_dir) / "fabdep.yml"
     if not path.exists():
         return None
-    return TenantPin.from_config(_read_yaml(path))
+    return AuthSettings.from_config(_read_yaml(path))
+
+
+load_tenant_pin = load_auth_settings  # the name cli.py imports
 
 
 def _read_yaml(path: Path) -> dict[str, object]:
@@ -267,7 +271,7 @@ class FabdepConfig:
     create_workspace: bool = False  # create the target when it doesn't exist
     capacity_id: str | None = None
     manual_parameters: list[object] = field(default_factory=list)
-    tenant: TenantPin | None = None  # fabdep.yml's identity keys; None when unset
+    auth: AuthSettings | None = None  # fabdep.yml's identity keys; None when unset
 
     def is_repo_workspace(self, name: str) -> bool:
         """Whether a workspace of this display name is one this fabdep.yml deploys to."""
@@ -332,7 +336,7 @@ class FabdepConfig:
             create_workspace=bool(entry and entry.create),
             capacity_id=str(capacity_id) if capacity_id else None,
             manual_parameters=cast(list[object], manual_parameters),
-            tenant=TenantPin.from_config(config),
+            auth=AuthSettings.from_config(config),
         )
 
 

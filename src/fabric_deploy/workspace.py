@@ -26,7 +26,7 @@ from .client import (
 from .config import FabdepConfig
 from .detect import ParameterDetector
 from .git import changed_paths_in, latest_pr_commit
-from .identity import apply_tenant_pin, fabric_credential
+from .identity import apply_auth_settings, fabric_credential
 from .log import get_logger, patch_fabric_cicd_logger
 from .params import (
     ParameterFile,
@@ -126,14 +126,11 @@ class WorkspaceDeployer:
         )
         self.workspace_name = self.config.workspace_name
         self.environment = self.environment or self.config.environment
-        self._apply_tenant_pin()
+        # fabdep.yml's identity keys apply before any Fabric API call.
+        apply_auth_settings(self.config.auth, self.logger)
         self._resolve_workspace_id()
         self._resolve_source_anchors()
         self._detect_parameters()
-
-    def _apply_tenant_pin(self) -> None:
-        """Adopt fabdep.yml's identity keys before any Fabric API call."""
-        apply_tenant_pin(self.config.tenant, self.logger)
 
     def _resolve_workspace_id(self) -> None:
         """Look up the target workspace, creating it first with `new_workspace`

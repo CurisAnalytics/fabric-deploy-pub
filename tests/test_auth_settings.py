@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from fabric_deploy.config import FabdepConfig, TenantPin, load_tenant_pin
+from fabric_deploy.config import AuthSettings, FabdepConfig, load_auth_settings
 from fabric_deploy.identity import FABRIC_SCOPE, AuthError, fabric_credential
 from fabric_deploy.workspace import WorkspaceDeployer
 
@@ -25,8 +25,8 @@ def _config(repo: Path, body: str) -> FabdepConfig:
 
 class TestParsing:
     def test_tenant_guid(self, tmp_path):
-        pin = _config(tmp_path, f"tenant: {CONTOSO_TENANT.upper()}\n").tenant
-        assert pin == TenantPin(id=CONTOSO_TENANT)
+        auth = _config(tmp_path, f"tenant: {CONTOSO_TENANT.upper()}\n").auth
+        assert auth == AuthSettings(tenant=CONTOSO_TENANT)
 
     @pytest.mark.parametrize("bad", ["contoso", "contoso.onmicrosoft.com", "123", "[1]"])
     def test_tenant_must_be_a_guid(self, tmp_path, bad):
@@ -35,8 +35,8 @@ class TestParsing:
         assert "az account show --query tenantId" in str(exc.value)
 
     def test_auth_and_require_spn(self, tmp_path):
-        pin = _config(tmp_path, "auth: workload\nrequire_spn: true\n").tenant
-        assert pin == TenantPin(auth="workload", require_spn=True)
+        auth = _config(tmp_path, "auth: workload\nrequire_spn: true\n").auth
+        assert auth == AuthSettings(mode="workload", require_spn=True)
 
     def test_unknown_auth_mode_lists_the_modes(self, tmp_path):
         with pytest.raises(ValueError, match="cli, env, workload, managed, default"):
@@ -47,24 +47,24 @@ class TestParsing:
             _ = _config(tmp_path, 'require_spn: "yes"\n')
 
     def test_no_identity_keys(self, tmp_path):
-        assert _config(tmp_path, "").tenant is None
+        assert _config(tmp_path, "").auth is None
 
     def test_misspelled_key_warns_and_is_ignored(self, tmp_path, caplog):
         with caplog.at_level("WARNING"):
             cfg = _config(tmp_path, f"tenan: {CONTOSO_TENANT}\n")
-        assert cfg.tenant is None
+        assert cfg.auth is None
         assert "unknown key 'tenan'" in caplog.text
         assert "did you mean 'tenant'?" in caplog.text
 
     def test_load_without_fabdep_yml(self, tmp_path):
-        assert load_tenant_pin(tmp_path) is None
+        assert load_auth_settings(tmp_path) is None
 
     def test_load_reads_only_the_identity_keys(self, tmp_path):
         (tmp_path / "fabdep.yml").write_text(f"tenant: {CONTOSO_TENANT}\nauth: env\n")
-        assert load_tenant_pin(tmp_path) == TenantPin(id=CONTOSO_TENANT, auth="env")
+        assert load_auth_settings(tmp_path) == AuthSettings(tenant=CONTOSO_TENANT, mode="env")
 
 
-class TestDeployerAdoptsThePin:
+class TestDeployerAdoptsTheSettings:
     @pytest.fixture
     def repo(self, tmp_path: Path) -> Path:
         lh = tmp_path / "lh.Lakehouse"

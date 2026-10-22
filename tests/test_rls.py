@@ -356,11 +356,11 @@ def patch_pull_env(monkeypatch):
         "fabric_deploy.rls.FabdepConfig.from_path",
         classmethod(
             lambda cls, repo_dir, branch_override=None: SimpleNamespace(
-                workspace_name="WS [MAIN]", tenant=None
+                workspace_name="WS [MAIN]", auth=None
             )
         ),
     )
-    monkeypatch.setattr("fabric_deploy.rls.apply_tenant_pin", lambda *a, **k: None)
+    monkeypatch.setattr("fabric_deploy.rls.apply_auth_settings", lambda *a, **k: None)
     monkeypatch.setattr("fabric_deploy.rls.get_workspace_id_by_name", lambda n: "ws-id")
 
 

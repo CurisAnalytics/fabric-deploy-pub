@@ -8,12 +8,12 @@ import time
 import pytest
 
 from fabric_deploy import identity
-from fabric_deploy.config import TenantPin
+from fabric_deploy.config import AuthSettings
 from fabric_deploy.identity import (
     FABRIC_SCOPE,
     POWERBI_SCOPE,
     AuthError,
-    apply_tenant_pin,
+    apply_auth_settings,
     auth_mode,
     fabric_credential,
     get_access_token,
@@ -42,16 +42,16 @@ class TestModeSelection:
         if env:
             monkeypatch.setenv("FABDEP_AUTH", env)
         set_auth_mode(flag)
-        apply_tenant_pin(TenantPin(auth=yml) if yml else None, LOG)
+        apply_auth_settings(AuthSettings(mode=yml) if yml else None, LOG)
         assert auth_mode() == expected
 
     def test_unknown_env_mode_fails_before_any_token(self, monkeypatch):
         monkeypatch.setenv("FABDEP_AUTH", "azcli")
         with pytest.raises(AuthError, match="FABDEP_AUTH='azcli'.*cli, env, workload, managed"):
-            apply_tenant_pin(None, LOG)
+            apply_auth_settings(None, LOG)
 
     def test_mode_and_pinned_tenant_reach_the_credential(self, credential):
-        apply_tenant_pin(TenantPin(id=CONTOSO_TENANT, auth="workload"), LOG)
+        apply_auth_settings(AuthSettings(tenant=CONTOSO_TENANT, mode="workload"), LOG)
         _ = get_access_token()
         assert credential.built == [("workload", CONTOSO_TENANT)]
 
@@ -130,7 +130,7 @@ class TestSignInFailures:
         monkeypatch.setenv("PATH", str(tmp_path))  # no `az` to find
 
     def test_cli_without_az_says_how_to_sign_in(self):
-        apply_tenant_pin(TenantPin(id=CONTOSO_TENANT), LOG)
+        apply_auth_settings(AuthSettings(tenant=CONTOSO_TENANT), LOG)
         with pytest.raises(AuthError, match="cli credential") as exc:
             _ = get_access_token()
         assert f"az login --tenant {CONTOSO_TENANT}" in str(exc.value)
@@ -149,12 +149,12 @@ class TestSignInFailures:
 class TestIdentityGuard:
     def test_pinned_tenant_matches_case_insensitively(self, credential):
         credential.claims["tid"] = CONTOSO_TENANT.upper()
-        apply_tenant_pin(TenantPin(id=CONTOSO_TENANT), LOG)
+        apply_auth_settings(AuthSettings(tenant=CONTOSO_TENANT), LOG)
         assert get_access_token()
 
     def test_wrong_tenant_names_both_tenants_and_the_fix(self, credential):
         credential.claims["tid"] = FABRIKAM_TENANT
-        apply_tenant_pin(TenantPin(id=CONTOSO_TENANT), LOG)
+        apply_auth_settings(AuthSettings(tenant=CONTOSO_TENANT), LOG)
         with pytest.raises(AuthError) as exc:
             _ = get_access_token()
         msg = str(exc.value)
@@ -164,7 +164,7 @@ class TestIdentityGuard:
 
     def test_rejected_token_is_not_cached(self, credential):
         credential.claims["tid"] = FABRIKAM_TENANT
-        apply_tenant_pin(TenantPin(id=CONTOSO_TENANT), LOG)
+        apply_auth_settings(AuthSettings(tenant=CONTOSO_TENANT), LOG)
         for _ in range(2):
             with pytest.raises(AuthError):
                 _ = get_access_token()
@@ -172,11 +172,11 @@ class TestIdentityGuard:
 
     def test_unpinned_accepts_any_tenant(self, credential):
         credential.claims["tid"] = FABRIKAM_TENANT
-        apply_tenant_pin(None, LOG)
+        apply_auth_settings(None, LOG)
         assert get_access_token()
 
     def test_require_spn_rejects_a_user(self, credential):
-        apply_tenant_pin(TenantPin(require_spn=True), LOG)
+        apply_auth_settings(AuthSettings(require_spn=True), LOG)
         with pytest.raises(AuthError, match="require_spn: true.*user user@contoso.com"):
             _ = get_access_token()
 
@@ -187,7 +187,7 @@ class TestIdentityGuard:
     )
     def test_require_spn_accepts_an_app_token(self, credential, claims):
         credential.claims = claims
-        apply_tenant_pin(TenantPin(id=CONTOSO_TENANT, require_spn=True), LOG)
+        apply_auth_settings(AuthSettings(tenant=CONTOSO_TENANT, require_spn=True), LOG)
         assert get_access_token()
 
 
@@ -237,9 +237,9 @@ class TestRelay:
             _ = get_access_token()
         assert "az account get-access-token" in str(exc.value)
 
-    def test_checked_against_the_pin(self, monkeypatch):
+    def test_checked_against_the_pinned_tenant(self, monkeypatch):
         monkeypatch.setenv("FABRIC_BEARER_TOKEN", make_jwt(tid=FABRIKAM_TENANT))
-        apply_tenant_pin(TenantPin(id=CONTOSO_TENANT), LOG)
+        apply_auth_settings(AuthSettings(tenant=CONTOSO_TENANT), LOG)
         with pytest.raises(AuthError, match="FABRIC_BEARER_TOKEN"):
             _ = get_access_token()
 
