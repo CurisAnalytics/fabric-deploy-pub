@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from fabric_deploy.detect import DetectedParameter, Kind, ParameterDetector
 
@@ -1370,3 +1371,20 @@ class TestFileReading:
         assert len(warnings) == 1
         assert "sm.SemanticModel/model.bim" in warnings[0]
         assert "nb.Notebook/notebook-content.ipynb" in warnings[0]
+
+
+class TestSaveParameterYml:
+    def test_saved_file_round_trips(self, tmp_path: Path):
+        """Values are YAML-escaped, so quotes, backslashes and colons survive."""
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+        tricky = 'Sql.Database("host", "db\\\\x"): yes'
+        d.parameters = {
+            tricky: DetectedParameter(
+                find_value=tricky, item_types={"Notebook"}, dynamic_variable="a: 'b'"
+            )
+        }
+        out = tmp_path / "parameter.yml"
+        d.save_parameter_yml(out)
+
+        assert yaml.safe_load(out.read_text(encoding="utf-8")) == d.generate_parameter_yml()

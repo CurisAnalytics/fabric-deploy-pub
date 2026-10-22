@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
+import yaml
+
 from .log import get_logger
 
 UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
@@ -864,27 +866,11 @@ class ParameterDetector:
         return {"find_replace": [p.to_dict(environment) for p in params if p.dynamic_variable]}
 
     def save_parameter_yml(self, output_path: Path | str, environment: str = "prod") -> None:
-        """
-        Generate and save parameter file with dynamic variables for auto-detect mode.
-
-        Args:
-            output_path: Path to save parameter file
-            environment: Environment name (default: "prod")
-        """
-        param_dict = self.generate_parameter_yml(environment=environment)
-
-        # Hand-rolled YAML emit so every value stays quoted — dynamic
-        # variables ($workspace.$id) and GUIDs read unambiguously.
-        output_path = Path(output_path)
-        with open(output_path, "w", encoding="utf-8") as f:
-            _ = f.write("find_replace:\n")
-            for entry in param_dict["find_replace"]:
-                _ = f.write(f'  - find_value: "{entry["find_value"]}"\n')
-                if "item_type" in entry:
-                    _ = f.write(f"    item_type: {entry['item_type']}\n")
-                _ = f.write("    replace_value:\n")
-                for env, val in entry["replace_value"].items():
-                    _ = f.write(f'      {env}: "{val}"\n')
+        """Write generate_parameter_yml(environment) to `output_path`."""
+        document = self.generate_parameter_yml(environment)
+        Path(output_path).write_text(
+            yaml.safe_dump(document, sort_keys=False, allow_unicode=True), encoding="utf-8"
+        )
 
     def should_skip_replacement(self, target_workspace_id: str) -> bool:
         """Whether every detected workspace id already is the target's.
