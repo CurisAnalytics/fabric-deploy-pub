@@ -2,7 +2,6 @@
 
 import io
 import logging
-import os
 import shutil
 import subprocess
 import sys
@@ -50,28 +49,12 @@ class TestCLI:
         return sample_ws
 
     @pytest.mark.integration
-    def test_workspace_deployer(self, test_workspace_dir):
-        """End-to-end: deploy each item type against the live Fabric workspace.
-
-        This is the canonical integration smoke test. Requires `az login` (or SPN)
-        with access to the configured test workspace.
-        """
-        # Change to test workspace directory
-        original_cwd = os.getcwd()
-        os.chdir(test_workspace_dir)
-
-        try:
-            deployer = WorkspaceDeployer(test_workspace_dir, branch_override="MAIN")
-            assert deployer is not None
-            print("\nWorkspace object created successfully")
-
-            # Deploy each item type separately
-            for item_type in repo_item_types(test_workspace_dir):
-                print(f"Deploying items of type: {item_type}")
-                deployer.deploy(item_types=[item_type])
-        finally:
-            # Restore original directory
-            os.chdir(original_cwd)
+    def test_workspace_deployer(self, test_workspace_dir, monkeypatch):
+        """Live: deploy the repo to its MAIN workspace one item type at a time."""
+        monkeypatch.chdir(test_workspace_dir)
+        deployer = WorkspaceDeployer(test_workspace_dir, branch_override="MAIN")
+        for item_type in repo_item_types(test_workspace_dir):
+            deployer.deploy(item_types=[item_type])
 
     @pytest.mark.integration
     @_REQUIRES_FABDEP

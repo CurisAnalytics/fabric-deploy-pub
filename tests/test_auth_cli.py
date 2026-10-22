@@ -72,7 +72,7 @@ class TestAuthStatus:
             _run(monkeypatch, "auth", "status", str(tmp_path))
         assert exc.value.code == 1
         captured = capsys.readouterr()
-        assert f"pins tenant {CONTOSO_TENANT}" in captured.out + captured.err
+        assert f"pins tenant {CONTOSO_TENANT}" in captured.err
 
 
 class TestHandleCommandError:
@@ -85,7 +85,7 @@ class TestHandleCommandError:
             handle_command_error(error, "Deployment")
         assert exc.value.code == 1
         captured = capsys.readouterr()
-        return captured.out + captured.err
+        return captured.err
 
     def test_refused_request_explains_access(self, capsys):
         out = self._output(capsys, RuntimeError("Failed to list workspaces (HTTP 403)."))
