@@ -1,13 +1,12 @@
 """Unit tests for log.py error-classification predicates.
 
-Auth and transient checks read HTTP statuses structurally: a status attribute
+Auth checks read HTTP statuses structurally: a status attribute
 anywhere in the exception chain, or an `HTTP nnn` marker in the message.
 Everything else is a plain message predicate.
 """
 
 from __future__ import annotations
 
-import http.client
 import urllib.error
 
 import pytest
@@ -20,7 +19,6 @@ from fabric_deploy.log import (
     is_auth_error,
     is_connection_error,
     is_expired_credential_error,
-    is_transient_error,
 )
 
 
@@ -156,46 +154,6 @@ def test_is_connection_error_true(msg: str):
 )
 def test_is_connection_error_false(msg: str):
     assert is_connection_error(msg) is False
-
-
-# --- is_transient_error --------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "error",
-    [
-        "Failed to list items (HTTP 503).",
-        "Failed to list items (HTTP 429).",
-        _StatusError(502),
-        ConnectionResetError("Connection reset by peer"),
-        TimeoutError("timed out"),
-        http.client.RemoteDisconnected("Remote end closed connection without response"),
-        _raised_from("publish failed", ConnectionResetError()),
-        "Unhandled error occurred calling POST on 'x'. Message: An error occured while processing.",
-        "Internal server error",
-        "Service unavailable",
-        "Gateway timeout",
-        "Bad gateway",
-    ],
-)
-def test_is_transient_error_true(error):
-    assert is_transient_error(error) is True
-
-
-@pytest.mark.parametrize(
-    "error",
-    [
-        "Failed to update item (HTTP 400).",
-        _StatusError(409),
-        "Failed (HTTP 401). Internal server error",  # auth wins: retrying won't help
-        "User does not have access to the connection used in pipeline. Internal server error",
-        "Unhandled error occurred calling POST on 'x'. Message: Requested item not found.",
-        "Pipeline syntax invalid",
-        "",
-    ],
-)
-def test_is_transient_error_false(error):
-    assert is_transient_error(error) is False
 
 
 # --- error_hint ----------------------------------------------------------

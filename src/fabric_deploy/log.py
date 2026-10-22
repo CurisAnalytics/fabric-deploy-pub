@@ -22,7 +22,6 @@ __all__ = [
     "is_auth_error",
     "is_expired_credential_error",
     "is_connection_error",
-    "is_transient_error",
     "error_hint",
 ]
 
@@ -248,13 +247,6 @@ _HTTP_STATUS = re.compile(r"\bHTTP (\d{3})\b")
 _AUTH_MESSAGES = re.compile(
     r"\bAADSTS\d+|Microsoft Entra token|executing identity is not authorized", re.IGNORECASE
 )
-_TRANSIENT_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
-# Fabric's generic retry-worthy failures (its own message misspells "occurred").
-_TRANSIENT_MESSAGES = re.compile(
-    r"\ban error occurr?ed|internal server error|service unavailable|gateway timeout"
-    r"|bad gateway|temporarily unavailable",
-    re.IGNORECASE,
-)
 
 
 def _chain(error: BaseException) -> Iterator[BaseException]:
@@ -291,20 +283,6 @@ def is_auth_error(error: BaseException | str) -> bool:
     ):
         return True
     return http_status(error) in (401, 403) or bool(_AUTH_MESSAGES.search(str(error)))
-
-
-def is_transient_error(error: BaseException | str) -> bool:
-    """True for failures worth retrying: throttling, 5xx, dropped connections."""
-    if is_auth_error(error) or is_connection_error(str(error)):
-        return False
-    status = http_status(error)
-    if status is not None:
-        return status in _TRANSIENT_STATUSES
-    if isinstance(error, BaseException) and any(
-        isinstance(exc, ConnectionError | TimeoutError) for exc in _chain(error)
-    ):
-        return True
-    return bool(_TRANSIENT_MESSAGES.search(str(error)))
 
 
 def is_expired_credential_error(error_msg: str) -> bool:

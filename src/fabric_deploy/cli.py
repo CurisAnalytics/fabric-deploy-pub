@@ -221,13 +221,6 @@ def parse_args() -> argparse.Namespace:
         help="Create workspace if it doesn't exist",
     )
     _ = deploy_parser.add_argument(
-        "--max-retries",
-        "-r",
-        type=int,
-        default=1,
-        help="Max retries for transient errors (default: 1)",
-    )
-    _ = deploy_parser.add_argument(
         "--skip-lakehouse",
         "-L",
         action="store_true",
@@ -419,7 +412,6 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
             branch_override=args.branch,
             new_workspace=bool(args.new_workspace),
             skip_lakehouse=bool(args.skip_lakehouse),
-            max_retries=int(args.max_retries),
             no_cleanup=args.no_cleanup,
             item_types=args.item_types,
             exclude_types=args.exclude_types,
@@ -437,7 +429,6 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
             logger_name="fabric_deploy.cli",
             branch_override=args.branch,
             new_workspace=bool(args.new_workspace),
-            max_retries=int(args.max_retries),
             skip_lakehouse=bool(args.skip_lakehouse),
         )
     except FileNotFoundError as e:

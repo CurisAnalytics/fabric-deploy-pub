@@ -29,7 +29,7 @@ from .config import FabdepConfig
 from .detect import ParameterDetector, find_in_item_files
 from .git import changed_paths_in, latest_pr_commit
 from .identity import apply_tenant_pin, fabric_credential
-from .log import get_logger, is_transient_error, patch_fabric_cicd_logger
+from .log import get_logger, patch_fabric_cicd_logger
 from .params import (
     ParameterFile,
     apply_manual_overrides,
@@ -52,7 +52,6 @@ def format_deploy_options(
     branch_override: str | None = None,
     new_workspace: bool = False,
     skip_lakehouse: bool = False,
-    max_retries: int = 1,
     no_cleanup: bool = False,
     item_types: list[str] | None = None,
     exclude_types: list[str] | None = None,
@@ -74,8 +73,6 @@ def format_deploy_options(
         opts.append("--new-workspace")
     if skip_lakehouse:
         opts.append("--skip-lakehouse")
-    if max_retries != 1:
-        opts.append(f"--max-retries {max_retries}")
     if no_cleanup:
         opts.append("--no-cleanup")
     if item_types:
@@ -120,7 +117,6 @@ class WorkspaceDeployer:
             logger_name: Optional custom logger name (defaults to module name)
             branch_override: Override git branch for workspace name resolution (defaults to current branch)
             new_workspace: Create workspace if it doesn't exist
-            max_retries: Max retries for transient errors (default: 1)
             skip_lakehouse: Skip lakehouse parameter replacement (for feature branches sharing dev lakehouse)
 
     IMPORTANT: Initialization has side effects!
@@ -138,7 +134,6 @@ class WorkspaceDeployer:
     logger_name: str | None = None
     branch_override: str | None = None  # Override git branch for workspace resolution
     new_workspace: bool = False  # Create workspace if it doesn't exist
-    max_retries: int = 1  # Max retries for transient errors
     skip_lakehouse: bool = False  # Skip its parameter replacement (feature branch mode)
     # fabric-cicd environment: selects environment-keyed replace_values and the
     # Variable Library value set. Empty means the target branch name.
@@ -568,7 +563,6 @@ class WorkspaceDeployer:
                     branch_override=self.branch_override,
                     new_workspace=self.new_workspace,
                     skip_lakehouse=self.skip_lakehouse,
-                    max_retries=self.max_retries,
                     no_cleanup=no_cleanup,
                     item_types=item_types,
                     exclude_types=exclude_types,
@@ -681,16 +675,14 @@ class WorkspaceDeployer:
         no_cleanup: bool = False,
         item_types: list[str] | None = None,
         include_items: list[str] | None = None,
-        _retry_attempt: int = 0,
     ) -> None:
         """
-        Deploy items to workspace using fabric-cicd with retry logic.
+        Deploy items to workspace using fabric-cicd.
 
         Args:
             no_cleanup: Skip unpublishing orphaned items
             item_types: Specific item types to deploy
             include_items: Include only specific items (format: "ItemName.ItemType")
-            _retry_attempt: Internal retry counter (do not set manually)
         """
         # The REST calls' credential, so fabric-cicd deploys as the same checked identity.
         target_workspace = FabricWorkspace(
@@ -702,22 +694,7 @@ class WorkspaceDeployer:
             parameter_file_path=self._paramfile.path,
         )
 
-        try:
-            _ = publish_all_items(target_workspace, items_to_include=include_items)
-        except Exception as e:
-            error_msg = str(e)
-            if _retry_attempt < self.max_retries and is_transient_error(error_msg):
-                self.logger.warning(f"Transient error detected: {error_msg}")
-                self.logger.info(
-                    f"Retrying deployment (attempt {_retry_attempt + 2}/{self.max_retries + 1})..."
-                )
-                return self._deploy_items(
-                    no_cleanup=no_cleanup,
-                    item_types=item_types,
-                    include_items=include_items,
-                    _retry_attempt=_retry_attempt + 1,
-                )
-            raise
+        _ = publish_all_items(target_workspace, items_to_include=include_items)
 
         # include_items + unpublish is a footgun: if names don't match, nothing
         # publishes and orphan cleanup would wipe the workspace.
