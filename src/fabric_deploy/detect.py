@@ -81,7 +81,6 @@ class DetectedParameter:
     source_files: set[str] = field(default_factory=set)
     description: str = ""
     dynamic_variable: str = ""
-    metadata: dict = field(default_factory=dict)  # e.g. domain_type, db_name
 
     def to_dict(self, environment: str = "prod") -> dict:
         """
@@ -682,18 +681,13 @@ class ParameterDetector:
             domain_type,
             domain_suffix,
         ) in self.SQL_DATABASES_PATTERN.findall(content):
-            hostname_param = self._add_parameter(
+            _ = self._add_parameter(
                 f"{host_prefix}-{sql_string}.{domain_type}.{domain_suffix}",
                 source_file,
                 "SQL Database Connection String"
                 if domain_type.lower() == "database"
                 else "SQL Analytics Endpoint Connection String",
             )
-            # setdefault: a two-arg Sql.Database elsewhere may have already
-            # recorded richer metadata (db_name) for the same hostname.
-            hostname_param.metadata.setdefault("domain_type", domain_type.lower())
-            hostname_param.metadata.setdefault("domain_suffix", domain_suffix.lower())
-            hostname_param.metadata.setdefault("host_prefix", host_prefix)
 
         for (
             host_prefix,
@@ -706,18 +700,13 @@ class ParameterDetector:
             full_hostname = f"{host_prefix}-{sql_string}.{domain_type}.{domain_suffix}"
             is_sql_database = domain_type.lower() == "database"
 
-            hostname_param = self._add_parameter(
+            _ = self._add_parameter(
                 full_hostname,
                 source_file,
                 "SQL Database Connection String"
                 if is_sql_database
                 else "SQL Analytics Endpoint Connection String",
             )
-            if hostname_param:
-                hostname_param.metadata["domain_type"] = domain_type.lower()
-                hostname_param.metadata["domain_suffix"] = domain_suffix.lower()
-                hostname_param.metadata["host_prefix"] = host_prefix
-                hostname_param.metadata["db_name"] = db_name
 
             # The UUID may appear as an explicit "-<uuid>" suffix OR as the
             # db_name itself when there's no human prefix.

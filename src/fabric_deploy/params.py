@@ -1,19 +1,15 @@
-"""parameter.yml lifecycle: manual overrides/injections, generation, domain rewrite, cleanup.
+"""parameter.yml lifecycle: manual overrides/injections, generation, cleanup.
 
 fabric-cicd consumes a parameter.yml for find/replace. This module owns building
-that file from detected parameters (plus manual overrides), the second-pass FQDN
-rewrite fabric-cicd can't express, and removing the generated file afterward —
-keeping ~200 lines of file-wrangling out of WorkspaceDeployer.
+that file from detected parameters (plus manual overrides) and removing the
+generated file afterward.
 """
 
 from __future__ import annotations
 
 import logging
-import re
 from pathlib import Path
 from typing import TYPE_CHECKING
-
-import yaml
 
 from .detect import DetectedParameter, find_in_item_files
 
@@ -249,63 +245,6 @@ def resolve_sqldatabase_hostname_params(
     return len(pending)
 
 
-def _apply_domain_substitutions(param_file: Path, detector: ParameterDetector) -> None:
-    """Append a second-pass domain rewrite for pbidedicated SemanticModel connections.
-
-    fabric-cicd 1.0's `$items.Lakehouse.<name>.$sqlendpoint` always returns the
-    `.datawarehouse.fabric.microsoft.com` form, but SemanticModels in older
-    workspaces reference `.pbidedicated.windows.net`. fabric-cicd has no
-    callback, no multi-pass templating, and no equivalent dynamic for that form
-    — so we let fabric-cicd do the first pass and append a second find_replace
-    that rewrites the resulting FQDN suffix. Targeting includes the database
-    name and is scoped to SemanticModel.
-
-    SQL Database endpoints (`.database.fabric.microsoft.com`) need no rewrite:
-    their dynamic `$items.SQLDatabase.<name>.$sqlendpoint` resolves to
-    serverFqdn, which is already the operational `.database` host.
-
-    TODO: revisit if fabric-cicd grows native multi-domain support.
-    """
-    pbidedicated_params = [
-        param
-        for param in detector.parameters.values()
-        if param.metadata.get("domain_suffix", "").lower() == "pbidedicated.windows.net"
-        and param.metadata.get("db_name")
-    ]
-    if not pbidedicated_params:
-        return
-
-    with open(param_file) as f:
-        param_data = yaml.safe_load(f)
-
-    if not param_data or "find_replace" not in param_data:
-        return
-
-    for param in pbidedicated_params:
-        db_name = param.metadata["db_name"]
-        domain_type = param.metadata.get("domain_type", "datawarehouse")
-        # TMDL serializes the args as `", "` or `","` depending on the writer,
-        # so match with `\s*,\s*`. fabric-cicd's regex mode (is_regex) replaces
-        # ONLY the single captured group — the suffix — leaving the rest of the
-        # first-pass output intact.
-        targeted_find = (
-            rf"\.{re.escape(domain_type)}\.(fabric\.microsoft\.com)\""
-            rf"\s*,\s*\"{re.escape(db_name)}"
-        )
-
-        param_data["find_replace"].append(
-            {
-                "find_value": targeted_find,
-                "replace_value": {"fabdep": "pbidedicated.windows.net"},
-                "is_regex": "true",
-                "item_type": ["SemanticModel"],
-            }
-        )
-
-    with open(param_file, "w") as f:
-        yaml.dump(param_data, f, default_flow_style=False, sort_keys=False)
-
-
 class ParameterFile:
     """Owns the generated parameter.yml for one deploy: write then clean up.
 
@@ -368,7 +307,6 @@ class ParameterFile:
 
         detector.save_parameter_yml(output_path=param_file, environment="fabdep")
         self.created = True
-        _apply_domain_substitutions(param_file, detector)
 
         external_count = max(total - dyns, 0)
         external_part = (

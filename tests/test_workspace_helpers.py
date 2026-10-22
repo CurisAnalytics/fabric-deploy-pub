@@ -1,7 +1,7 @@
-"""Unit tests for scope.resolve_item_scope and params._apply_domain_substitutions.
+"""Unit tests for scope.resolve_item_scope and the params target-workspace resolvers.
 
-Both are now pure functions (no deployer state), so the tests call them
-directly with a plain logger / inputs.
+Pure functions (no deployer state), so the tests call them directly with a
+plain logger / inputs.
 """
 
 from __future__ import annotations
@@ -9,10 +9,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-import yaml
-
 from fabric_deploy.detect import DetectedParameter, ParameterDetector
-from fabric_deploy.params import _apply_domain_substitutions
 from fabric_deploy.scope import (
     _repo_items,
     repo_item_types,
@@ -106,140 +103,6 @@ class TestPlatformTypeDiscovery:
         _make_item(tmp_path, "foo.Notebook", "foo", "NotARealType")
         assert repo_item_types(tmp_path) == set()
         assert _repo_items(tmp_path) == {}
-
-
-# --- _add_domain_substitutions -------------------------------------------
-
-
-def _write_param_file(path: Path, find_replace: list[dict]) -> None:
-    yaml.dump({"find_replace": find_replace}, path.open("w"), sort_keys=False)
-
-
-class TestAddDomainSubstitutions:
-    """Pin the second-pass FQDN rewrite for pbidedicated SemanticModel
-    connections. SQL Database (`.database.*`) endpoints get NO rewrite —
-    their `$sqlendpoint` dynamic already resolves to the operational
-    `.database.fabric.microsoft.com` host (serverFqdn)."""
-
-    def _seed_param_file(self, repo: Path, host: str) -> Path:
-        param_file = repo / "parameter.yml"
-        _write_param_file(
-            param_file,
-            [
-                {
-                    "find_value": host,
-                    "replace_value": {"fabdep": "$items.Lakehouse.lh.$sqlendpoint"},
-                    "item_type": ["SemanticModel"],
-                }
-            ],
-        )
-        return param_file
-
-    def _detector_with(self, **metadata) -> ParameterDetector:
-        d = ParameterDetector(repo_dir=Path("/tmp"))
-        d.parameters = {
-            metadata.get("host", "h"): DetectedParameter(
-                find_value=metadata.get("host", "h"),
-                description="SQL Analytics Endpoint Connection String",
-                metadata={
-                    "domain_type": metadata.get("domain_type", "datawarehouse"),
-                    "domain_suffix": metadata.get("domain_suffix", "fabric.microsoft.com"),
-                    "db_name": metadata.get("db_name", "mydb"),
-                    "host_prefix": metadata.get("host_prefix", "HOST"),
-                },
-            )
-        }
-        return d
-
-    def test_pbidedicated_suffix_appends_regex_rewrite(self, tmp_path):
-        param_file = self._seed_param_file(tmp_path, "HOST.datawarehouse.pbidedicated.windows.net")
-        detector = self._detector_with(
-            domain_type="datawarehouse",
-            domain_suffix="pbidedicated.windows.net",
-            db_name="lh",
-        )
-
-        _apply_domain_substitutions(param_file, detector)
-
-        with open(param_file) as f:
-            data = yaml.safe_load(f)
-        appended = data["find_replace"][-1]
-        assert appended["is_regex"] == "true"
-        assert appended["replace_value"]["fabdep"] == "pbidedicated.windows.net"
-        assert appended["item_type"] == ["SemanticModel"]
-
-        # fabric-cicd replaces only the single captured group (the suffix), so
-        # the pattern must have exactly one group and match BOTH arg spacings —
-        # real TMDL serializes `", "` (the old literal-`","` find never matched).
-        import re
-
-        pattern = re.compile(appended["find_value"])
-        assert pattern.groups == 1
-        for line in (
-            'Sql.Database("HOST.datawarehouse.fabric.microsoft.com", "lh")',
-            'Sql.Database("HOST.datawarehouse.fabric.microsoft.com","lh")',
-        ):
-            m = pattern.search(line)
-            assert m is not None, line
-            assert m.group(1) == "fabric.microsoft.com"
-
-    def test_database_domain_gets_no_rewrite(self, tmp_path):
-        """SQL Database endpoints resolve correctly via $sqlendpoint (serverFqdn
-        is already the .database host) — appending a rewrite would be a no-op
-        rule at best."""
-        original = [
-            {
-                "find_value": "HOST.database.fabric.microsoft.com",
-                "replace_value": {"fabdep": "$items.SQLDatabase.mydb.$sqlendpoint"},
-                "item_type": ["SemanticModel"],
-            }
-        ]
-        param_file = tmp_path / "parameter.yml"
-        _write_param_file(param_file, original)
-        detector = self._detector_with(domain_type="database", db_name="mydb")
-
-        _apply_domain_substitutions(param_file, detector)
-
-        with open(param_file) as f:
-            data = yaml.safe_load(f)
-        assert data["find_replace"] == original
-
-    def test_no_qualifying_params_leaves_file_unchanged(self, tmp_path):
-        original = [
-            {
-                "find_value": "anything",
-                "replace_value": {"fabdep": "x"},
-                "item_type": ["Notebook"],
-            }
-        ]
-        param_file = tmp_path / "parameter.yml"
-        _write_param_file(param_file, original)
-        # Default-domain entry: standard datawarehouse + fabric.microsoft.com → no substitution needed.
-        detector = self._detector_with(
-            domain_type="datawarehouse", domain_suffix="fabric.microsoft.com"
-        )
-
-        _apply_domain_substitutions(param_file, detector)
-
-        with open(param_file) as f:
-            data = yaml.safe_load(f)
-        assert data["find_replace"] == original
-
-    def test_param_without_db_name_is_skipped(self, tmp_path):
-        param_file = self._seed_param_file(tmp_path, "HOST.datawarehouse.pbidedicated.windows.net")
-        # pbidedicated domain but no db_name → can't construct the rewrite.
-        detector = self._detector_with(
-            domain_type="datawarehouse",
-            domain_suffix="pbidedicated.windows.net",
-            db_name="",
-        )
-
-        _apply_domain_substitutions(param_file, detector)
-
-        with open(param_file) as f:
-            data = yaml.safe_load(f)
-        # Only the seeded entry, no appended rewrite.
-        assert len(data["find_replace"]) == 1
 
 
 # --- resolve_warehouse_endpoint_params -------------------------------------

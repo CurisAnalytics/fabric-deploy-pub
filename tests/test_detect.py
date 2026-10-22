@@ -226,8 +226,6 @@ class TestSemanticModelExtraction:
         assert host in d.parameters
         host_param = d.parameters[host]
         assert host_param.description == "SQL Analytics Endpoint Connection String"
-        assert host_param.metadata["domain_type"] == "datawarehouse"
-        assert host_param.metadata["db_name"] == "lh"
 
         # UUID captured as the endpoint item ID
         assert ENDPOINT_ID in d.parameters
@@ -247,7 +245,6 @@ class TestSemanticModelExtraction:
         host = "HOST-YYYY.database.fabric.microsoft.com"
         assert host in d.parameters
         assert d.parameters[host].description == "SQL Database Connection String"
-        assert d.parameters[host].metadata["domain_type"] == "database"
         # Connection string now auto-resolves via fabric-cicd's $sqlendpoint
         assert d.parameters[host].dynamic_variable == "$items.SQLDatabase.mydb.$sqlendpoint"
 
@@ -330,7 +327,6 @@ class TestSemanticModelExtraction:
         host_param = d.parameters[host]
         assert host_param.description == "SQL Analytics Endpoint Connection String"
         assert host_param.dynamic_variable == "$items.Lakehouse.lh.$sqlendpoint"
-        assert host_param.metadata["domain_type"] == "datawarehouse"
         # One-arg form carries no db name / endpoint item id — nothing else
         # should be detected from this model.
         assert len(d.parameters) == 1
@@ -358,7 +354,7 @@ class TestSemanticModelExtraction:
 
     def test_sql_databases_merges_with_two_arg_form(self, tmp_path: Path):
         """The same hostname via Sql.Databases and Sql.Database dedupes into
-        one parameter, keeping the two-arg form's richer db_name metadata."""
+        one parameter; the two-arg form also yields the endpoint item id."""
         _make_lakehouse(tmp_path, "lh")
         body = (
             'Source = Sql.Databases("HOST-XXXX.datawarehouse.fabric.microsoft.com")\n'
@@ -370,22 +366,30 @@ class TestSemanticModelExtraction:
         d.detect_all()
 
         host = "HOST-XXXX.datawarehouse.fabric.microsoft.com"
-        assert d.parameters[host].metadata["db_name"] == "lh"
+        assert d.parameters[host].source_files == {"sm.SemanticModel/definition/expressions.tmdl"}
         assert ENDPOINT_ID in d.parameters
 
-    def test_pbidedicated_domain_metadata(self, tmp_path: Path):
+    @pytest.mark.parametrize("database", [ENDPOINT_ID, f"lh-{ENDPOINT_ID}", "lh"])
+    def test_pbidedicated_host_maps_to_the_target_endpoint_host(
+        self, tmp_path: Path, database: str
+    ):
+        """The legacy `.pbidedicated.windows.net` host is an alias of the
+        endpoint's `.fabric.microsoft.com` connection string, so it maps to
+        `$sqlendpoint` like any other host, with no domain-restoring rewrite."""
         _make_lakehouse(tmp_path, "lh")
-        body = (
-            "Source = "
-            f'Sql.Database("HOST-AAAA.datawarehouse.pbidedicated.windows.net", "lh-{ENDPOINT_ID}")'
-        )
+        body = f'Source = Sql.Database("HOST-AAAA.datawarehouse.pbidedicated.windows.net", "{database}")'
         _make_semantic_model(tmp_path, "sm", body)
 
         d = ParameterDetector(tmp_path)
         d.detect_all()
 
-        host = "HOST-AAAA.datawarehouse.pbidedicated.windows.net"
-        assert d.parameters[host].metadata["domain_suffix"] == "pbidedicated.windows.net"
+        rules = {
+            e["find_value"]: e["replace_value"] for e in d.generate_parameter_yml()["find_replace"]
+        }
+        assert rules["HOST-AAAA.datawarehouse.pbidedicated.windows.net"] == {
+            "prod": "$items.Lakehouse.lh.$sqlendpoint"
+        }
+        assert not any("pbidedicated" in str(v) for v in rules.values())
 
 
 # --- pipeline extraction --------------------------------------------------
