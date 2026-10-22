@@ -150,46 +150,97 @@ UNBOUND = [
 ]
 
 
+GUARD_OPTIONS = ("fail_on_stale", "allow_rls_change", "allow_unbound_udf")
+
+
 @pytest.mark.parametrize(
-    ("finding", "found", "options", "error"),
+    ("finding", "found", "options", "guard", "verdict", "error"),
     [
         pytest.param(
             "unresolved_warehouse_bindings",
             STALE,
             {"fail_on_stale": True},
+            "fail_on_stale",
+            "block",
             "fail-on-stale",
             id="stale-binding-with-fail-on-stale",
         ),
-        pytest.param("unresolved_warehouse_bindings", STALE, {}, None, id="stale-binding"),
         pytest.param(
-            "unresolved_warehouse_bindings", [], {"fail_on_stale": True}, None, id="fail-on-stale"
+            "unresolved_warehouse_bindings",
+            STALE,
+            {},
+            "fail_on_stale",
+            "warn",
+            None,
+            id="stale-binding",
         ),
         pytest.param(
-            "udf_skipped", UNBOUND, {"item_types": ["Report"]}, "allow-unbound-udf", id="udf"
+            "unresolved_warehouse_bindings",
+            [],
+            {"fail_on_stale": True},
+            "fail_on_stale",
+            "pass",
+            None,
+            id="fail-on-stale",
+        ),
+        pytest.param(
+            "udf_skipped",
+            UNBOUND,
+            {"item_types": ["Report"]},
+            "unbound_udf",
+            "block",
+            "allow-unbound-udf",
+            id="udf",
         ),
         pytest.param(
             "udf_skipped",
             UNBOUND,
             {"item_types": ["Report"], "allow_unbound_udf": True},
+            "unbound_udf",
+            "warn",
             None,
             id="udf-allowed",
         ),
         pytest.param(
-            "udf_skipped", UNBOUND, {"item_types": ["Notebook"]}, None, id="udf-report-not-in-types"
+            "udf_skipped",
+            UNBOUND,
+            {"item_types": ["Notebook"]},
+            "unbound_udf",
+            "pass",
+            None,
+            id="udf-report-not-in-types",
         ),
         pytest.param(
-            "udf_skipped", UNBOUND, {"include_items": [NOTEBOOK]}, None, id="udf-report-not-named"
+            "udf_skipped",
+            UNBOUND,
+            {"include_items": [NOTEBOOK]},
+            "unbound_udf",
+            "pass",
+            None,
+            id="udf-report-not-named",
         ),
-        pytest.param("udf_skipped", [], {"item_types": ["Report"]}, None, id="no-unbound-udf"),
+        pytest.param(
+            "udf_skipped",
+            [],
+            {"item_types": ["Report"]},
+            "unbound_udf",
+            "pass",
+            None,
+            id="no-unbound-udf",
+        ),
     ],
 )
 def test_guards_block_before_anything_is_published(
-    deployer, fabric_cicd, finding, found, options, error
+    deployer, fabric_cicd, finding, found, options, guard, verdict, error
 ):
     """--fail-on-stale blocks a warehouse binding that can't be remapped; an
     unbound UDF button blocks when its report deploys, unless allowed."""
+    make_item(deployer._repo_dir_resolved, "Finance Report", "Report")
     setattr(deployer._detector, finding, list(found))
+    flags = {k: v for k, v in options.items() if k in GUARD_OPTIONS}
+    scope = deployer.resolve_scope(**{k: v for k, v in options.items() if k not in flags})
 
+    assert dict(deployer.guard_verdicts(scope, **flags))[guard].status == verdict
     if error:
         with pytest.raises(RuntimeError, match=error):
             deployer.deploy(**options)
@@ -197,6 +248,41 @@ def test_guards_block_before_anything_is_published(
     else:
         deployer.deploy(**options)
         fabric_cicd.publish.assert_called_once()
+
+
+def test_a_blocking_guard_stops_the_deploy_before_the_rls_read(deployer, fabric_cicd, monkeypatch):
+    deployer._detector.unresolved_warehouse_bindings = list(STALE)
+    monkeypatch.setattr("fabric_deploy.rls._remote_roles", lambda *_: pytest.fail("read RLS"))
+    with pytest.raises(RuntimeError, match="fail-on-stale"):
+        deployer.deploy(fail_on_stale=True)
+
+
+@pytest.mark.parametrize(
+    ("item_types", "include_items", "checked"),
+    [
+        pytest.param(None, None, ["M"], id="whole-repo"),
+        pytest.param(["Notebook"], None, [], id="type-scope-without-models"),
+        pytest.param(["Notebook"], ["M.SemanticModel"], [], id="model-named-but-type-excluded"),
+        pytest.param(
+            ["Notebook", "SemanticModel"], ["M.SemanticModel", "N.Notebook"], ["M"], id="named"
+        ),
+    ],
+)
+def test_rls_guard_checks_the_models_the_deploy_publishes(
+    tmp_path: Path, mock_fabric_api, monkeypatch, item_types, include_items, checked
+):
+    (tmp_path / "fabdep.yml").write_text('workspace_base_name: "Base"\n')
+    make_item(tmp_path, "M", "SemanticModel")
+    make_item(tmp_path, "N", "Notebook")
+    read: list[str] = []
+    monkeypatch.setattr("fabric_deploy.rls._remote_roles", lambda _ws, name: read.append(name))
+    deployer = WorkspaceDeployer(tmp_path, branch_override="dev")
+
+    scope = deployer.resolve_scope(item_types=item_types, include_items=include_items)
+    rls = dict(deployer.guard_verdicts(scope))["rls"]
+
+    assert read == checked
+    assert [(c.model, c.status) for c in rls.models] == [(m, "new") for m in checked]
 
 
 class TestParameterFile:

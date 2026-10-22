@@ -5,6 +5,7 @@
 # pyright: reportUnknownVariableType=false
 
 import logging
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -34,6 +35,7 @@ from .params import (
     resolve_sqldatabase_hostname_params,
     resolve_warehouse_endpoint_params,
 )
+from .rls import RlsCheck, check_deploy_rls, rls_verdict
 from .scope import (
     RepoItem,
     find_in_item_files,
@@ -57,6 +59,17 @@ class DeployScope:
     include_items: list[str] | None  # its items_to_include, all in the repo; None: no filter
     items: list[RepoItem]  # the repo items the deploy publishes
     cleanup: bool  # whether orphan cleanup runs afterwards
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """A deploy guard's verdict: "pass", "warn" (the deploy goes ahead and logs
+    `message`) or "block" (the deploy stops with `message`)."""
+
+    status: str
+    message: str = ""
+    findings: tuple[str, ...] = ()  # what the guard found, one entry each
+    models: tuple[RlsCheck, ...] = ()  # the RLS guard's check of each in-scope model
 
 
 @dataclass
@@ -279,77 +292,83 @@ class WorkspaceDeployer:
 
         self._detector = detector
 
-    def _guard_rls(
+    def guard_verdicts(
         self,
-        item_type_in_scope: list[str] | None,
-        include_items: list[str] | None,
-        allow_rls_change: bool,
-    ) -> None:
-        """Block a deploy that would change a target model's live RLS.
+        scope: DeployScope,
+        fail_on_stale: bool = False,
+        allow_rls_change: bool = False,
+        allow_unbound_udf: bool = False,
+    ) -> Iterator[tuple[str, Verdict]]:
+        """Each guard's verdict on deploying `scope`, by name, in the order a deploy checks them.
 
-        Resolves which SemanticModels this deploy publishes and delegates to
-        `guard_deploy_rls`, which compares each one's roles with the target's.
+        Lazy: a deploy stops at the first block, before the RLS guard reads the
+        target. The options are deploy()'s.
         """
-        from .rls import guard_deploy_rls
+        yield "fail_on_stale", self._stale_verdict(fail_on_stale)
+        yield "unbound_udf", self._udf_verdict(scope, allow_unbound_udf)
+        yield "rls", self._rls_verdict(scope, allow_rls_change)
 
-        if item_type_in_scope is not None and "SemanticModel" not in item_type_in_scope:
-            models = []  # SemanticModel not in scope -> skip the guard
-        elif include_items:
-            models = [it.rsplit(".", 1)[0] for it in include_items if it.endswith(".SemanticModel")]
-        else:
-            models = None  # every SemanticModel in the repo is in scope
-
-        guard_deploy_rls(
-            workspace_id=self.workspace_id,
-            repo_dir=self._repo_dir_resolved,
-            model_names=models,
-            allow_change=allow_rls_change,
-            logger=self.logger,
+    def _stale_verdict(self, fail_on_stale: bool) -> Verdict:
+        """Notebook warehouse attachments that can't be remapped to the target workspace."""
+        bindings = self._detector.unresolved_warehouse_bindings if self._detector else []
+        if not bindings:
+            return Verdict("pass")
+        files = tuple(sorted({f for f, _, _ in bindings}))
+        found = (
+            f"{len(bindings)} warehouse attachment(s) would deploy with source-workspace "
+            f"GUIDs: {', '.join(files)}."
         )
+        if fail_on_stale:
+            return Verdict("block", f"--fail-on-stale: {found} See warnings above.", files)
+        return Verdict("warn", f"{found} (--fail-on-stale makes this an error)", files)
 
-    def _guard_udf_bindings(
-        self,
-        item_type_in_scope: list[str] | None,
-        include_items: list[str] | None,
-        allow_unbound_udf: bool,
-    ) -> None:
-        """Block a deploy that would ship a UDF button pointing off-target.
+    def _udf_verdict(self, scope: DeployScope, allow_unbound_udf: bool) -> Verdict:
+        """Report buttons that would ship pointing at the source workspace's function.
 
         A bound button whose function name resolves to no repo
         `.UserDataFunction` item deploys still calling the SOURCE workspace's
-        function — a silent cross-workspace leak. Fatal when the report is in
-        deploy scope, unless --allow-unbound-udf. Reports outside the scope
-        aren't deploying, so their buttons can't leak and don't block.
+        function — a silent cross-workspace leak. It blocks when its report is
+        published, unless --allow-unbound-udf; a report the deploy doesn't
+        publish can't leak.
         """
-        if not (self._detector and self._detector.udf_skipped):
-            return
-        skipped = self._detector.udf_skipped
-        if include_items:
-            in_scope = [s for s in skipped if f"{s[0]}.Report" in include_items]
-        elif item_type_in_scope is None or "Report" in item_type_in_scope:
-            in_scope = skipped
-        else:
-            in_scope = []
+        reports = {item.name for item in scope.items if item.type == "Report"}
+        skipped = self._detector.udf_skipped if self._detector else []
+        in_scope = [s for s in skipped if s[0] in reports]
         if not in_scope:
-            return
-        if allow_unbound_udf:
-            self.logger.warning(
-                f"--allow-unbound-udf: {len(in_scope)} User Data Function "
-                f"button(s) deploy still pointing at the source workspace's "
-                f"function. See warnings above."
-            )
-            return
-        details = ", ".join(
+            return Verdict("pass")
+        findings = tuple(
             sorted({f"'{fn or '(unnamed)'}' in '{report}'" for report, fn, _, _ in in_scope})
         )
-        raise RuntimeError(
+        if allow_unbound_udf:
+            return Verdict(
+                "warn",
+                f"--allow-unbound-udf: {len(in_scope)} User Data Function "
+                f"button(s) deploy still pointing at the source workspace's "
+                f"function. See warnings above.",
+                findings,
+            )
+        return Verdict(
+            "block",
             f"{len(in_scope)} User Data Function button(s) cannot be rebound "
             f"to the target workspace and would deploy still calling the "
-            f"source workspace's function: {details}. Fix the button's "
+            f"source workspace's function: {', '.join(findings)}. Fix the button's "
             f"function binding (or the missing/ambiguous .UserDataFunction "
             f"item), or pass --allow-unbound-udf to deploy as-is. See "
-            f"warnings above."
+            f"warnings above.",
+            findings,
         )
+
+    def _rls_verdict(self, scope: DeployScope, allow_rls_change: bool) -> Verdict:
+        """Live row-level security the published semantic models would change (see `rls`)."""
+        checks = check_deploy_rls(
+            self.workspace_id,
+            self._repo_dir_resolved,
+            [item.name for item in scope.items if item.type == "SemanticModel"],
+            allow_rls_change,
+            logger=self.logger,
+        )
+        status, message = rls_verdict(checks)
+        return Verdict(status, message, models=tuple(checks))
 
     def _items_from_pr(self, pr: str) -> list[str]:
         """Resolve `--pr` to the item list the pull request actually touched.
@@ -505,22 +524,14 @@ class WorkspaceDeployer:
         )
         item_type_in_scope, include_items = scope.item_types, scope.include_items
 
-        if fail_on_stale and self._detector and self._detector.unresolved_warehouse_bindings:
-            files = ", ".join(
-                sorted({f for f, _, _ in self._detector.unresolved_warehouse_bindings})
-            )
-            raise RuntimeError(
-                f"--fail-on-stale: "
-                f"{len(self._detector.unresolved_warehouse_bindings)} warehouse "
-                f"attachment(s) would deploy with source-workspace GUIDs: {files}. "
-                f"See warnings above."
-            )
-
-        self._guard_udf_bindings(item_type_in_scope, include_items, allow_unbound_udf)
-
-        # Guard live RLS before any write: any difference between an in-scope
-        # model's repo roles and the target's blocks the deploy unless allowed.
-        self._guard_rls(item_type_in_scope, include_items, allow_rls_change)
+        # Every guard runs before anything is written.
+        for _, verdict in self.guard_verdicts(
+            scope, fail_on_stale, allow_rls_change, allow_unbound_udf
+        ):
+            if verdict.status == "block":
+                raise RuntimeError(verdict.message)
+            if verdict.status == "warn":
+                self.logger.warning(verdict.message)
 
         if self._detector is not None:
             self._paramfile.write(

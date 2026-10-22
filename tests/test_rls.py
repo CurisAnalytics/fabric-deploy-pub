@@ -8,23 +8,24 @@ network surface (`_remote_roles`) mocked.
 from __future__ import annotations
 
 import logging
+import re
 import threading
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from fabric_deploy.rls import (
     MEMBERS_NOTE,
+    RlsCheck,
     Role,
     _reconcile_ref_roles,
+    check_deploy_rls,
     diff_roles,
-    guard_deploy_rls,
     pull_rls,
     read_local_roles,
+    rls_verdict,
     roles_from_parts,
 )
-from fabric_deploy.workspace import WorkspaceDeployer
 
 from .conftest import make_item
 
@@ -173,26 +174,28 @@ NO_READ = object()  # the guard must not read the target at all
 
 
 @pytest.mark.parametrize(
-    ("repo_roles", "target", "allow", "scope", "blocked", "logged", "not_logged"),
+    ("repo_roles", "target", "allow", "scope", "status", "verdict", "message", "logged"),
     [
         pytest.param(
             {"RLS.tmdl": ROLE_RLS},
             _role("RLS", ROLE_RLS),
             False,
             None,
+            "unchanged",
+            "pass",
             None,
             ["reading live role definitions", "repo matches target"],
-            [MEMBERS_NOTE],
-            id="match-passes-without-members-note",
+            id="match-passes",
         ),
         pytest.param(
             {"RLS.tmdl": ROLE_RLS_EDITED},
             _role("RLS", ROLE_RLS),
             False,
             None,
+            "changed",
+            "block",
             "Deploy blocked.*row-level security",
             ["deploy CHANGES"],
-            [],
             id="rule-change-blocks",
         ),
         pytest.param(
@@ -200,9 +203,10 @@ NO_READ = object()  # the guard must not read the target at all
             {**_role("RLS", ROLE_RLS), **_role("fs_rls", ROLE_FS)},
             False,
             None,
+            "changed",
+            "block",
             "Deploy blocked",
             ["[deploy WIPES] role 'fs_rls'"],
-            [],
             id="dropped-role-blocks",
         ),
         pytest.param(
@@ -210,9 +214,10 @@ NO_READ = object()  # the guard must not read the target at all
             _role("RLS", ROLE_RLS + ID_B),
             False,
             None,
+            "changed",
+            "block",
             r"(?s)annotation PBI_Id.*recreate it.*wipes its member assignments",
             ["[deploy RECREATES] role 'RLS'"],
-            ["deploy CHANGES"],
             id="pbi-id-change-blocks-as-membership-wipe",
         ),
         pytest.param(
@@ -220,9 +225,10 @@ NO_READ = object()  # the guard must not read the target at all
             None,
             False,
             None,
+            "new",
+            "pass",
             None,
             ["not in the target yet"],
-            [],
             id="first-deploy-passes",
         ),
         pytest.param(
@@ -230,9 +236,10 @@ NO_READ = object()  # the guard must not read the target at all
             NO_READ,
             True,
             None,
-            None,
-            ["skipped", MEMBERS_NOTE],
-            ["reading live role definitions"],
+            "skipped",
+            "warn",
+            "(?s)RLS check skipped.*--allow-rls-change.*role memberships",
+            [],
             id="allow-change-skips-the-read-but-says-so",
         ),
         pytest.param(
@@ -240,9 +247,10 @@ NO_READ = object()  # the guard must not read the target at all
             {},
             False,
             None,
+            "unchanged",
+            "pass",
             None,
             ["reading live role definitions", "repo matches target"],
-            [],
             id="no-rls-anywhere-passes",
         ),
         # A repo without roles/ deploys a model without roles: the target's go.
@@ -251,9 +259,10 @@ NO_READ = object()  # the guard must not read the target at all
             _role("RLS", ROLE_RLS),
             False,
             None,
+            "changed",
+            "block",
             "Deploy blocked",
             ["[deploy WIPES] role 'RLS'"],
-            [],
             id="no-repo-roles-but-target-roles-blocks",
         ),
         pytest.param(
@@ -261,22 +270,42 @@ NO_READ = object()  # the guard must not read the target at all
             NO_READ,
             True,
             None,
-            None,
-            ["skipped", MEMBERS_NOTE],
+            "skipped",
+            "warn",
+            "RLS check skipped",
             [],
             id="no-repo-roles-allow-change-skips-but-says-so",
         ),
         pytest.param(
-            {"RLS.tmdl": ROLE_RLS}, NO_READ, False, [], None, None, [], id="empty-scope-is-a-noop"
+            {"RLS.tmdl": ROLE_RLS},
+            NO_READ,
+            False,
+            [],
+            None,
+            "pass",
+            None,
+            [],
+            id="empty-scope-is-a-noop",
         ),
     ],
 )
 def test_guard(
-    tmp_path, monkeypatch, caplog, repo_roles, target, allow, scope, blocked, logged, not_logged
+    tmp_path,
+    monkeypatch,
+    caplog,
+    repo_roles,
+    target,
+    allow,
+    scope,
+    status,
+    verdict,
+    message,
+    logged,
 ):
-    """Outcome, target reads and log lines of the deploy guard.
+    """Each model's check, the guard's verdict and message, and what checking logs.
 
-    `logged=None` means the guard must log nothing at all.
+    `status` is model M's check (None: M isn't checked); `message` is a pattern
+    for the verdict's message (None: it has none).
     """
     _make_model(tmp_path, name="M", roles=repo_roles)
 
@@ -287,38 +316,33 @@ def test_guard(
     monkeypatch.setattr("fabric_deploy.rls._remote_roles", _remote)
     log = logging.getLogger("test_rls_guard")
     with caplog.at_level(logging.INFO, logger=log.name):
-        if blocked:
-            with pytest.raises(RuntimeError, match=blocked) as exc:
-                guard_deploy_rls("ws", tmp_path, scope, allow_change=allow, logger=log)
-            assert MEMBERS_NOTE in str(exc.value)
-        else:
-            guard_deploy_rls("ws", tmp_path, scope, allow_change=allow, logger=log)
+        checks = check_deploy_rls("ws", tmp_path, scope, allow_change=allow, logger=log)
 
-    messages = "\n".join(r.getMessage() for r in caplog.records)
-    if logged is None:
-        assert not caplog.records
+    assert [c.status for c in checks] == ([status] if status else [])
+    assert rls_verdict(checks)[0] == verdict
+    if message is None:
+        assert rls_verdict(checks)[1] == ""
     else:
-        assert all(s in messages for s in logged), messages
-    assert not any(s in messages for s in not_logged), messages
+        assert re.search(message, rls_verdict(checks)[1])
+    messages = "\n".join(r.getMessage() for r in caplog.records)
+    assert all(s in messages for s in logged), messages
+    assert len(caplog.records) >= len(logged)
+    if not logged:
+        assert not caplog.records
 
 
-@pytest.mark.parametrize(
-    ("item_types", "include_items", "expected"),
-    [
-        pytest.param(None, None, None, id="whole-repo"),
-        pytest.param(["Notebook"], None, [], id="type-scope-without-models"),
-        pytest.param(["Notebook"], ["M.SemanticModel"], [], id="model-named-but-type-excluded"),
-        pytest.param(
-            ["Notebook", "SemanticModel"], ["M.SemanticModel", "N.Notebook"], ["M"], id="named"
-        ),
-    ],
-)
-def test_deployer_guards_only_models_it_publishes(monkeypatch, item_types, include_items, expected):
-    seen = {}
-    monkeypatch.setattr("fabric_deploy.rls.guard_deploy_rls", lambda **kw: seen.update(kw))
-    stand_in = SimpleNamespace(workspace_id="ws", _repo_dir_resolved=Path("."), logger=None)
-    WorkspaceDeployer._guard_rls(stand_in, item_types, include_items, allow_rls_change=False)
-    assert seen["model_names"] == expected
+def test_blocking_verdict_notes_memberships():
+    diff = diff_roles(_role("RLS", ROLE_RLS_EDITED), _role("RLS", ROLE_RLS))
+    _, message = rls_verdict([RlsCheck("M", "changed", diff)])
+    assert MEMBERS_NOTE in message
+
+
+def test_unknown_workspace_means_every_model_is_new(tmp_path, monkeypatch):
+    """A deploy that creates the workspace has no live RLS to compare with."""
+    _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS})
+    monkeypatch.setattr("fabric_deploy.rls._remote_roles", lambda *_: pytest.fail("read"))
+    checks = check_deploy_rls(None, tmp_path, None, allow_change=False)
+    assert [(c.model, c.status) for c in checks] == [("M", "new")]
 
 
 def test_guard_reads_models_concurrently(tmp_path, monkeypatch):
@@ -334,7 +358,8 @@ def test_guard_reads_models_concurrently(tmp_path, monkeypatch):
         return read_local_roles(tmp_path / f"{name}.SemanticModel")
 
     monkeypatch.setattr("fabric_deploy.rls._remote_roles", _remote)
-    guard_deploy_rls("ws", tmp_path, model_names=None, allow_change=False)
+    checks = check_deploy_rls("ws", tmp_path, model_names=None, allow_change=False)
+    assert [c.status for c in checks] == ["unchanged"] * 3
 
 
 # --- pull ----------------------------------------------------------------

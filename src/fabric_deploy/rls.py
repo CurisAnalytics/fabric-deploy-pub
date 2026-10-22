@@ -19,10 +19,11 @@ role its members. It powers two entry points:
   repo, and (with ``--write``) pull them into the working tree for review.
 * the deploy guard — before ``fabdep deploy`` publishes semantic models,
   compare each in-scope model's repo roles to the target's live roles and
-  **block** the deploy on any difference. A model without ``definition/roles/``
-  is checked too: deploying it removes every role the target has.
-  ``--allow-rls-change`` skips the comparison entirely, since it declares the
-  overwrite intentional before the check would run.
+  **block** the deploy on any difference (``fabdep plan`` reports the same
+  verdict). A model without ``definition/roles/`` is checked too: deploying
+  it removes every role the target has. ``--allow-rls-change`` skips the
+  comparison entirely, since it declares the overwrite intentional before the
+  check would run.
 """
 
 from __future__ import annotations
@@ -47,11 +48,13 @@ from .scope import repo_items
 __all__ = [
     "MEMBERS_NOTE",
     "Role",
+    "RlsCheck",
     "RlsDiff",
+    "check_deploy_rls",
     "diff_roles",
     "read_local_roles",
+    "rls_verdict",
     "roles_from_parts",
-    "guard_deploy_rls",
     "pull_rls",
 ]
 
@@ -259,20 +262,33 @@ def _remote_roles(workspace_id: str, model_name: str) -> dict[str, Role] | None:
 # --- deploy guard --------------------------------------------------------
 
 
-def guard_deploy_rls(
-    workspace_id: str,
+@dataclass(frozen=True)
+class RlsCheck:
+    """What a deploy would do to one in-scope model's live role definitions.
+
+    `status` is "new" (the model isn't in the target: no live RLS to protect),
+    "unchanged", "changed" (the deploy would change live RLS, which blocks it)
+    or "skipped" (--allow-rls-change: not compared).
+    """
+
+    model: str
+    status: str
+    diff: RlsDiff | None = None  # for "changed": repo (local) vs target (remote)
+
+
+def check_deploy_rls(
+    workspace_id: str | None,
     repo_dir: Path | str,
     model_names: list[str] | None,
     allow_change: bool,
     logger: logging.Logger | None = None,
-) -> None:
-    """Block a deploy that would change a target model's live RLS definitions.
+) -> list[RlsCheck]:
+    """Compare each in-scope model's repo roles with the target's live ones.
 
-    Every in-scope model's live roles are fetched and compared with the repo's;
-    any difference (added, removed or modified role, or a changed PBI_Id, which
-    wipes the role's members) blocks the deploy. A model with no
-    `definition/roles/` folder counts as "no roles", so a target that has roles
-    for it blocks too.
+    Reads only. Any difference (added, removed or modified role, or a changed
+    PBI_Id, which wipes the role's members) makes a model "changed". A model
+    with no `definition/roles/` folder counts as "no roles", so a target that
+    has roles for it is "changed" too.
 
     `allow_change` skips the comparison outright: the operator has already
     decided to overwrite the target's roles, so the live read (slow — each
@@ -282,43 +298,30 @@ def guard_deploy_rls(
     Assumes fabdep.yml's auth settings are applied (the deployer does this).
 
     Args:
-        workspace_id: Target workspace GUID (whatever this deploy targets).
+        workspace_id: Target workspace GUID; None when the deploy creates the
+            workspace, so every model is new.
         repo_dir: Workspace repo directory.
         model_names: SemanticModel display names in deploy scope; None = every
-            model in the repo. Pass an empty list to skip the guard entirely.
-        allow_change: When True, skip the check — the deploy is permitted to
-            overwrite the target's live role definitions.
-        logger: Logger to use.
+            model in the repo.
+        allow_change: Skip the comparison (--allow-rls-change).
+        logger: Logs progress and each model's result, as a deploy does.
 
-    Raises:
-        RuntimeError: If a deploy would change RLS and `allow_change` is False.
+    Returns:
+        One check per in-scope model, in name order.
     """
-    log = logger or get_logger(__name__)
-    repo_dir = Path(repo_dir).resolve()
-
-    dirs = _semantic_model_dirs(repo_dir)
+    dirs = _semantic_model_dirs(Path(repo_dir).resolve())
     if model_names is not None:
         wanted = {m.removesuffix(".SemanticModel") for m in model_names}
         dirs = {n: d for n, d in dirs.items() if n in wanted}
-    if not dirs:
-        return
-
     guarded = {name: read_local_roles(model_dir) for name, model_dir in sorted(dirs.items())}
+    if allow_change or workspace_id is None or not guarded:
+        return [RlsCheck(name, "skipped" if allow_change else "new") for name in guarded]
 
-    # --allow-rls-change is the operator saying "overwrite the target's roles".
-    # Reading them back first can't change that outcome, so don't pay for it.
-    if allow_change:
-        log.warning(
-            f"RLS check skipped for {len(guarded)} model(s) (--allow-rls-change): "
-            "the deploy replaces the target's live role definitions with the "
-            f"repo's, removing any role the repo lacks. {MEMBERS_NOTE}"
+    if logger:
+        logger.info(
+            f"RLS guard: reading live role definitions for {len(guarded)} model(s) "
+            "from the target..."
         )
-        return
-
-    log.info(
-        f"RLS guard: reading live role definitions for {len(guarded)} model(s) from the target..."
-    )
-
     # Each live read is a full getDefinition round trip; they are independent,
     # so fetch them concurrently and report in name order.
     with ThreadPoolExecutor(max_workers=min(8, len(guarded))) as pool:
@@ -330,52 +333,70 @@ def guard_deploy_rls(
             )
         )
 
-    blocked: list[str] = []
-    recreates = False
+    checks: list[RlsCheck] = []
     for name, local in guarded.items():
         remote = remotes[name]
-        if remote is None:
-            log.info(
-                f"RLS check: '{name}' is not in the target yet — first deploy, "
-                "no live RLS to protect."
-            )
-            continue
+        diff = None if remote is None else diff_roles(local, remote)
+        if diff is None:
+            checks.append(RlsCheck(name, "new"))
+            if logger:
+                logger.info(
+                    f"RLS check: '{name}' is not in the target yet — first deploy, "
+                    "no live RLS to protect."
+                )
+        elif not diff.changed:
+            checks.append(RlsCheck(name, "unchanged"))
+            if logger:
+                logger.info(f"RLS check: '{name}' — repo matches target ({len(local)} role(s)).")
+        else:
+            checks.append(RlsCheck(name, "changed", diff))
+            if logger:
+                rendering = _render_diff(
+                    diff,
+                    add_label="deploy ADDS",
+                    remove_label="deploy WIPES",
+                    change_label="deploy CHANGES",
+                    pbi_id_label="deploy RECREATES",
+                )
+                logger.error(f"RLS drift for '{name}' — deploy would change live RLS:\n{rendering}")
+    return checks
 
-        diff = diff_roles(local, remote)
-        if not diff.changed:
-            log.info(f"RLS check: '{name}' — repo matches target ({len(local)} role(s)).")
-            continue
 
-        rendering = _render_diff(
-            diff,
-            add_label="deploy ADDS",
-            remove_label="deploy WIPES",
-            change_label="deploy CHANGES",
-            pbi_id_label="deploy RECREATES",
+def rls_verdict(checks: list[RlsCheck]) -> tuple[str, str]:
+    """The deploy guard's verdict on these checks, as (status, message).
+
+    "block" when the deploy would change a model's live RLS, with the error the
+    deploy stops with; "warn" when --allow-rls-change skipped the comparison,
+    with the warning the deploy logs; else "pass" and no message.
+    """
+    if any(check.status == "skipped" for check in checks):
+        return "warn", (
+            f"RLS check skipped for {len(checks)} model(s) (--allow-rls-change): "
+            "the deploy replaces the target's live role definitions with the "
+            f"repo's, removing any role the repo lacks. {MEMBERS_NOTE}"
         )
-        log.error(f"RLS drift for '{name}' — deploy would change live RLS:\n{rendering}")
-        blocked.append(name)
-        recreates = recreates or bool(diff.pbi_id_changed)
-
-    if blocked:
-        raise RuntimeError(
-            "Deploy blocked: it would change row-level security on "
-            f"{len(blocked)} model(s): {', '.join(blocked)}.\n"
-            "The target's live RLS differs from the repo (someone may have "
-            "edited it directly). Reconcile with `fabdep rls pull` (--write to "
-            "adopt the target's roles), or re-run deploy with --allow-rls-change "
-            "to intentionally overwrite it.\n"
-            + (
-                "A role marked RECREATES has a different annotation PBI_Id in the "
-                "repo: the deploy makes the service drop and recreate it, which "
-                "wipes its member assignments. To keep them, give the repo's role "
-                "the target's PBI_Id (`fabdep rls pull --write` adopts the target's "
-                "role files).\n"
-                if recreates
-                else ""
-            )
-            + MEMBERS_NOTE
+    blocked = [check for check in checks if check.status == "changed"]
+    if not blocked:
+        return "pass", ""
+    recreates = any(check.diff and check.diff.pbi_id_changed for check in blocked)
+    return "block", (
+        "Deploy blocked: it would change row-level security on "
+        f"{len(blocked)} model(s): {', '.join(check.model for check in blocked)}.\n"
+        "The target's live RLS differs from the repo (someone may have "
+        "edited it directly). Reconcile with `fabdep rls pull` (--write to "
+        "adopt the target's roles), or re-run deploy with --allow-rls-change "
+        "to intentionally overwrite it.\n"
+        + (
+            "A role marked RECREATES has a different annotation PBI_Id in the "
+            "repo: the deploy makes the service drop and recreate it, which "
+            "wipes its member assignments. To keep them, give the repo's role "
+            "the target's PBI_Id (`fabdep rls pull --write` adopts the target's "
+            "role files).\n"
+            if recreates
+            else ""
         )
+        + MEMBERS_NOTE
+    )
 
 
 # --- rls pull ------------------------------------------------------------
