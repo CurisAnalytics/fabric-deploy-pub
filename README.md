@@ -95,7 +95,7 @@ uv tool install git+https://github.com/OWNER/fabric-deploy
 cd path/to/repo/workspace     # the folder that holds the item folders
 fabdep init                   # writes fabdep.yml; workspace_base_name = the folder's name
 $EDITOR fabdep.yml            # set workspace_base_name, see Configuration
-fabdep detect                 # offline: the IDs a deploy would rewrite
+fabdep detect                 # offline: the IDs in the repo and their replacements
 fabdep plan                   # signs in and shows what a deploy would do
 fabdep                        # deploys the checked-out branch
 ```
@@ -189,7 +189,7 @@ orphan cleanup. `deploy` is the default command.
 | Rewriting | `-L` leave lakehouse references unchanged (a feature-branch workspace reading dev's lakehouse) |
 | Guards | `-F` fail on unremappable warehouse attachments; `--allow-rls-change`; `--allow-unbound-udf` (see [Safety guards](#safety-guards)) |
 | Afterwards | `--frame` refresh the semantic models the deploy published (see `refresh`) |
-| Dry run | `--dry-run [-o json]`, the same as `fabdep plan` |
+| Dry run | `--dry-run [--output json]`, the same as `fabdep plan` |
 
 `--pr` looks back up to 50 commits from `HEAD` for one worded as a merged pull request by
 Azure DevOps, GitHub (merge or squash), GitLab or Bitbucket; a plain `git merge` doesn't
@@ -202,9 +202,9 @@ name what they depend on too.
 
 Takes the deploy's options and makes read calls only: the target (or the workspace it would
 create), the items to create, update and unpublish, each find/replace rule with its origin
-and the items it hits, each guard's verdict, and the deploy's warnings. `-o json` prints one
-JSON document on stdout (shape in `fabdep plan -h`). Exit status: **0** the deploy would
-proceed, **3** a guard would block it, **1** error, **2** usage.
+and the items it hits, each guard's verdict, and the deploy's warnings. `--output json`
+prints one JSON document on stdout (shape in `fabdep plan -h`). Exit status: **0** the
+deploy would proceed, **3** a guard would block it, **1** error, **2** usage.
 
 ### Other commands
 
@@ -303,7 +303,7 @@ remove items deleted from the repo.
 ## Output and troubleshooting
 
 Log lines, warnings and errors go to stderr; results (`plan`, `detect`, `auth status`,
-`schema`) go to stdout, so `fabdep plan -o json > plan.json` stays clean; `rls pull`
+`schema`) go to stdout, so `fabdep plan --output json > plan.json` stays clean. `rls pull`
 reports in log lines and its exit status. Exit status: **0** success, **1** error, **2**
 usage, and **3** when `plan` finds a guard would block the deploy or `rls pull` finds the
 target's roles differ from the repo's. Colour is used only on a terminal, and never when

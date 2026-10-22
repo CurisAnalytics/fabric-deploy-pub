@@ -382,7 +382,7 @@ class TestCommand:
 
     @pytest.mark.parametrize("command", [["plan"], ["deploy", "--dry-run"], ["--dry-run"]])
     def test_json_is_all_stdout_holds(self, monkeypatch, capsys, sample_ws, fabric, command):
-        code = self._main(monkeypatch, *command, str(sample_ws), "-b", "MAIN", "-o", "json")
+        code = self._main(monkeypatch, *command, str(sample_ws), "-b", "MAIN", "--output", "json")
 
         out = capsys.readouterr().out
         assert code == 0
@@ -395,20 +395,22 @@ class TestCommand:
     def test_a_blocking_guard_exits_3(self, monkeypatch, capsys, sample_ws, fabric):
         fabric.definitions[MODEL_ID]["definition/roles/Reader.tmdl"] = ROLE
 
-        code = self._main(monkeypatch, "plan", str(sample_ws), "-b", "MAIN", "-o", "json")
+        code = self._main(monkeypatch, "plan", str(sample_ws), "-b", "MAIN", "--output", "json")
 
         assert code == 3
         assert json.loads(capsys.readouterr().out)["blocked"] is True
 
     def test_an_error_exits_1(self, monkeypatch, capsys, sample_ws, fabric):
         fabric.workspaces = []
-        assert self._main(monkeypatch, "plan", str(sample_ws), "-b", "MAIN", "-o", "json") == 1
+        assert (
+            self._main(monkeypatch, "plan", str(sample_ws), "-b", "MAIN", "--output", "json") == 1
+        )
         captured = capsys.readouterr()
         assert captured.out == ""
         assert "Workspace not found" in captured.err
 
     def test_output_needs_dry_run(self, monkeypatch, capsys, sample_ws):
-        assert self._main(monkeypatch, "deploy", str(sample_ws), "-o", "json") == 2
+        assert self._main(monkeypatch, "deploy", str(sample_ws), "--output", "json") == 2
         assert "--dry-run" in capsys.readouterr().err
 
     def test_plan_takes_the_deploy_options(self, monkeypatch, capsys):

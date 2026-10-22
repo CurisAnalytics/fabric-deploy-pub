@@ -197,13 +197,15 @@ def parse_args() -> argparse.Namespace:
         "--branch",
         help="Branch whose workspace to target (default: the checked-out branch)",
     )
-    _ = target.add_argument(
+    # refresh and rls pull act on semantic models only: their -i takes model names.
+    models = argparse.ArgumentParser(add_help=False, parents=[target])
+    _ = models.add_argument(
         "-i",
         "--include-items",
         nargs="+",
-        metavar="ITEM",
-        help="Only these items, as '<displayName>.<ItemType>' (refresh and rls take "
-        "semantic models, with or without the '.SemanticModel' suffix)",
+        metavar="MODEL",
+        help="Only these semantic models, by display name, with or without the "
+        "'.SemanticModel' suffix (default: every semantic model in the repo)",
     )
 
     parser = argparse.ArgumentParser(
@@ -229,12 +231,21 @@ def parse_args() -> argparse.Namespace:
     )
     _ = init.add_argument("--force", action="store_true", help="Overwrite an existing fabdep.yml")
 
-    auth = commands.add_parser("auth", help="Show the identity fabdep signs in with")
+    auth = commands.add_parser(
+        "auth",
+        help="Show the identity fabdep signs in with",
+        description="Check the identity fabdep signs in with. The credential comes from "
+        "--auth, else $FABDEP_AUTH, else 'auth:' in fabdep.yml, else cli (the Azure CLI's "
+        "sign-in).",
+    )
     auth_commands = auth.add_subparsers(dest="auth_command", required=True, metavar="ACTION")
     _ = auth_commands.add_parser(
         "status",
         parents=[signed_in],
         help="Sign in and show the identity, tenant, credential and token type fabdep would use",
+        description="Get a Fabric token as the other commands would, with fabdep.yml's "
+        "tenant: and require_spn: checks, and print the credential, the identity, the token "
+        "type (user or app-only), the tenant and when the token expires. Calls no Fabric API.",
     )
 
     detect = commands.add_parser(
@@ -265,6 +276,14 @@ def parse_args() -> argparse.Namespace:
 
     # The deploy's options, which plan takes too.
     deploy_options = argparse.ArgumentParser(add_help=False, parents=[target])
+    _ = deploy_options.add_argument(
+        "-i",
+        "--include-items",
+        nargs="+",
+        metavar="ITEM",
+        help="Only these items, as '<displayName>.<ItemType>' with the display name from "
+        "the item's .platform file, not its folder name (implies --no-cleanup)",
+    )
     _ = deploy_options.add_argument(
         "-t",
         "--item-types",
@@ -352,9 +371,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Show what the deploy would do instead of deploying (fabdep plan)",
     )
-    _ = deploy.add_argument(
-        "-o", "--output", choices=_OUTPUTS, help="With --dry-run: the plan's format"
-    )
+    _ = deploy.add_argument("--output", choices=_OUTPUTS, help="With --dry-run: the plan's format")
 
     plan = commands.add_parser(
         "plan",
@@ -369,12 +386,12 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _ = plan.add_argument(
-        "-o", "--output", choices=_OUTPUTS, default="text", help="Format (default: text)"
+        "--output", choices=_OUTPUTS, default="text", help="Format (default: text)"
     )
 
     refresh = commands.add_parser(
         "refresh",
-        parents=[target],
+        parents=[models],
         help="Refresh semantic models in the target workspace (Direct Lake framing)",
         description="Sync the SQL analytics endpoints the models' Direct Lake tables read, "
         "then refresh each semantic model and wait for it, failing on the first refresh "
@@ -403,14 +420,18 @@ def parse_args() -> argparse.Namespace:
     rls_commands = rls.add_subparsers(dest="rls_command", required=True, metavar="ACTION")
     rls_pull = rls_commands.add_parser(
         "pull",
-        parents=[target],
+        parents=[models],
         help="Diff the target's RLS roles against the repo; --write to adopt them",
+        description="Compare each semantic model's row-level security roles in the target "
+        "workspace with the repo's definition/roles/ and show the differences. Without "
+        "--write it changes nothing and ends with exit status 3 if any model differs (as "
+        "`fabdep plan` does when the deploy's RLS guard would block), 0 if none does.",
     )
     _ = rls_pull.add_argument(
         "--write",
         action="store_true",
-        help="Overwrite the working tree's roles to match the target "
-        "(for review + commit); default is diff-only (exit 3 on drift)",
+        help="Rewrite the repo's role files (and 'ref role' lines) to match the target, "
+        "for review and commit",
     )
 
     schema = commands.add_parser(
@@ -503,7 +524,7 @@ def handle_init_command(args: argparse.Namespace) -> None:
     print(
         f"✓ Wrote {path}\n\n"
         f"Next steps{where}:\n"
-        "  fabdep detect   list the IDs a deploy will rewrite for the target workspace\n"
+        "  fabdep detect   list the IDs in the repo's items and their replacements (offline)\n"
         "  fabdep plan     show what a deploy would change, without changing anything\n"
         "  fabdep          deploy the checked-out branch"
     )

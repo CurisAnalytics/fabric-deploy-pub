@@ -191,6 +191,43 @@ class TestHelp:
         for command in ("auth", "detect", "refresh", "rls"):
             assert command in out
 
+    @staticmethod
+    def _help(monkeypatch, capsys, *command: str) -> str:
+        with pytest.raises(SystemExit):
+            _parse(monkeypatch, *command, "-h")
+        return " ".join(capsys.readouterr().out.split())  # unwrapped
+
+    @pytest.mark.parametrize("command", [["deploy"], ["plan"]])
+    def test_deploy_include_items_help_is_about_items(self, monkeypatch, capsys, command):
+        out = self._help(monkeypatch, capsys, *command)
+        assert "-i ITEM [ITEM ...], --include-items ITEM [ITEM ...] Only these items" in out
+        assert "refresh" not in out.split("--include-items", 1)[1].split("-t TYPE")[0]
+
+    @pytest.mark.parametrize("command", [["refresh"], ["rls", "pull"]])
+    def test_model_commands_take_models(self, monkeypatch, capsys, command):
+        out = self._help(monkeypatch, capsys, *command)
+        assert "-i MODEL [MODEL ...], --include-items MODEL [MODEL ...]" in out
+        assert "Only these semantic models" in out
+
+    @pytest.mark.parametrize(
+        ("command", "phrase"),
+        [
+            (["auth"], "$fabdep_auth"),
+            (["auth", "status"], "token type"),
+            (["rls", "pull"], "exit status 3"),
+        ],
+    )
+    def test_commands_describe_themselves(self, monkeypatch, capsys, command, phrase):
+        out = self._help(monkeypatch, capsys, *command)
+        assert phrase in out.partition("options:")[0].lower()
+
+    @pytest.mark.parametrize("command", [["plan"], ["deploy", "--dry-run"]])
+    def test_output_has_no_short_form(self, monkeypatch, capsys, command):
+        with pytest.raises(SystemExit) as exc:
+            _parse(monkeypatch, *command, "-o", "json")
+        assert exc.value.code == 2
+        assert _parse(monkeypatch, *command, "--output", "json").output == "json"
+
     @pytest.mark.parametrize("command", [["deploy"], ["refresh"], ["rls", "pull"]])
     def test_target_options_are_shared(self, monkeypatch, command):
         args = _parse(monkeypatch, *command, "-b", "prod", "-i", "M.SemanticModel", "--auth", "env")
