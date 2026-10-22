@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from difflib import get_close_matches
 from pathlib import Path
+from typing import cast
 
 import yaml
 
@@ -70,7 +71,17 @@ def load_tenant_pin(repo_dir: Path | str) -> TenantPin | None:
     path = Path(repo_dir) / "fabdep.yml"
     if not path.exists():
         return None
-    return TenantPin.from_config(yaml.safe_load(path.read_text(encoding="utf-8")) or {})
+    return TenantPin.from_config(_read_yaml(path))
+
+
+def _read_yaml(path: Path) -> dict[str, object]:
+    """A YAML file's top-level mapping; an empty file is an empty mapping."""
+    data: object = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError(f"{path.name} must be a mapping of keys to values.")
+    return cast(dict[str, object], data)
 
 
 @dataclass
@@ -84,28 +95,22 @@ class FabdepConfig:
     repo_dir: Path  # resolved absolute path
     branch: str  # branch name (after override / git lookup)
     workspace_name: str  # f"{base} [{BRANCH_UPPER}]"
-    workspace_base_name: str | None  # None when fabdep.yml is absent
+    workspace_base_name: str
     capacity_id: str | None = None
-    manual_parameters: list[dict] = field(default_factory=list)
+    manual_parameters: list[object] = field(default_factory=list)
     tenant: TenantPin | None = None  # fabdep.yml's identity keys; None when unset
-    from_yaml: bool = False  # True when fabdep.yml existed; False on dirname fallback
 
     @classmethod
     def from_path(cls, repo_dir: Path | str, branch_override: str | None = None) -> FabdepConfig:
         """Build a FabdepConfig from a workspace repository directory.
-
-        - If `fabdep.yml` is present, parses it and uses `workspace_base_name`.
-        - If absent, falls back to using the directory name as the workspace
-          base; `from_yaml` is set False so the caller can decide whether to
-          accept the fallback (e.g. via Fabric API lookup) or error out.
 
         Args:
             repo_dir: Path to the workspace repo.
             branch_override: Skip git branch lookup and use this branch name.
 
         Raises:
-            FileNotFoundError: If `repo_dir` doesn't exist.
-            ValueError: If fabdep.yml is present but missing `workspace_base_name`.
+            FileNotFoundError: If `repo_dir` or its fabdep.yml doesn't exist.
+            ValueError: If fabdep.yml is invalid.
             RuntimeError: If git branch lookup fails (no override + not in a repo).
         """
         resolved = Path(repo_dir).resolve()
@@ -113,44 +118,43 @@ class FabdepConfig:
             raise FileNotFoundError(f"Directory does not exist: {resolved}")
 
         config_file = resolved / "fabdep.yml"
-        config: dict = {}
-        from_yaml = False
-        if config_file.exists():
-            with open(config_file) as f:
-                config = yaml.safe_load(f) or {}
-            from_yaml = True
-            _warn_unknown_keys(config)
-
-        branch = branch_override or current_branch(resolved)
+        if not config_file.is_file():
+            raise FileNotFoundError(
+                f"No fabdep.yml in {resolved}.\n\n"
+                "fabdep reads the target workspace from it. The smallest one is:\n"
+                '  workspace_base_name: "Contoso Sales"\n\n'
+                "which deploys branch <name> to the workspace 'Contoso Sales [<NAME>]'."
+            )
+        config = _read_yaml(config_file)
+        _warn_unknown_keys(config)
 
         base = config.get("workspace_base_name")
-        if from_yaml and not base:
+        if not base or not isinstance(base, str):
             raise ValueError(
-                "No workspace_base_name found in fabdep.yml.\n\n"
-                "fabdep.yml must contain:\n"
-                '  workspace_base_name: "your_workspace"\n\n'
-                "The workspace will be resolved from: {base_name} [{branch}]"
+                "fabdep.yml must set workspace_base_name to the workspace name without "
+                "its branch suffix:\n"
+                '  workspace_base_name: "Contoso Sales"\n\n'
+                "The workspace will be resolved from: {base_name} [{BRANCH}]"
             )
 
-        # When fabdep.yml is absent, the directory name acts as a tentative
-        # base — the deployer attempts a workspace lookup against it and
-        # raises FileNotFoundError if the workspace doesn't exist either.
-        effective_base = base or resolved.name
-        workspace_name = f"{effective_base} [{branch.upper()}]"
+        manual_parameters = config.get("manual_parameters") or []
+        if not isinstance(manual_parameters, list):
+            raise ValueError("fabdep.yml manual_parameters must be a list of entries.")
+        capacity_id = config.get("capacity_id")
 
+        branch = branch_override or current_branch(resolved)
         return cls(
             repo_dir=resolved,
             branch=branch,
-            workspace_name=workspace_name,
+            workspace_name=f"{base} [{branch.upper()}]",
             workspace_base_name=base,
-            capacity_id=config.get("capacity_id"),
-            manual_parameters=config.get("manual_parameters") or [],
+            capacity_id=str(capacity_id) if capacity_id else None,
+            manual_parameters=cast(list[object], manual_parameters),
             tenant=TenantPin.from_config(config),
-            from_yaml=from_yaml,
         )
 
 
-def _warn_unknown_keys(config: dict) -> None:
+def _warn_unknown_keys(config: Mapping[str, object]) -> None:
     """Flag fabdep.yml keys fabdep doesn't read, so a typo like `tenan:` is loud.
 
     A warning rather than an error: a misspelled optional key silently dropping

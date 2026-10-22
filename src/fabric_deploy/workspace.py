@@ -134,35 +134,10 @@ class WorkspaceDeployer:
         apply_tenant_pin(self.config.tenant, self.logger)
 
     def _resolve_workspace_id(self) -> None:
-        """Look up (or create) the Fabric workspace and store its ID.
-
-        - With `new_workspace=True`, creates the workspace first using the
-          configured (or default) capacity.
-        - With `from_yaml=False` (no fabdep.yml), the directory-name fallback
-          is in play: if the lookup fails we raise FileNotFoundError with
-          the same actionable message the prior implementation produced.
-        """
+        """Look up (or, with `new_workspace=True`, first create) the target workspace."""
         if self.new_workspace:
-            capacity_id = self.config.capacity_id
-            if not capacity_id:
-                capacity_id = get_default_capacity_id()
-            self._create_workspace_if_needed(capacity_id)
-
-        try:
-            self.workspace_id = get_workspace_id_by_name(self.workspace_name)
-        except ValueError:
-            # No fabdep.yml AND the dirname-derived workspace doesn't exist —
-            # surface the actionable "create a fabdep.yml" message.
-            if not self.config.from_yaml:
-                raise FileNotFoundError(
-                    f"fabdep.yml not found in {self._repo_dir_resolved}.\n\n"
-                    "Create a fabdep.yml file with:\n"
-                    '  workspace_base_name: "your_workspace"\n'
-                    '  capacity_id: "your_capacity_id"  # Optional\n\n'
-                    "The workspace will be resolved from: {base_name} [{branch}]\n\n"
-                    "Note: This is separate from parameter.yml which is used by fabric-cicd."
-                ) from None
-            raise
+            self._create_workspace_if_needed(self.config.capacity_id or get_default_capacity_id())
+        self.workspace_id = get_workspace_id_by_name(self.workspace_name)
 
     def _create_workspace_if_needed(self, capacity_id: str) -> None:
         """
@@ -230,8 +205,7 @@ class WorkspaceDeployer:
             )
             return
 
-        base_name = self.config.workspace_base_name or self._repo_dir_resolved.name
-        is_sibling = self._sibling_pattern(base_name).match
+        is_sibling = self._sibling_pattern(self.config.workspace_base_name).match
         siblings = {
             ws["id"]: ws["displayName"]
             for ws in workspaces

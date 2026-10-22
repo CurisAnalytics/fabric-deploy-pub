@@ -1,13 +1,4 @@
-"""Unit tests for WorkspaceDeployer._load_config branches.
-
-Covers:
-- fabdep.yml present and valid
-- fabdep.yml missing → dirname fallback succeeds via Fabric API
-- fabdep.yml missing → dirname fallback fails → FileNotFoundError
-- fabdep.yml missing workspace_base_name → ValueError
-- branch_override takes precedence over git
-- new_workspace=True triggers create_workspace
-"""
+"""How fabdep.yml and the branch resolve to a target workspace."""
 
 from __future__ import annotations
 
@@ -36,36 +27,20 @@ class TestLoadConfig:
         assert d.workspace_name == "myws [PROD]"
         assert d.workspace_id == mock_fabric_api.workspace_id
 
-    def test_dirname_fallback_succeeds(self, tmp_path: Path, mock_fabric_api):
-        # No fabdep.yml. The deployer should fall back to the directory name.
-        repo = tmp_path / "fallback_ws"
-        repo.mkdir()
-
-        d = WorkspaceDeployer(repo, branch_override="dev")
-
-        assert d.workspace_name == "fallback_ws [DEV]"
-        assert d.workspace_id == mock_fabric_api.workspace_id
-
-    def test_dirname_fallback_fails_raises_filenotfound(
-        self, tmp_path: Path, monkeypatch, mock_fabric_api
-    ):
-        # No fabdep.yml AND the directory-name workspace doesn't exist either.
-        repo = tmp_path / "missing_ws"
-        repo.mkdir()
-
-        def _missing(_name: str) -> str:
-            raise ValueError("Workspace not found: 'missing_ws [DEV]'")
-
-        monkeypatch.setattr("fabric_deploy.workspace.get_workspace_id_by_name", _missing)
-
-        with pytest.raises(FileNotFoundError, match="fabdep.yml not found"):
-            WorkspaceDeployer(repo, branch_override="dev")
+    def test_missing_fabdep_yml_raises_before_any_api_call(self, tmp_path: Path, monkeypatch):
+        """The folder name is no stand-in for the workspace name."""
+        monkeypatch.setattr(
+            "fabric_deploy.workspace.get_workspace_id_by_name",
+            lambda _name: pytest.fail("looked up a workspace without a fabdep.yml"),
+        )
+        with pytest.raises(FileNotFoundError, match="(?s)No fabdep.yml in .*workspace_base_name"):
+            WorkspaceDeployer(tmp_path, branch_override="dev")
 
     def test_yaml_missing_workspace_base_name_raises(self, tmp_path: Path, mock_fabric_api):
         # Empty fabdep.yml — yaml.safe_load returns None → handled as {}
         _write_fabdep_yml(tmp_path, "")
 
-        with pytest.raises(ValueError, match="No workspace_base_name found"):
+        with pytest.raises(ValueError, match="must set workspace_base_name"):
             WorkspaceDeployer(tmp_path, branch_override="prod")
 
     def test_branch_override_skips_git(self, tmp_path: Path, monkeypatch, mock_fabric_api):
