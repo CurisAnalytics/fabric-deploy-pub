@@ -120,6 +120,7 @@ def plan_deploy(
     branch_override: str | None = None,
     new_workspace: bool = False,
     skip_lakehouse: bool = False,
+    environment: str = "",
     no_cleanup: bool = False,
     item_types: list[str] | None = None,
     exclude_types: list[str] | None = None,
@@ -129,7 +130,8 @@ def plan_deploy(
     allow_rls_change: bool = False,
     allow_unbound_udf: bool = False,
 ) -> Plan:
-    """What `fabdep deploy` with these options would do; see `WorkspaceDeployer`.
+    """What `fabdep deploy` with these options would do; see `WorkspaceDeployer`
+    (an empty `environment` is fabdep.yml's for the branch).
 
     Read calls only. The warnings the deploy would log before publishing go
     into the plan instead of the console.
@@ -145,6 +147,7 @@ def plan_deploy(
             branch_override=branch_override,
             new_workspace=new_workspace,
             skip_lakehouse=skip_lakehouse,
+            environment=environment,
             dry_run=True,
         )
         scope = deployer.resolve_scope(

@@ -129,6 +129,9 @@ class TestTarget:
         target = _plan(sample_ws).target
         assert (target.tenant, target.environment) == (tenant, "PROD")
 
+    def test_explicit_environment(self, sample_ws, fabric):
+        assert _plan(sample_ws, environment="QA").target.environment == "QA"
+
     @pytest.mark.parametrize(
         ("config", "new_workspace"),
         [
