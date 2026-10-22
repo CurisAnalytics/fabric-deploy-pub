@@ -161,6 +161,18 @@ class TestChangedPaths:
         sha = _commit(tmp_path, "initial")
         assert changed_paths_in(tmp_path / "ws", sha) == ["a.txt"]
 
+    def test_a_shallow_clone_is_an_error(self, tmp_path: Path):
+        """A CI checkout of depth 1 hides the PR commit's parent; diffed as a root
+        commit it would list every file in the repo."""
+        (tmp_path / "origin").mkdir()
+        repo = _repo(tmp_path / "origin")
+        (repo / "a.txt").write_text("a")
+        _commit(repo, "Merged PR 1: add a")
+        clone = tmp_path / "clone"
+        _git(tmp_path, "clone", "-q", "--depth", "1", repo.as_uri(), str(clone))
+        with pytest.raises(RuntimeError, match="shallow clone.*fetch-depth"):
+            changed_paths_in(clone, "HEAD")
+
 
 class TestGitErrors:
     def test_missing_git_is_a_runtime_error(self, tmp_path: Path, monkeypatch):

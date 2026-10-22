@@ -80,8 +80,16 @@ def changed_paths_in(repo_dir: Path | str, commit: str) -> list[str]:
         commit: Commit-ish to inspect.
     """
     parents = _git(repo_dir, "rev-list", "--parents", "-n1", commit).split()
-    # rev-list prints "<sha> <parent>..." — no parent means a root commit.
+    # rev-list prints "<sha> <parent>..." — no parent means a root commit, or the
+    # edge of a shallow clone, whose diff as a root commit would be every file.
     if len(parents) < 2:
+        if _git(repo_dir, "rev-parse", "--is-shallow-repository").strip() == "true":
+            raise RuntimeError(
+                f"Commit {parents[0][:8]} has no parent in this shallow clone, so what it "
+                "changed is unknown. Fetch the history: `git fetch --unshallow`, or "
+                "fetch-depth: 0 (GitHub Actions) / fetchDepth: 0 (Azure Pipelines) in "
+                "the CI checkout step."
+            )
         diff = ("diff-tree", "-r", "--root", "--no-commit-id", commit)
     else:
         diff = ("diff", f"{commit}^1", commit)
