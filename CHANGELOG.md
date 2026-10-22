@@ -55,6 +55,8 @@ Releases before the first public one are summarized in a few lines each.
 - "Workspace not found" suggests similar names; `fabdep -h` shows the deploy options.
 - A mistyped command (`fabdep refesh`) suggests the command, and a removed command or option
   says it was removed, instead of being read as the workspace directory.
+- `fabdep detect` prints its results to stdout, so they can be redirected; warnings stay on
+  stderr.
 
 ### Fixed
 

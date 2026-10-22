@@ -462,14 +462,13 @@ def handle_auth_command(args: argparse.Namespace) -> None:
 
 
 def handle_detect_command(args: argparse.Namespace) -> None:
-    """`fabdep detect`: list the detected source IDs, optionally saving them."""
+    """`fabdep detect`: print the detected source IDs (stdout), optionally saving them."""
     output_file = args.directory / "parameter.yml.detected"
     try:
         detector = ParameterDetector(
             repo_dir=args.directory, source_workspace_ids=args.source_workspace_ids
         )
-        detector.detect_all()
-        detector.print_detection_summary()
+        print(detector.detection_summary())
         if args.save:
             detector.save_parameter_yml(output_path=output_file)
     except Exception as e:

@@ -302,10 +302,10 @@ remove items deleted from the repo.
 
 ## Output and troubleshooting
 
-Log lines and errors go to stderr; results (`plan`, `auth status`, `schema`) go to stdout,
-so `fabdep plan -o json > plan.json` stays clean. Colour is used only on a terminal, and
-never when `NO_COLOR` is set. Known cryptic Fabric errors get a plain-language hint next to
-the raw message.
+Log lines, warnings and errors go to stderr; results (`plan`, `detect`, `auth status`,
+`schema`) go to stdout, so `fabdep plan -o json > plan.json` stays clean. Colour is used
+only on a terminal, and never when `NO_COLOR` is set. Known cryptic Fabric errors get a
+plain-language hint next to the raw message.
 
 | Symptom | What to do |
 | --- | --- |

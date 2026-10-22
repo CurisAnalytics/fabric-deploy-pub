@@ -848,48 +848,50 @@ class ParameterDetector:
             del self.parameters[find_value]
         return removed
 
-    def print_detection_summary(self) -> None:
-        """Log a summary of detected parameters."""
+    def detection_summary(self) -> str:
+        """The detected parameters, as `fabdep detect` prints them."""
         self._ensure_detected()
+        lines: list[str] = []
 
         if self.auto_bound_notebooks:
-            self.logger.info(
+            lines.append(
                 f"{len(self.auto_bound_notebooks)} notebook(s) use lakehouse "
                 f"auto-binding (metadata carries the lakehouse logicalId and "
                 f"no workspace id)"
             )
         anchors = ", ".join(sorted(self._source_workspace_ids))
-        self.logger.info(
+        lines.append(
             "Source workspace anchor(s): "
             + (anchors or "(none — unanchored workspaceIds deploy verbatim)")
         )
         with_dynamic = sum(1 for p in self.parameters.values() if p.dynamic_variable)
         without_dynamic = len(self.parameters) - with_dynamic
 
-        self.logger.info(
+        lines.append(
             f"Detected {len(self.parameters)} parameters "
             f"({with_dynamic} with dynamic variables, {without_dynamic} require manual setup):"
         )
 
         for param in self.parameters.values():
-            self.logger.info(f"  {param.description or 'Unknown'}")
-            self.logger.info(f"    Source value: {param.find_value}")
+            lines.append(f"  {param.description or 'Unknown'}")
+            lines.append(f"    Source value: {param.find_value}")
             if param.dynamic_variable:
-                self.logger.info(f"    Dynamic variable: {param.dynamic_variable}")
+                lines.append(f"    Dynamic variable: {param.dynamic_variable}")
             elif param.description == Kind.SQLDB_ENDPOINT_ID:
-                self.logger.info(
+                lines.append(
                     "    Dynamic variable: (resolved from target workspace at deploy time)"
                 )
             else:
-                self.logger.info("    Dynamic variable: (skipped - requires manual setup)")
+                lines.append("    Dynamic variable: (skipped - requires manual setup)")
             if param.item_types:
-                self.logger.info(f"    Item Types: {', '.join(sorted(param.item_types))}")
-            self.logger.info(f"    Found in: {len(param.source_files)} file(s)")
+                lines.append(f"    Item Types: {', '.join(sorted(param.item_types))}")
+            lines.append(f"    Found in: {len(param.source_files)} file(s)")
 
         if without_dynamic > 0:
-            self.logger.info(
+            lines.append(
                 f"Note: {without_dynamic} parameter(s) will be skipped in auto-generated parameter.yml"
             )
-            self.logger.info(
+            lines.append(
                 "These typically require external setup (e.g., connection IDs) and don't change between deployments."
             )
+        return "\n".join(lines)

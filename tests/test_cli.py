@@ -120,7 +120,16 @@ class TestDetectSourceWorkspaceFlag:
             text=True,
         )
         assert result.returncode == 0, result.stderr
-        assert "Source workspace anchor" in result.stdout + result.stderr
+        assert "Source workspace anchor" in result.stdout
+
+
+def test_detect_prints_its_results_to_stdout(monkeypatch, capsys, sample_ws):
+    """`fabdep detect > ids.txt` captures the results; warnings stay on stderr."""
+    _run(monkeypatch, "detect", str(sample_ws))
+    captured = capsys.readouterr()
+    assert "Detected " in captured.out
+    assert f"Source value: {SAMPLE_LAKEHOUSE_ID}" in captured.out
+    assert "Detected " not in captured.err
 
 
 class TestBanner:
