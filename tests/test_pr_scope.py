@@ -206,6 +206,10 @@ class TestGitErrors:
         with pytest.raises(RuntimeError, match="git"):
             current_branch(tmp_path)
 
+    def test_outside_a_repository_suggests_branch(self, tmp_path: Path):
+        with pytest.raises(RuntimeError, match=r"(?s)not in a git repository.*--branch"):
+            current_branch(tmp_path)
+
     def test_detached_head_suggests_branch(self, tmp_path: Path):
         repo = _repo(tmp_path)
         _git(repo, "checkout", "--detach")

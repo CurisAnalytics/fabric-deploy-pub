@@ -126,7 +126,15 @@ def current_branch(repo_dir: Path | str) -> str:
         RuntimeError: If git is unavailable, the directory is not a repo,
             or HEAD is detached.
     """
-    branch = _git(repo_dir, "branch", "--show-current").strip()
+    try:
+        branch = _git(repo_dir, "branch", "--show-current").strip()
+    except RuntimeError as e:
+        if "not a git repository" not in str(e):
+            raise
+        raise RuntimeError(
+            f"{repo_dir} is not in a git repository, so there is no branch to choose the "
+            "workspace by. Pass the branch name with --branch."
+        ) from e
     if not branch:
         raise RuntimeError(
             "HEAD is detached, so there is no branch to choose the workspace by. "
