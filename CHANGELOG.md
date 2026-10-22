@@ -1,97 +1,179 @@
 # Changelog
 
-Brief status per release. Newest first. Dates are release/commit dates.
+All notable changes to fabric-deploy (`fabdep`) are documented in this file.
 
-## [1.11.1] — 2026-10-21
-The `fabdep vX` header (renamed from "Fabric CI/CD") is printed before anything else; the run summary names the source and target workspaces and drops the parameter-file timestamp. The RLS guard reads the target's models in parallel.
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+Releases before the first public one are summarized in a few lines each.
 
-## [1.11.0] — 2026-10-21
-Lakehouse auto-binding in git: notebooks whose metadata carries the lakehouse logicalId and the null-UUID workspace no longer anchor the source workspace, so the deployer anchors every `{base} [...]` sibling workspace it can list and maps the referenced siblings' lakehouse ids where code still carries them; `fabdep detect --source-workspace-id`. Anchoring is order-independent (a bound UDF button now anchors pipeline references too). `-L` warns that auto-bound notebooks rebind anyway.
+## [Unreleased]
 
-## [1.10.0] — 2026-10-16
-`fabdep auth bind <alias> <tenant|account>`: register a tenant alias against an identity already in the shared `az` login — the pin then selects it per deploy without an isolated config dir or `auth switch`.
-Pin warnings/errors list the tenants `az` can see; `fabdep.yml` warns on unknown keys (`tenan:`).
-`fabric-cicd` 1.3 → 1.4 (Graph Model / Cosmos DB items, Activator workspace-id fix); dependency upgrade clears the open `pyjwt`/`urllib3` advisories.
+### Breaking
 
-## [1.9.0] — 2026-08-14
-`manual_parameters` entries fabdep didn't auto-detect are now injected as find/replace rules when the value occurs in an item file — covers references detection has no model for (e.g. a PowerApp link in a report).
+### Added
 
-## [1.8.2] — 2026-08-14
-SQL Database hostnames resolve to a literal bare host: the `$sqlendpoint` dynamic returns a `,1433` suffix that broke notebook JDBC URLs.
-Fixes: token falls back to another identity in the same tenant; no more double-printed log lines; null-UUID CopyJob workspaceIds treated as local.
+- MIT license; public release preparation.
 
-## [1.8.0] — 2026-08-10
-Cross-workspace pipeline references deploy verbatim instead of being rewritten to the target workspace — override with `manual_parameters`.
-MirroredDatabase SQL analytics endpoints auto-resolve. `fabric-cicd` 1.2 → 1.3.
+### Changed
 
-## [1.7.0] — 2026-07-24
+### Fixed
+
+### Removed
+
+## 1.11.1 - 2026-10-21
+
+The `fabdep vX` header prints before anything else; the run summary names the source and
+target workspaces. The RLS guard reads the target's models in parallel.
+
+## 1.11.0 - 2026-10-21
+
+Support for Fabric's Lakehouse Auto-Binding in Git: when notebook metadata no longer names
+the source workspace, fabdep lists the `{base} [...]` sibling workspaces and remaps their ids
+(and their lakehouses' ids) to the target. New `fabdep detect --source-workspace-id`.
+`-L` warns that auto-bound notebooks rebind anyway.
+
+## 1.10.0 - 2026-10-16
+
+`fabdep auth bind <alias> <tenant|account>` registers a tenant alias against an identity
+already signed in with `az`, so the `tenant:` pin selects it without a separate config directory.
+Tenant-pin messages list the tenants `az` can see; unknown `fabdep.yml` keys warn.
+`fabric-cicd` 1.3 → 1.4 (Graph Model and Cosmos DB items); patched `pyjwt` and `urllib3`.
+
+## 1.9.0 - 2026-09-03
+
+`manual_parameters` entries that detection didn't produce are injected as find/replace rules
+when their value occurs in an item file, covering references detection has no model for
+(e.g. a PowerApp link in a report).
+
+## 1.8.2 - 2026-08-14
+
+SQL Database hostnames resolve to a bare host, without the `,1433` suffix that broke notebook
+JDBC URLs. Token acquisition falls back to another identity in the same tenant; log lines no
+longer print twice; null-UUID CopyJob workspace ids are treated as local.
+
+## 1.8.1 - 2026-08-13
+
+A deploy blocks when an in-scope report has a User Data Function button that can't be rebound
+to the target workspace; `--allow-unbound-udf` ships it as-is.
+The deploy summary no longer lists excluded items as deployed.
+
+## 1.8.0 - 2026-08-10
+
 `--pr`: deploy only the items the latest pull request touched.
-Report User Data Function buttons rebind to the target workspace; `--allow-unbound-udf` ships them as-is.
-`fabdep rls` pull/diff, plus a deploy guard against silently changing a model's live RLS.
-Detection: server-level `Sql.Databases("host")` now yields the SQL-endpoint parameter. Dependency upgrades clear the open advisories.
+Report User Data Function buttons rebind to the target workspace; cross-workspace pipeline
+references deploy verbatim instead of being rewritten to the target (override with
+`manual_parameters`).
+Detection resolves MirroredDatabase SQL analytics endpoints and the server-level
+`Sql.Databases("host")` form. `fabric-cicd` 1.1 → 1.3; dependencies upgraded to patched versions.
 
-## [1.6.2] — 2026-07-21
-Null-UUID guard, `.platform`-typed item discovery, domain-rule fixes.
+## 1.7.0 - 2026-07-24
 
-## [1.6.1] — 2026-07-08
-Remap notebook `dependencies.warehouse` bindings to the target workspace; recursive item-name detection for nested folders; `--fail-on-stale` when an attachment would deploy with a source-workspace GUID.
+`fabdep rls` pulls and diffs live row-level-security role definitions, and a deploy guard
+blocks silent changes to a target model's live RLS (`--allow-rls-change` to proceed).
+Expired credentials print a re-login hint instead of the account list.
 
-## [1.6.0] — 2026-06-29
-Internal layered-architecture refactor (`identity`/`transport`/`client`/`profile`/`scope`/`params`) — no public API or CLI change.
+## 1.6.2 - 2026-07-17
 
-## [1.5.1] — 2026-06-25
-Test-suite consolidation onto the parametrized house style (~110 fewer LOC); no runtime change.
+Items are discovered by their `.platform` type rather than folder suffix; no find/replace rule
+is emitted for the null UUID; domain-rewrite rule fixes.
 
-## [1.5.0] — 2026-06-24
-Direct Lake framing: `fabdep refresh` / `fabdep deploy --frame` (sync SQL endpoint → refresh → poll → surface first error); cryptic-error hints; `--include-items` fails loudly on a name mismatch and confirms what deployed.
+## 1.6.1 - 2026-07-08
 
-## [1.4.0] — 2026-06-22
-Multi-tenant `tenant:` pin (registry alias resolved per-tenant) and `FABRIC_BEARER_TOKEN` relay auth for CA-blocked tenants.
+Notebook `dependencies.warehouse` bindings are remapped to the target workspace; item names
+are detected in nested folders; `--fail-on-stale` also covers warehouse attachments that would
+deploy with a source-workspace id.
 
-## [1.3.1] — 2026-05-31
-Bump `fabric-cicd` to 1.1.0.
+## 1.6.0 - 2026-06-29
 
-## [1.3.0] — 2026-05-13
-`--fail-on-stale` deploy flag (exit non-zero when a notebook has multiple lakehouses attached).
+Internal restructuring into layered modules (`identity`, `transport`, `client`, `profile`,
+`scope`, `params`); no CLI or public API change.
 
-## [1.2.0] — 2026-05-13
-Scan T-SQL notebooks for source IDs and warn on stale lakehouse attachments.
+## 1.5.1 - 2026-06-25
 
-## [1.1.0] — 2026-05-08
-Drop auto-detected `item_type` scoping from `parameter.yml`; scope-filter cleanups.
+More plain-language hints for Direct Lake errors (hybrid tables, storage mode, compatibility
+level); `refresh -i` accepts a trailing `.SemanticModel` like `deploy -i`; workspace item
+listing follows pagination; refresh failures show the underlying error.
 
-## [1.0.1] — 2026-05-07
-Detect OneLake DFS URLs in Direct Lake models; allow `auth switch` by local alias; auto-resolve SQL Database connection strings.
+## 1.5.0 - 2026-06-24
 
-## [1.0.0] — 2026-05-04
-First stable release: `FabdepConfig` extracted, git/scope helpers modularized, unit-test layer added behind an integration marker.
+Direct Lake framing: `fabdep refresh` and `fabdep deploy --frame` sync the SQL endpoint,
+refresh the model, poll, and surface the first error. Plain-language hints for cryptic Fabric
+errors; `--include-items` fails loudly on a name mismatch and confirms what deployed.
+`FABRIC_BEARER_TOKEN`: use a token relayed from another machine when Conditional Access
+blocks signing in locally.
 
-## [0.3.0] — 2026-05-04
-Move to `fabric-cicd` 1.0 (explicit `token_credential`); persist SPN logins and aliases in the fabdep profile; slimmer error output.
+## 1.4.0 - 2026-06-22
 
-## [0.2.4] — 2026-04-03
-Auth rename is local-only; case-insensitive item types; uppercase branch suffix; label accounts as User vs SPN.
+`tenant:` pin in `fabdep.yml`: a registered alias selects the identity for each tenant, and a
+deploy refuses to run in the wrong tenant.
 
-## [0.2.3] — 2026-02-23
-Bump `fabric-cicd`; new logging display.
+## 1.3.1 - 2026-06-01
 
-## [0.2.2] — 2026-02-12
-`--skip-lakehouse` (feature-branch mode), per-item filtering, and `rename` bugfixes.
+`fabric-cicd` 1.0 → 1.1.
 
-## [0.2.1] — 2026-01-25
-Recursive `.platform` scan with type filtering; remove bootstrap mode; parameter-cleanup fixes.
+## 1.3.0 - 2026-05-13
 
-## [0.2.0] — 2025-12-15
-SQL Database parameter detection, configurable retries, `-N` workspace validation, and a pytest harness.
+`--fail-on-stale`: exit non-zero when a notebook has several lakehouses attached.
 
-## [0.1.3] — 2025-11-10
-Branch-based workspace resolution and workspace auto-detection.
+## 1.2.0 - 2026-05-13
 
-## [0.1.2] — 2025-11-07
-Dynamic source-ID generation and bad-connection-ID detection.
+T-SQL notebooks are scanned for source ids; stale lakehouse attachments warn.
 
-## [0.1.1] — 2025-11-05
+## 1.1.0 - 2026-05-08
+
+Detected parameters are no longer scoped by `item_type` in `parameter.yml`; scope-filter fixes.
+
+## 1.0.1 - 2026-05-07
+
+OneLake DFS URLs in Direct Lake models are detected; `auth switch` accepts a local alias;
+SQL Database connection strings auto-resolve.
+
+## 1.0.0 - 2026-05-04
+
+First stable release. Configuration loading is separated from deployment; unit tests run
+apart from the live integration tests.
+
+## 0.3.0 - 2026-05-04
+
+`fabric-cicd` 1.0 (explicit `token_credential`); service-principal logins and aliases persist
+in the fabdep profile; shorter error output.
+
+## 0.2.4 - 2026-04-03
+
+`auth rename` is local-only; item types are case-insensitive; the branch suffix in workspace
+names is upper-cased; accounts are labelled User or SPN.
+
+## 0.2.3 - 2026-02-23
+
+`fabric-cicd` 0.1 → 0.2; new log display.
+
+## 0.2.2 - 2026-02-12
+
+`--skip-lakehouse` for feature branches that share the dev lakehouse; per-item filtering;
+`rename` fixes. `deploy -s` and `-A` removed.
+
+## 0.2.1 - 2026-01-25
+
+Recursive `.platform` scan with type filtering; bootstrap mode removed; parameter-cleanup fixes.
+
+## 0.2.0 - 2025-12-15
+
+SQL Database parameter detection, configurable retries, `-N` workspace validation, and a
+pytest suite.
+
+## 0.1.3 - 2025-11-10
+
+Target workspace resolved from the git branch; workspace auto-detection.
+
+## 0.1.2 - 2025-11-07
+
+`fabdep detect`: generate source-id parameters from repository files; bad connection ids are
+reported.
+
+## 0.1.1 - 2025-11-05
+
 Auth error handling and documentation.
 
-## [0.1.0] — 2025-11-04
-Initial release: `fabdep` CLI with deploy/rename/detect and the workspace/CLI module split.
+## 0.1.0 - 2025-11-04
+
+Initial release: the `fabdep` CLI with `deploy`, `rename` and `auth`.
