@@ -72,32 +72,38 @@ class TestLatestPrCommit:
         assert latest_pr_commit(repo) is None
 
     @pytest.mark.parametrize(
-        "subject",
+        "message",
         [
             "Merged PR 412: add orders pipeline",  # Azure DevOps
             "Merge pull request #12 from contoso/feature",  # GitHub merge
             "feat: add orders pipeline (#12)",  # GitHub squash
+            "Merged in feature/orders (pull request #12)",  # Bitbucket
+            "Merge branch 'orders' into 'main'\n\nSee merge request contoso/sales!12",  # GitLab
         ],
     )
-    def test_recognizes_host_pr_subjects(self, tmp_path: Path, subject: str):
+    def test_recognizes_host_pr_messages(self, tmp_path: Path, message: str):
         repo = _repo(tmp_path)
         (repo / "a.txt").write_text("a")
-        sha = _commit(repo, subject)
+        sha = _commit(repo, message)
         found = latest_pr_commit(repo)
         assert found is not None
         assert found[0] == sha
-        assert found[1] == subject
+        assert found[1] == message.split("\n")[0]
 
-    def test_merge_commit_counts_without_a_pr_subject(self, tmp_path: Path):
+    @pytest.mark.parametrize(
+        "message", ["Merge branch 'feature'", "Merge branch 'main' of https://example.com/sales"]
+    )
+    def test_plain_merge_commit_is_not_a_pr(self, tmp_path: Path, message: str):
+        """A local merge (`git merge`, `git pull`) is not what a PR brought in."""
         repo = _repo(tmp_path)
-        _git(repo, "checkout", "-b", "feature")
         (repo / "a.txt").write_text("a")
+        pr = _commit(repo, "Merged PR 1: earlier")
+        _git(repo, "checkout", "-b", "feature")
+        (repo / "b.txt").write_text("b")
         _commit(repo, "feat: work")
         _git(repo, "checkout", "main")
-        _git(repo, "merge", "--no-ff", "-m", "merge branch", "feature")
-        found = latest_pr_commit(repo)
-        assert found is not None
-        assert found[1] == "merge branch"
+        _git(repo, "merge", "--no-ff", "-m", message, "feature")
+        assert latest_pr_commit(repo) == (pr, "Merged PR 1: earlier")
 
     def test_most_recent_pr_wins(self, tmp_path: Path):
         repo = _repo(tmp_path)

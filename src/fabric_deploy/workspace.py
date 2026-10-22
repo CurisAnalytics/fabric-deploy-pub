@@ -355,10 +355,10 @@ class WorkspaceDeployer:
             found = latest_pr_commit(self._repo_dir_resolved)
             if not found:
                 raise RuntimeError(
-                    "--pr found no pull-request commit in the last 50 commits "
-                    "(looked for a merge commit, 'Merged PR N:' from Azure "
-                    "DevOps, or GitHub's 'Merge pull request #N' / '(#N)'). "
-                    "Pass the commit explicitly with --pr <commit-ish>."
+                    "--pr found no pull-request commit in the last 50 commits (one "
+                    "worded the way Azure DevOps, GitHub, GitLab or Bitbucket word a "
+                    "merged pull request). Pass the commit explicitly with --pr "
+                    "<commit-ish>."
                 )
             sha, subject = found
         else:

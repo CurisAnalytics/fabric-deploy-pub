@@ -9,15 +9,16 @@ from pathlib import Path
 
 __all__ = ["current_branch", "changed_paths_in", "latest_pr_commit"]
 
-# How Azure DevOps and GitHub write a pull-request commit subject. ADO writes
-# "Merged PR 123: ...", GitHub writes "Merge pull request #12 from ..." for a
-# merge commit and "... (#12)" for a squash. A squash-merged PR leaves no merge
-# commit at all, so the subject is the only signal.
-_PR_SUBJECT_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"^Merged PR \d+:"),
-    re.compile(r"^Merge pull request #\d+"),
-    re.compile(r"\(#\d+\)$"),
+# How hosting services word the commit a pull request lands as. A squash merge
+# leaves no merge commit, so the message is the only signal, and a merge commit
+# without one of these is a local `git merge` or `git pull`, not a pull request.
+_PR_SUBJECTS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^Merged PR \d+:"),  # Azure DevOps
+    re.compile(r"^Merge pull request #\d+"),  # GitHub merge commit
+    re.compile(r"\(#\d+\)$"),  # GitHub squash merge
+    re.compile(r"\(pull request #\d+\)"),  # Bitbucket
 )
+_PR_BODY = re.compile(r"^See merge request \S+!\d+$", re.MULTILINE)  # GitLab
 
 # How far back to look for the PR commit. A deploy follows a fetch of upstream
 # changes, so the PR is near the tip; scanning further would risk picking up an
@@ -51,25 +52,17 @@ def _git(repo_dir: Path | str, *args: str) -> str:
 def latest_pr_commit(repo_dir: Path | str) -> tuple[str, str] | None:
     """Find the most recent pull-request commit reachable from HEAD.
 
-    Returns (sha, subject), or None if no PR-shaped commit is in the last
-    `_PR_SEARCH_DEPTH` commits. A merge commit counts regardless of subject —
-    that is what a non-squashed PR looks like once fetched.
+    Returns (sha, subject), or None if none of the last `_PR_SEARCH_DEPTH`
+    commits carries a pull-request message (see `_PR_SUBJECTS`).
 
     Args:
         repo_dir: Path to a directory inside a git repository.
     """
-    out = _git(
-        repo_dir,
-        "log",
-        f"-n{_PR_SEARCH_DEPTH}",
-        "--format=%H%x00%P%x00%s",
-        "HEAD",
-    )
-    for line in out.splitlines():
-        sha, parents, subject = (line.split("\0", 2) + ["", ""])[:3]
-        is_merge = len(parents.split()) > 1
-        if is_merge or any(p.search(subject) for p in _PR_SUBJECT_PATTERNS):
-            return sha, subject
+    out = _git(repo_dir, "log", f"-n{_PR_SEARCH_DEPTH}", "-z", "--format=%H%x1f%s%x1f%b", "HEAD")
+    for record in out.split("\0"):
+        sha, subject, body = (record.split("\x1f", 2) + ["", ""])[:3]
+        if any(p.search(subject) for p in _PR_SUBJECTS) or _PR_BODY.search(body):
+            return sha.strip(), subject
     return None
 
 

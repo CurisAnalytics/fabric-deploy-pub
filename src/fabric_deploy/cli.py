@@ -267,11 +267,12 @@ def parse_args() -> argparse.Namespace:
         const=PR_HEAD,
         metavar="COMMIT",
         help="Deploy only the items the latest pull request touched, instead "
-        "of reading the diff by hand. Finds the most recent merge / 'Merged PR "
-        "N:' / 'Merge pull request #N' commit reachable from HEAD, maps its "
-        "changed files onto the items that own them, and filters the deploy to "
-        "those. Pass a commit-ish to use a specific PR commit. Mutually "
-        "exclusive with --include-items.",
+        "of reading the diff by hand. Finds the most recent pull-request commit "
+        "reachable from HEAD (as Azure DevOps, GitHub, GitLab or Bitbucket word "
+        "it; a plain merge commit doesn't count), maps its changed files onto "
+        "the items that own them, and filters the deploy to those. Pass a "
+        "commit-ish to use a specific PR commit. Mutually exclusive with "
+        "--include-items.",
     )
     _ = deploy_parser.add_argument(
         "--new-workspace",
