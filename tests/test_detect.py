@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from fabric_deploy.detect import DetectedParameter, ParameterDetector
+from fabric_deploy.detect import DetectedParameter, Kind, ParameterDetector
 
 # --- helpers ---------------------------------------------------------------
 
@@ -18,28 +18,25 @@ CONNECTION_ID = "44444444-4444-4444-4444-444444444444"
 OTHER_WORKSPACE_ID = "55555555-5555-5555-5555-555555555555"
 
 
-def _make_lakehouse(repo: Path, name: str) -> None:
-    item = repo / f"{name}.Lakehouse"
-    item.mkdir()
+def _make_item(repo: Path, name: str, item_type: str, subdir: str = "") -> Path:
+    item = repo / subdir / f"{name}.{item_type}"
+    item.mkdir(parents=True)
     (item / ".platform").write_text(
-        json.dumps({"metadata": {"displayName": name, "type": "Lakehouse"}})
+        json.dumps({"metadata": {"displayName": name, "type": item_type}})
     )
+    return item
+
+
+def _make_lakehouse(repo: Path, name: str) -> None:
+    _make_item(repo, name, "Lakehouse")
 
 
 def _make_sqldb(repo: Path, name: str) -> None:
-    item = repo / f"{name}.SQLDatabase"
-    item.mkdir()
-    (item / ".platform").write_text(
-        json.dumps({"metadata": {"displayName": name, "type": "SQLDatabase"}})
-    )
+    _make_item(repo, name, "SQLDatabase")
 
 
 def _make_mirrored_db(repo: Path, name: str) -> None:
-    item = repo / f"{name}.MirroredDatabase"
-    item.mkdir()
-    (item / ".platform").write_text(
-        json.dumps({"metadata": {"displayName": name, "type": "MirroredDatabase"}})
-    )
+    _make_item(repo, name, "MirroredDatabase")
 
 
 def _make_notebook(
@@ -56,21 +53,19 @@ def _make_notebook(
 
 
 def _make_semantic_model(repo: Path, name: str, expressions_tmdl: str) -> None:
-    sm = repo / f"{name}.SemanticModel"
-    (sm / "definition").mkdir(parents=True)
-    (sm / "definition" / "expressions.tmdl").write_text(expressions_tmdl)
+    definition = _make_item(repo, name, "SemanticModel") / "definition"
+    definition.mkdir()
+    (definition / "expressions.tmdl").write_text(expressions_tmdl)
 
 
 def _make_pipeline(repo: Path, name: str, content: dict) -> None:
-    pl = repo / f"{name}.DataPipeline"
-    pl.mkdir()
-    (pl / "pipeline-content.json").write_text(json.dumps(content))
+    item = _make_item(repo, name, "DataPipeline")
+    (item / "pipeline-content.json").write_text(json.dumps(content))
 
 
 def _make_copyjob(repo: Path, name: str, content: dict) -> None:
-    cj = repo / f"{name}.CopyJob"
-    cj.mkdir()
-    (cj / "copyjob-content.json").write_text(json.dumps(content))
+    item = _make_item(repo, name, "CopyJob")
+    (item / "copyjob-content.json").write_text(json.dumps(content))
 
 
 # --- notebook extraction ---------------------------------------------------
@@ -223,13 +218,7 @@ class TestSemanticModelExtraction:
         # SQL Database Item ID captured
         assert ENDPOINT_ID in d.parameters
         assert d.parameters[ENDPOINT_ID].description == "SQL Database Item ID"
-
-        # Full database name (db-uuid) also captured
-        full_name = f"mydb-{ENDPOINT_ID}"
-        assert full_name in d.parameters
-        assert d.parameters[full_name].description == "SQL Database Name"
-        # Name has no native fabric-cicd attribute; still requires manual override
-        assert d.parameters[full_name].dynamic_variable == ""
+        assert set(d.parameters) == {host, ENDPOINT_ID}
 
     def test_extracts_onelake_dfs_url(self, tmp_path: Path):
         """DirectLake semantic models reference OneLake via DFS URL."""
@@ -645,97 +634,52 @@ class TestFilterLakehouseParams:
         assert d.generate_parameter_yml()["find_replace"] == []
 
 
-# --- _generate_dynamic_variable -------------------------------------------
+# --- dynamic variables ----------------------------------------------------
 
 
-class TestGenerateDynamicVariable:
+class TestDynamicVariable:
     @pytest.mark.parametrize(
-        "description,expected",
+        ("items", "kind", "expected"),
         [
-            ("Workspace ID", "$workspace.$id"),
-            ("Lakehouse ID", "$items.Lakehouse.lh.$id"),
+            ([], Kind.WORKSPACE, "$workspace.$id"),
+            (["lh.Lakehouse"], Kind.LAKEHOUSE, "$items.Lakehouse.lh.$id"),
+            (["lh.Lakehouse"], Kind.SQL_ENDPOINT_HOST, "$items.Lakehouse.lh.$sqlendpoint"),
+            (["lh.Lakehouse"], Kind.SQL_ENDPOINT_ID, "$items.Lakehouse.lh.$sqlendpointid"),
+            (["lh.Lakehouse"], Kind.CONNECTION, ""),
+            (["mydb.SQLDatabase"], Kind.SQLDB_ID, "$items.SQLDatabase.mydb.$id"),
+            # fabric-cicd resolves a SQLDatabase's $sqlendpoint to its serverFqdn.
+            (["mydb.SQLDatabase"], Kind.SQLDB_HOST, "$items.SQLDatabase.mydb.$sqlendpoint"),
+            (["wh.Warehouse"], Kind.WAREHOUSE, "$items.Warehouse.wh.$id"),
+            # A mirrored database's SQL endpoint shares the lakehouse
+            # `datawarehouse.*` domain, so it answers for endpoint references...
             (
-                "SQL Analytics Endpoint Connection String",
-                "$items.Lakehouse.lh.$sqlendpoint",
-            ),
-            (
-                "Lakehouse SQL Analytics Endpoint Item ID",
-                "$items.Lakehouse.lh.$sqlendpointid",
-            ),
-            ("External connection ID", ""),
-        ],
-    )
-    def test_dynamic_variable_lookup_with_lakehouse(
-        self, tmp_path: Path, description: str, expected: str
-    ):
-        _make_lakehouse(tmp_path, "lh")
-        d = ParameterDetector(tmp_path)
-        d._lakehouse_names = d._detect_item_names("Lakehouse")
-        assert d._generate_dynamic_variable(description) == expected
-
-    def test_sqldatabase_item_id_uses_db_name(self, tmp_path: Path):
-        _make_sqldb(tmp_path, "mydb")
-        d = ParameterDetector(tmp_path)
-        d._sqldatabase_names = d._detect_item_names("SQLDatabase")
-        assert d._generate_dynamic_variable("SQL Database Item ID") == "$items.SQLDatabase.mydb.$id"
-
-    def test_sqldatabase_connection_string_resolves_to_sqlendpoint(self, tmp_path: Path):
-        """SQL Database Connection String should map to $sqlendpoint, not empty.
-
-        fabric-cicd 1.0's PROPERTY_PATH_ATTR_MAPPING for SQLDatabase resolves
-        $sqlendpoint to body/properties/serverFqdn (.database.fabric.microsoft.com).
-        """
-        _make_sqldb(tmp_path, "mydb")
-        d = ParameterDetector(tmp_path)
-        d._sqldatabase_names = d._detect_item_names("SQLDatabase")
-        assert (
-            d._generate_dynamic_variable("SQL Database Connection String")
-            == "$items.SQLDatabase.mydb.$sqlendpoint"
-        )
-
-    def test_sqldatabase_name_remains_unresolved(self, tmp_path: Path):
-        """SQL Database Name has no native fabric-cicd attribute → still empty."""
-        _make_sqldb(tmp_path, "mydb")
-        d = ParameterDetector(tmp_path)
-        d._sqldatabase_names = d._detect_item_names("SQLDatabase")
-        assert d._generate_dynamic_variable("SQL Database Name") == ""
-
-    @pytest.mark.parametrize(
-        "description,expected",
-        [
-            (
-                "SQL Analytics Endpoint Connection String",
+                ["mdb.MirroredDatabase"],
+                Kind.SQL_ENDPOINT_HOST,
                 "$items.MirroredDatabase.mdb.$sqlendpoint",
             ),
             (
-                "Lakehouse SQL Analytics Endpoint Item ID",
+                ["mdb.MirroredDatabase"],
+                Kind.SQL_ENDPOINT_ID,
                 "$items.MirroredDatabase.mdb.$sqlendpointid",
             ),
-            ("Lakehouse ID", ""),  # not an endpoint description — stays unresolved
+            (["mdb.MirroredDatabase"], Kind.LAKEHOUSE, ""),
+            # ...unless the repo has a lakehouse too.
+            (
+                ["lh.Lakehouse", "mdb.MirroredDatabase"],
+                Kind.SQL_ENDPOINT_HOST,
+                "$items.Lakehouse.lh.$sqlendpoint",
+            ),
         ],
     )
-    def test_mirrored_database_claims_endpoint_when_no_lakehouse(
-        self, tmp_path: Path, description: str, expected: str
+    def test_kind_maps_to_dynamic_variable(
+        self, tmp_path: Path, items: list[str], kind: Kind, expected: str
     ):
-        """MirroredDatabase endpoints share the Lakehouse `datawarehouse.*`
-        domain; fabric-cicd 1.3 added $sqlendpoint/$sqlendpointid for them."""
-        _make_mirrored_db(tmp_path, "mdb")
+        for item in items:
+            name, item_type = item.split(".")
+            _make_item(tmp_path, name, item_type)
         d = ParameterDetector(tmp_path)
-        d._mirroreddatabase_names = d._detect_item_names("MirroredDatabase")
-        assert d._generate_dynamic_variable(description) == expected
-
-    def test_lakehouse_wins_over_mirrored_database(self, tmp_path: Path):
-        """With both item types in the repo, first-match Lakehouse resolution
-        stands — the MirroredDatabase fallback never fires."""
-        _make_lakehouse(tmp_path, "lh")
-        _make_mirrored_db(tmp_path, "mdb")
-        d = ParameterDetector(tmp_path)
-        d._lakehouse_names = d._detect_item_names("Lakehouse")
-        d._mirroreddatabase_names = d._detect_item_names("MirroredDatabase")
-        assert (
-            d._generate_dynamic_variable("SQL Analytics Endpoint Connection String")
-            == "$items.Lakehouse.lh.$sqlendpoint"
-        )
+        d._index_items()
+        assert d._dynamic(kind, "find-value") == expected
 
 
 # --- warehouse attachments (dependencies.warehouse) ------------------------
@@ -756,15 +700,6 @@ def _warehouse_meta(prefix: str, wh_id: str, wh_type: str) -> str:
         f"{p} META     }}\n"
         f"{p} META   }}\n"
         f"{p} META }}\n"
-    )
-
-
-def _make_item(repo: Path, name: str, item_type: str, subdir: str = "") -> None:
-    parent = repo / subdir if subdir else repo
-    item = parent / f"{name}.{item_type}"
-    item.mkdir(parents=True)
-    (item / ".platform").write_text(
-        json.dumps({"metadata": {"displayName": name, "type": item_type}})
     )
 
 
@@ -868,7 +803,8 @@ class TestNestedItemNameDetection:
         _make_item(tmp_path, "nested_lh", "Lakehouse", subdir="SUB")
         _make_lakehouse(tmp_path, "top_lh")
         d = ParameterDetector(tmp_path)
-        assert d._detect_item_names("Lakehouse") == ["top_lh", "nested_lh"]
+        d._index_items()
+        assert d._names["Lakehouse"] == ["top_lh", "nested_lh"]
 
 
 # --- PBIR User Data Function rebind ----------------------------------------

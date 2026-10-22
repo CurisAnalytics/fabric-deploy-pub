@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .detect import DetectedParameter, find_in_item_files
+from .detect import DetectedParameter, Kind, find_in_item_files
 
 if TYPE_CHECKING:
     from .detect import ParameterDetector
@@ -159,7 +159,7 @@ def resolve_warehouse_endpoint_params(
     pending = [
         p
         for p in detector.parameters.values()
-        if p.description == "SQL Database SQL Endpoint Item ID" and not p.dynamic_variable
+        if p.description == Kind.SQLDB_ENDPOINT_ID and not p.dynamic_variable
     ]
     if not pending:
         return 0
@@ -171,7 +171,7 @@ def resolve_warehouse_endpoint_params(
     from .client import find_item_by_name
 
     try:
-        # First-name convention, same as _generate_dynamic_variable.
+        # The repo's first SQL database, as detection binds it.
         endpoint = find_item_by_name(workspace_id, "SQLEndpoint", db_names[0])
     except (ValueError, RuntimeError) as e:
         logger.warning(
@@ -227,7 +227,8 @@ def resolve_sqldatabase_hostname_params(
     from .client import get_sqldatabase_server_host
 
     try:
-        # First-name convention, same as _generate_dynamic_variable.
+        # A host is the workspace's SQL server, so any of the repo's databases
+        # resolves it (detect.ITEM_RULES).
         host = get_sqldatabase_server_host(workspace_id, db_names[0])
     except (ValueError, RuntimeError) as e:
         logger.warning(

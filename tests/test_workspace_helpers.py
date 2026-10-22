@@ -115,7 +115,7 @@ class TestResolveWarehouseEndpointParams:
 
     def _detector_with_binding(self, tmp_path: Path) -> ParameterDetector:
         d = ParameterDetector(tmp_path)
-        d._sqldatabase_names = ["mydb"]
+        d._names["SQLDatabase"] = ["mydb"]
         d.parameters = {
             self.EP_GUID: DetectedParameter(
                 find_value=self.EP_GUID,
@@ -178,7 +178,7 @@ class TestResolveSqlDatabaseHostnameParams:
 
     def _detector_with_hostname(self, tmp_path: Path) -> ParameterDetector:
         d = ParameterDetector(tmp_path)
-        d._sqldatabase_names = ["mydb"]
+        d._names["SQLDatabase"] = ["mydb"]
         d.parameters = {
             self.HOST: DetectedParameter(
                 find_value=self.HOST,
@@ -236,7 +236,7 @@ class TestResolveSqlDatabaseHostnameParams:
         from fabric_deploy import params as params_mod
 
         d = ParameterDetector(tmp_path)
-        d._sqldatabase_names = ["mydb"]
+        d._names["SQLDatabase"] = ["mydb"]
         d.parameters = {
             "some-host": DetectedParameter(
                 find_value="some-host",
