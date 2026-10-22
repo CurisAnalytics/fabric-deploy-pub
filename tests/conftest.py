@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import shutil
 import socket
 import time
@@ -145,6 +146,10 @@ def _isolate_azure_identity(monkeypatch, tmp_path):
 
     for var in ("FABRIC_BEARER_TOKEN", "POWERBI_BEARER_TOKEN", "FABDEP_AUTH"):
         monkeypatch.delenv(var, raising=False)
+    # Under a git hook or `rebase --exec`, GIT_DIR & co. would aim the tests' scratch
+    # repos at the enclosing repository.
+    for var in [v for v in os.environ if v.startswith("GIT_")]:
+        monkeypatch.delenv(var)
     # An unset AZURE_CONFIG_DIR means ~/.azure: point az at an empty one instead.
     (tmp_path / "azure-config").mkdir()
     monkeypatch.setenv("AZURE_CONFIG_DIR", str(tmp_path / "azure-config"))
