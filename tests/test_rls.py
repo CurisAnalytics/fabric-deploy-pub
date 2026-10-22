@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -24,6 +25,7 @@ from fabric_deploy.rls import (
     read_local_roles,
     roles_from_parts,
 )
+from fabric_deploy.workspace import WorkspaceDeployer
 
 ROLE_RLS = (
     "role RLS\n\tmodelPermission: read\n\n\ttablePermission contact = [User Name] = USERNAME()\n"
@@ -219,10 +221,35 @@ NO_READ = object()  # the guard must not read the target at all
             id="allow-change-skips-the-read-but-says-so",
         ),
         pytest.param(
-            None, NO_READ, False, None, None, None, [], id="no-repo-roles-is-silent-and-free"
+            None,
+            {},
+            False,
+            None,
+            None,
+            ["reading live role definitions", "repo matches target"],
+            [],
+            id="no-rls-anywhere-passes",
+        ),
+        # A repo without roles/ deploys a model without roles: the target's go.
+        pytest.param(
+            None,
+            _role("RLS", ROLE_RLS),
+            False,
+            None,
+            "Deploy blocked",
+            ["[deploy WIPES] role 'RLS'"],
+            [],
+            id="no-repo-roles-but-target-roles-blocks",
         ),
         pytest.param(
-            None, NO_READ, True, None, None, None, [], id="no-repo-roles-allow-change-is-silent"
+            None,
+            NO_READ,
+            True,
+            None,
+            None,
+            ["skipped", MEMBERS_NOTE],
+            [],
+            id="no-repo-roles-allow-change-skips-but-says-so",
         ),
         pytest.param(
             {"RLS.tmdl": ROLE_RLS}, NO_READ, False, [], None, None, [], id="empty-scope-is-a-noop"
@@ -258,6 +285,25 @@ def test_guard(
     else:
         assert all(s in messages for s in logged), messages
     assert not any(s in messages for s in not_logged), messages
+
+
+@pytest.mark.parametrize(
+    ("item_types", "include_items", "expected"),
+    [
+        pytest.param(None, None, None, id="whole-repo"),
+        pytest.param(["Notebook"], None, [], id="type-scope-without-models"),
+        pytest.param(["Notebook"], ["M.SemanticModel"], [], id="model-named-but-type-excluded"),
+        pytest.param(
+            ["Notebook", "SemanticModel"], ["M.SemanticModel", "N.Notebook"], ["M"], id="named"
+        ),
+    ],
+)
+def test_deployer_guards_only_models_it_publishes(monkeypatch, item_types, include_items, expected):
+    seen = {}
+    monkeypatch.setattr("fabric_deploy.rls.guard_deploy_rls", lambda **kw: seen.update(kw))
+    stand_in = SimpleNamespace(workspace_id="ws", _repo_dir_resolved=Path("."), logger=None)
+    WorkspaceDeployer._guard_rls(stand_in, item_types, include_items, allow_rls_change=False)
+    assert seen["model_names"] == expected
 
 
 def test_guard_reads_models_concurrently(tmp_path, monkeypatch):

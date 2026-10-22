@@ -397,18 +397,17 @@ class WorkspaceDeployer:
     ) -> None:
         """Block a deploy that would change a target model's live RLS.
 
-        Resolves which SemanticModels are in deploy scope and delegates to
-        `guard_deploy_rls`, which no-ops (no API call) for any model the repo
-        carries no RLS for.
+        Resolves which SemanticModels this deploy publishes and delegates to
+        `guard_deploy_rls`, which compares each one's roles with the target's.
         """
         from .rls import guard_deploy_rls
 
-        if include_items:
-            models = [it.rsplit(".", 1)[0] for it in include_items if it.endswith(".SemanticModel")]
-        elif item_type_in_scope is None or "SemanticModel" in item_type_in_scope:
-            models = None  # every SemanticModel in the repo is in scope
-        else:
+        if item_type_in_scope is not None and "SemanticModel" not in item_type_in_scope:
             models = []  # SemanticModel not in scope -> skip the guard
+        elif include_items:
+            models = [it.rsplit(".", 1)[0] for it in include_items if it.endswith(".SemanticModel")]
+        else:
+            models = None  # every SemanticModel in the repo is in scope
 
         guard_deploy_rls(
             workspace_id=self.workspace_id,
@@ -629,9 +628,8 @@ class WorkspaceDeployer:
 
         self._guard_udf_bindings(item_type_in_scope, include_items, allow_unbound_udf)
 
-        # Guard live RLS before any write: only models the repo actually carries
-        # RLS for are checked (no roles in repo -> no API call), and any drift
-        # from the target's live roles blocks the deploy unless explicitly allowed.
+        # Guard live RLS before any write: any difference between an in-scope
+        # model's repo roles and the target's blocks the deploy unless allowed.
         self._guard_rls(item_type_in_scope, include_items, allow_rls_change)
 
         if self._detector is not None:
