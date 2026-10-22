@@ -25,7 +25,9 @@ Releases before the first public one are summarized in a few lines each.
 - `--fail-on-stale` covers only warehouse attachments that can't be remapped.
 - The RLS guard checks every in-scope model, also one without roles in the repo, and blocks
   a changed role `PBI_Id` (the service would drop the role's members).
-- Bare `--pr` counts only commits worded as merged pull requests, not plain merges.
+- Bare `--pr` counts only commits worded as merged pull requests, not plain merges, and
+  warns when HEAD is past that commit (rebase merges, direct pushes).
+- An unknown `-t`/`-x` item type is an error naming the closest type.
 - Errors go to stderr; colour only on a terminal without `NO_COLOR`. A directory argument
   that doesn't exist is a usage error (exit 2).
 - Python API: `WorkspaceDeployer` drops `max_retries`, `repo_item_types` and
@@ -61,6 +63,7 @@ Releases before the first public one are summarized in a few lines each.
 - `--frame` refreshes only the models the deploy published; `-L` holds when it drops every rule.
 - `--pr` works from a git subfolder, and fails in a shallow clone instead of deploying all.
 - Files with a UTF-8 BOM are read; a 404 is no longer reported as a sign-in problem.
+- `manual_parameters` apply when deploying back to the workspace the IDs came from.
 - Windows: sign-in works, and consoles that can't print `✓` no longer crash.
 
 ### Removed
