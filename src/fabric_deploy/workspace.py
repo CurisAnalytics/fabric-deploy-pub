@@ -24,7 +24,7 @@ from .client import (
     list_workspaces,
 )
 from .config import FabdepConfig
-from .detect import ParameterDetector, find_in_item_files
+from .detect import ParameterDetector
 from .git import changed_paths_in, latest_pr_commit
 from .identity import apply_tenant_pin, fabric_credential
 from .log import get_logger, patch_fabric_cicd_logger
@@ -35,6 +35,7 @@ from .params import (
     resolve_warehouse_endpoint_params,
 )
 from .scope import (
+    find_in_item_files,
     items_for_changed_paths,
     repo_item_types,
     resolve_item_scope,

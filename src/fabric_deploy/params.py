@@ -16,7 +16,8 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from .detect import DetectedParameter, Kind, find_in_item_files
+from .detect import DetectedParameter, Kind
+from .scope import find_in_item_files
 
 if TYPE_CHECKING:
     from .detect import ParameterDetector

@@ -19,6 +19,7 @@ from typing import TypeGuard
 import yaml
 
 from .log import get_logger
+from .scope import RepoItem, find_in_item_files, repo_items
 
 UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 
@@ -80,33 +81,6 @@ def _iter_meta_blocks(content: str):
             current = []
     if current:
         yield "\n".join(current)
-
-
-def find_in_item_files(repo_dir: Path, values: Iterable[str]) -> dict[str, set[str]]:
-    """Repo-relative item files that contain each literal in `values`.
-
-    Item files are those under a directory carrying a `.platform` — the set
-    fabric-cicd's find_replace operates on. Repo-root files such as
-    fabdep.yml are deliberately excluded so a rule can't match itself. One
-    walk covers every value.
-    """
-    matches: dict[str, set[str]] = {v: set() for v in values}
-    if not matches:
-        return matches
-    item_dirs = {p.parent for p in repo_dir.glob("**/.platform")}
-    for item_dir in item_dirs:
-        for path in item_dir.rglob("*"):
-            if not path.is_file():
-                continue
-            try:
-                content = path.read_text(encoding="utf-8", errors="ignore")
-            except OSError:
-                continue
-            rel = str(path.relative_to(repo_dir))
-            for value, found_in in matches.items():
-                if value in content:
-                    found_in.add(rel)
-    return matches
 
 
 @dataclass
@@ -206,8 +180,8 @@ class ParameterDetector:
         self._detected = False
         self._seed_workspace_ids: set[str] = set(source_workspace_ids or ())
         self._seed_lakehouse_ids: dict[str, str] = dict(source_lakehouse_ids or {})
-        # (item_dir, .platform metadata) for every repo item, shallowest first.
-        self._items: list[tuple[Path, dict]] = []
+        # The repo's items, shallowest first.
+        self._items: list[RepoItem] = []
         # Item type -> display names of the repo's items of that type.
         self._names: defaultdict[str, list[str]] = defaultdict(list)
         # Repo-relative notebook dirs whose notebook-settings.json turns
@@ -345,39 +319,20 @@ class ParameterDetector:
             )
 
     def _index_items(self) -> None:
-        """Read every item's `.platform` once — fabric-cicd discovers items by it.
-
-        An item's type is its `.platform` `metadata.type`, NOT its directory
-        suffix: Synapse-migrated notebooks sit in `*.SynapseNotebook/` dirs
-        typed Notebook. Items can live in workspace subfolders (e.g.
-        `ERP/northwind_sql_db.SQLDatabase`); shallower paths sort first.
-        """
-        self._items = []
+        """Read the repo's items and their names by type (see `scope.repo_items`)."""
+        self._items = repo_items(self.repo_dir, logger=self.logger)
         self._names = defaultdict(list)
-        for platform_file in sorted(
-            self.repo_dir.glob("**/.platform"), key=lambda p: (len(p.parts), str(p))
-        ):
-            try:
-                metadata = json.loads(platform_file.read_text(encoding="utf-8-sig"))["metadata"]
-                item_type, name = metadata.get("type"), metadata.get("displayName")
-            except Exception as e:
-                self._log_file_warning(platform_file, e, "item metadata")
-                continue
-            self._items.append((platform_file.parent, metadata))
-            if name:
-                self._names[item_type].append(name)
-
-    def _platform_items(self, item_type: str) -> list[tuple[Path, dict]]:
-        """(item_dir, .platform metadata) for the repo's items of `item_type`."""
-        return [(d, meta) for d, meta in self._items if meta.get("type") == item_type]
+        for item in self._items:
+            self._names[item.type].append(item.name)
 
     def _item_files(self, item_type: str, *patterns: str) -> list[Path]:
         """Files matching `patterns` (globs relative to the item dir) in items of `item_type`."""
         return [
             f
-            for item_dir, _ in self._platform_items(item_type)
+            for item in self._items
+            if item.type == item_type
             for pattern in patterns
-            for f in sorted(item_dir.glob(pattern))
+            for f in sorted(item.path.glob(pattern))
         ]
 
     def _auto_binding_enabled(self, item_dir: Path) -> bool:
@@ -712,10 +667,9 @@ class ParameterDetector:
         rebind is matched on.
         """
         self._udf_functions = {}
-        for item_dir, meta in self._platform_items("UserDataFunction"):
-            display_name = meta.get("displayName")
-            definition = item_dir / "definition.json"
-            if not display_name or not definition.exists():
+        for item in self._items:
+            definition = item.path / "definition.json"
+            if item.type != "UserDataFunction" or not definition.exists():
                 continue
             try:
                 functions = json.loads(definition.read_text(encoding="utf-8-sig")).get(
@@ -727,7 +681,7 @@ class ParameterDetector:
             for fn in functions:
                 name = fn.get("name") if isinstance(fn, dict) else None
                 if name:
-                    self._udf_functions.setdefault(name, set()).add(display_name)
+                    self._udf_functions.setdefault(name, set()).add(item.name)
 
     @staticmethod
     def _pbir_literal(node) -> str:
@@ -839,9 +793,9 @@ class ParameterDetector:
 
     def _item_name(self, file_path: Path) -> str:
         """Display name of the repo item a file belongs to."""
-        for item_dir, meta in reversed(self._items):
-            if item_dir in file_path.parents:
-                return meta.get("displayName") or item_dir.stem
+        for item in reversed(self._items):
+            if item.path in file_path.parents:
+                return item.name
         return file_path.name
 
     def _ensure_detected(self) -> None:

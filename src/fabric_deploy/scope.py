@@ -1,67 +1,114 @@
-"""Repo item introspection and deploy-scope resolution.
+"""The workspace repo's items and the deploy scope.
 
-Pure functions over a workspace repo directory — no deployer state — so `-i`
-validation, item-type scoping, and `.platform` scanning live in one place
-instead of bloating WorkspaceDeployer.
+Pure functions over a workspace repo directory, no deployer state: the
+`.platform` index every module reads items from, `-i` validation, item-type
+scoping and the `--pr` path-to-item mapping.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
+from dataclasses import dataclass
 from json import loads
 from pathlib import Path
 
 from fabric_cicd.constants import ACCEPTED_ITEM_TYPES
 
 __all__ = [
+    "RepoItem",
+    "find_in_item_files",
     "items_for_changed_paths",
     "repo_item_types",
+    "repo_items",
     "resolve_item_scope",
     "validate_include_items",
 ]
 
 
-def _platform_meta(platform_file: Path) -> tuple[str, str] | None:
-    """Return (displayName, type) from a .platform file, or None if unreadable."""
-    try:
-        meta = loads(platform_file.read_text(encoding="utf-8-sig"))["metadata"]
-        return meta["displayName"], meta["type"]
-    except Exception:
-        return None
+@dataclass(frozen=True)
+class RepoItem:
+    """One item of a workspace repo, as its `.platform` file declares it.
+
+    fabric-cicd discovers items the same way: a directory holding a `.platform`
+    is an item, its type and name are the file's `metadata.type` and
+    `metadata.displayName`, whatever the directory is called.
+    """
+
+    path: Path  # the item directory
+    type: str
+    name: str  # displayName
+    logical_id: str | None  # config.logicalId
+
+    @property
+    def key(self) -> str:
+        """'<displayName>.<type>', the form fabric-cicd's items_to_include takes."""
+        return f"{self.name}.{self.type}"
+
+
+def repo_items(
+    repo_dir: Path, item_type: str | None = None, logger: logging.Logger | None = None
+) -> list[RepoItem]:
+    """The repo's items of a type fabric-cicd deploys, shallowest directory first.
+
+    Args:
+        repo_dir: Workspace repo directory.
+        item_type: Only items of this type.
+        logger: Warned about each `.platform` that can't be read; without one
+            those are skipped silently (fabric-cicd rejects them at deploy).
+    """
+    items: list[RepoItem] = []
+    for platform_file in sorted(repo_dir.rglob(".platform"), key=lambda p: (len(p.parts), str(p))):
+        try:
+            data = loads(platform_file.read_text(encoding="utf-8-sig"))
+            meta, config = data["metadata"], data.get("config") or {}
+            kind, name = meta["type"], meta["displayName"]
+            if not (isinstance(kind, str) and isinstance(name, str) and name):
+                raise ValueError("metadata.type and metadata.displayName must be strings")
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            if logger:
+                logger.warning(f"Failed to read item metadata from {platform_file}: {e}")
+            continue
+        if kind not in ACCEPTED_ITEM_TYPES or (item_type and kind != item_type):
+            continue
+        logical_id = config.get("logicalId") if isinstance(config, dict) else None
+        items.append(
+            RepoItem(
+                path=platform_file.parent,
+                type=kind,
+                name=name,
+                logical_id=logical_id if isinstance(logical_id, str) else None,
+            )
+        )
+    return items
+
+
+def find_in_item_files(repo_dir: Path, values: Iterable[str]) -> dict[str, set[str]]:
+    """Repo-relative item files that contain each literal in `values`.
+
+    Item files are the files inside item directories, the set fabric-cicd's
+    find_replace operates on. Repo-root files such as fabdep.yml are left out
+    so a rule can't match itself. One walk covers every value.
+    """
+    matches: dict[str, set[str]] = {v: set() for v in values}
+    if not matches:
+        return matches
+    files = {f for item in repo_items(repo_dir) for f in item.path.rglob("*") if f.is_file()}
+    for path in sorted(files):
+        try:
+            content = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        rel = str(path.relative_to(repo_dir))
+        for value, found_in in matches.items():
+            if value in content:
+                found_in.add(rel)
+    return matches
 
 
 def repo_item_types(repo_dir: Path) -> set[str]:
-    """Return the set of accepted Fabric item types found in the repo.
-
-    Keyed on the `.platform` metadata `type` — how fabric-cicd discovers
-    items — NOT the directory suffix. The two can differ: Synapse-migrated
-    notebooks sit in `*.SynapseNotebook/` dirs whose .platform says
-    `type: Notebook`.
-    """
-    item_types: set[str] = set()
-    for platform_file in repo_dir.rglob(".platform"):
-        meta = _platform_meta(platform_file)
-        if meta and meta[1] in ACCEPTED_ITEM_TYPES:
-            item_types.add(meta[1])
-    return item_types
-
-
-def _repo_items(repo_dir: Path) -> dict[str, str]:
-    """Map '<displayName>.<ItemType>' -> item directory name for the repo.
-
-    Keyed on the `.platform` displayName and type — which is what
-    fabric-cicd's `items_to_include` matches on, NOT the directory name (the
-    two can differ, and fabric-cicd silently skips a name it doesn't find; a
-    `*.SynapseNotebook/` dir is addressed as `<name>.Notebook`).
-    """
-    items: dict[str, str] = {}
-    for platform_file in repo_dir.rglob(".platform"):
-        meta = _platform_meta(platform_file)
-        if not meta or meta[1] not in ACCEPTED_ITEM_TYPES:
-            continue
-        display, item_type = meta
-        items[f"{display}.{item_type}"] = platform_file.parent.name
-    return items
+    """The item types the repo has."""
+    return {item.type for item in repo_items(repo_dir)}
 
 
 def items_for_changed_paths(
@@ -81,20 +128,13 @@ def items_for_changed_paths(
     Returns:
         (item ids as '<displayName>.<ItemType>' in stable order, unmatched paths)
     """
-    # Longest-prefix wins: an item nested inside a workspace folder must beat
-    # any shallower match.
-    index: dict[str, str] = {}
-    for platform_file in repo_dir.rglob(".platform"):
-        meta = _platform_meta(platform_file)
-        if not meta or meta[1] not in ACCEPTED_ITEM_TYPES:
-            continue
-        item_dir = platform_file.parent.relative_to(repo_dir).as_posix()
-        index[item_dir] = f"{meta[0]}.{meta[1]}"
+    index = {item.path.relative_to(repo_dir).as_posix(): item.key for item in repo_items(repo_dir)}
 
     matched: list[str] = []
     unmatched: list[str] = []
     for path in changed_paths:
         posix = Path(path).as_posix()
+        # The deepest item directory owns the file.
         owner = max(
             (d for d in index if posix == d or posix.startswith(f"{d}/")),
             key=len,
@@ -178,7 +218,7 @@ def validate_include_items(
 
     Returns the matched subset (what should actually be published).
     """
-    index = _repo_items(repo_dir)
+    index = {item.key for item in repo_items(repo_dir)}
     matched = [it for it in include_items if it in index]
     missing = [it for it in include_items if it not in index]
 

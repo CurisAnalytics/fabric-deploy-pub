@@ -17,7 +17,7 @@ import yaml
 from azure.core.credentials import TokenCredential
 
 from fabric_deploy.params import ParameterFile
-from fabric_deploy.scope import _repo_items, validate_include_items
+from fabric_deploy.scope import validate_include_items
 from fabric_deploy.workspace import WorkspaceDeployer
 
 from .conftest import SAMPLE_DEV_WORKSPACE_ID, SAMPLE_LAKEHOUSE_ID
@@ -253,12 +253,6 @@ class TestDeployedSummaryLine:
 class TestIncludeItemsValidation:
     """Pin the --include-items guard: a name that matches nothing must raise
     instead of silently deploying zero items."""
-
-    def test_repo_items_keys_on_display_name(self, deployer):
-        index = _repo_items(deployer._repo_dir_resolved)
-        # Keyed '<displayName>.<ItemType>' — note the space-containing names.
-        assert "Fill Lakehouse.Notebook" in index
-        assert "SQL DB.SemanticModel" in index
 
     def _validate(self, deployer, items):
         return validate_include_items(items, deployer._repo_dir_resolved, deployer.logger)

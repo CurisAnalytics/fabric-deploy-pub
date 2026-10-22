@@ -9,10 +9,14 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import pytest
+
 from fabric_deploy.detect import DetectedParameter, ParameterDetector
 from fabric_deploy.scope import (
-    _repo_items,
+    RepoItem,
+    find_in_item_files,
     repo_item_types,
+    repo_items,
     resolve_item_scope,
     validate_include_items,
 )
@@ -70,30 +74,33 @@ class TestResolveItemScope:
         assert scope == ["Notebook"]
 
 
-# --- .platform-driven item discovery ---------------------------------------
+# --- the .platform index -----------------------------------------------------
 
 
-def _make_item(repo: Path, dir_name: str, display: str, platform_type: str) -> None:
+def _make_item(repo: Path, dir_name: str, display: str, platform_type: str, **config) -> None:
     import json
 
     item = repo / dir_name
     item.mkdir(parents=True)
-    (item / ".platform").write_text(
-        json.dumps({"metadata": {"displayName": display, "type": platform_type}})
-    )
+    platform = {"metadata": {"displayName": display, "type": platform_type}}
+    if config:
+        platform["config"] = config
+    (item / ".platform").write_text(json.dumps(platform))
 
 
-class TestPlatformTypeDiscovery:
-    """Item types come from .platform metadata, not the directory suffix —
+class TestRepoItems:
+    """Items are what their .platform says, whatever the folder is called —
     a `*.SynapseNotebook/` dir with `type: Notebook` is a Notebook."""
 
-    def test_repo_item_types_uses_platform_type(self, tmp_path: Path):
-        _make_item(tmp_path, "foo.SynapseNotebook", "foo", "Notebook")
-        assert repo_item_types(tmp_path) == {"Notebook"}
-
-    def test_repo_items_keys_on_platform_type(self, tmp_path: Path):
-        _make_item(tmp_path, "foo.SynapseNotebook", "foo", "Notebook")
-        assert _repo_items(tmp_path) == {"foo.Notebook": "foo.SynapseNotebook"}
+    def test_reads_type_name_and_logical_id_shallowest_first(self, tmp_path: Path):
+        _make_item(tmp_path, "ERP/db.SQLDatabase", "db", "SQLDatabase")
+        _make_item(tmp_path, "foo.SynapseNotebook", "foo", "Notebook", logicalId="l-1")
+        assert repo_items(tmp_path) == [
+            RepoItem(tmp_path / "foo.SynapseNotebook", "Notebook", "foo", "l-1"),
+            RepoItem(tmp_path / "ERP" / "db.SQLDatabase", "SQLDatabase", "db", None),
+        ]
+        assert [i.key for i in repo_items(tmp_path, "Notebook")] == ["foo.Notebook"]
+        assert repo_item_types(tmp_path) == {"Notebook", "SQLDatabase"}
 
     def test_include_items_resolves_synapse_notebook(self, tmp_path: Path):
         _make_item(tmp_path, "foo.SynapseNotebook", "foo", "Notebook")
@@ -107,12 +114,37 @@ class TestPlatformTypeDiscovery:
             item.mkdir()
             meta = {"metadata": {"displayName": name, "type": "Notebook"}}
             (item / ".platform").write_bytes(json.dumps(meta, ensure_ascii=False).encode(encoding))
-        assert sorted(_repo_items(tmp_path)) == ["Achats été.Notebook", "Ventes été.Notebook"]
+        assert [i.name for i in repo_items(tmp_path)] == ["Achats été", "Ventes été"]
 
-    def test_unaccepted_platform_type_is_ignored(self, tmp_path: Path):
+    def test_skips_types_fabric_cicd_does_not_deploy(self, tmp_path: Path):
         _make_item(tmp_path, "foo.Notebook", "foo", "NotARealType")
-        assert repo_item_types(tmp_path) == set()
-        assert _repo_items(tmp_path) == {}
+        assert repo_items(tmp_path) == []
+
+    @pytest.mark.parametrize(
+        "platform",
+        ["{not json", '{"metadata": {"type": "Notebook"}}', '{"metadata": []}', "[]"],
+    )
+    def test_unreadable_platform_is_skipped_with_a_warning(self, tmp_path: Path, caplog, platform):
+        (tmp_path / "x.Notebook").mkdir()
+        (tmp_path / "x.Notebook" / ".platform").write_text(platform)
+        with caplog.at_level("WARNING"):
+            assert repo_items(tmp_path) == []
+            assert not caplog.records
+            assert repo_items(tmp_path, logger=LOG) == []
+        assert "x.Notebook" in caplog.text
+
+
+class TestFindInItemFiles:
+    def test_finds_values_in_item_files_only(self, tmp_path: Path):
+        _make_item(tmp_path, "nb.Notebook", "nb", "Notebook")
+        (tmp_path / "nb.Notebook" / "notebook-content.py").write_text("x = 'abc'\n")
+        (tmp_path / "fabdep.yml").write_text("abc\n")
+        (tmp_path / "loose").mkdir()
+        (tmp_path / "loose" / "file.txt").write_text("abc def\n")
+        assert find_in_item_files(tmp_path, ["abc", "def"]) == {
+            "abc": {"nb.Notebook/notebook-content.py"},
+            "def": set(),
+        }
 
 
 # --- resolve_warehouse_endpoint_params -------------------------------------

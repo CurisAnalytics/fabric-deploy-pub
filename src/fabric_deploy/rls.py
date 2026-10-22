@@ -42,7 +42,7 @@ from .client import (
 from .config import FabdepConfig
 from .identity import apply_tenant_pin
 from .log import get_logger
-from .scope import _platform_meta
+from .scope import repo_items
 
 __all__ = [
     "MEMBERS_NOTE",
@@ -238,13 +238,8 @@ def _render_diff(
 
 
 def _semantic_model_dirs(repo_dir: Path) -> dict[str, Path]:
-    """Map SemanticModel display name -> its repo directory, by `.platform` type."""
-    dirs: dict[str, Path] = {}
-    for platform_file in repo_dir.rglob(".platform"):
-        meta = _platform_meta(platform_file)
-        if meta and meta[1] == "SemanticModel":
-            dirs[meta[0]] = platform_file.parent
-    return dirs
+    """Map SemanticModel display name -> its repo directory."""
+    return {item.name: item.path for item in repo_items(repo_dir, "SemanticModel")}
 
 
 def _remote_roles(workspace_id: str, model_name: str) -> dict[str, Role] | None:

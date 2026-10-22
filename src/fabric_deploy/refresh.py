@@ -30,7 +30,7 @@ from .client import (
 from .config import FabdepConfig
 from .identity import apply_tenant_pin
 from .log import get_logger
-from .scope import _repo_items
+from .scope import repo_items
 
 __all__ = [
     "extract_refresh_error",
@@ -112,12 +112,6 @@ def extract_refresh_error(detail: dict) -> str | None:
     return f"Refresh status: {status}"
 
 
-def _repo_display_names(repo_dir: Path, item_type: str) -> list[str]:
-    """Sorted display names of the repo's items of `item_type`, by `.platform` type."""
-    suffix = f".{item_type}"
-    return sorted(key.removesuffix(suffix) for key in _repo_items(repo_dir) if key.endswith(suffix))
-
-
 def _sql_endpoints_to_sync(
     workspace_id: str, models: list[dict[str, Any]], logger: logging.Logger
 ) -> list[dict[str, Any]]:
@@ -190,7 +184,7 @@ def frame_models(
     if models:
         models = [m.removesuffix(".SemanticModel") for m in models]
 
-    targets = models or _repo_display_names(repo_dir, "SemanticModel")
+    targets = models or sorted(item.name for item in repo_items(repo_dir, "SemanticModel"))
     if not targets:
         raise ValueError(
             "No semantic model to frame. Pass -i '<displayName>' or run from a "
