@@ -82,12 +82,13 @@ of the examples above, which stores no secret at all.
 ## Notes
 
 - `--pr` with no commit (the push jobs) deploys what the newest merged pull request
-  changed, found by its commit message: use merge commits or squash merges (a rebase
-  merge leaves no such commit), and protect `main` and `dev` so changes arrive through
-  pull requests. The plan jobs name the merge commit the pull-request build checks out
-  instead. Both need the history, hence `fetch-depth: 0` / `fetchDepth: 0`.
+  changed, found by its commit message on the branch's first-parent history: use merge
+  commits or squash merges, and protect `main` and `dev` so changes arrive through pull
+  requests. After a rebase merge or a direct push, HEAD is past the newest such commit, and
+  `--pr` fails rather than deploy an older pull request. The plan jobs name the merge commit
+  the pull-request build checks out instead. Both need the history, hence
+  `fetch-depth: 0` / `fetchDepth: 0`.
 - `--pr` never unpublishes, and a pull request that changes no item (only
-  documentation, say) plans and deploys nothing. A full
-  `fabdep deploy`, previewed with `fabdep plan`, removes the items the repository no
-  longer has.
+  documentation, say) plans and deploys nothing. A full `fabdep deploy`, previewed with
+  `fabdep plan`, removes the items the repository no longer has.
 - Add `--output json` to `fabdep plan` for a plan other tools can read.

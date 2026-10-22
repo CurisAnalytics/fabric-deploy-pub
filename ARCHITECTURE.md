@@ -35,7 +35,7 @@ All in `src/fabric_deploy/`.
 | `cli` | Argument parsing, command handlers, user-facing messages and exit codes; `deploy` is the default command. |
 | `config` | Reads and validates `fabdep.yml` (`FabdepConfig`, `AuthSettings`): target workspace name, fabric-cicd environment, `create`, the pattern of the repo's workspace names. No network. |
 | `identity` | Credential mode, the shared per-scope token cache, the tenant and `require_spn` check on every token, relayed tokens. |
-| `transport` | HTTP: timeout, retries on 429/5xx honouring `Retry-After`, pagination, long-running-operation polling; API roots from fabric-cicd's constants. |
+| `transport` | HTTP: timeout; retries honouring `Retry-After`, on 429 for every call and on 5xx only for GETs and calls marked idempotent (getDefinition), as a failed create or refresh may already have acted; pagination, which stops on a repeated continuation token or after 1000 pages; long-running-operation polling; API roots from fabric-cicd's constants. |
 | `client` | Fabric and Power BI endpoints: workspaces, capacities, items, SQL endpoint sync, model refresh, model definitions. |
 | `scope` | The repo's items (from `.platform` files), literal search in item files, type and item scope, `-i` validation, `--pr` path-to-item mapping. No network. |
 | `detect` | `ParameterDetector`: finds ids in item files, classifies them, maps each to a fabric-cicd dynamic variable. No network. |
@@ -55,8 +55,8 @@ results and exits; the other modules log and raise.
 
 ## Deploy flow
 
-`fabdep deploy` builds a `WorkspaceDeployer` (steps 1-5: reads and lookups only, except that
-`-N` or `create: true` may create the workspace) and calls `deploy()` (steps 6-11).
+`fabdep deploy` builds a `WorkspaceDeployer` (steps 1-5: reads and lookups only) and calls
+`deploy()` (steps 6-12).
 
 1. **Config.** `FabdepConfig.from_path` reads `fabdep.yml` (required) and takes the branch
    from `--branch` or git. The branch picks an `environments:` entry (its exact key, else the
@@ -67,30 +67,46 @@ results and exits; the other modules log and raise.
    `FABDEP_AUTH`, else `auth:`, else `cli`. Every token it mints or reads from
    `FABRIC_BEARER_TOKEN` / `POWERBI_BEARER_TOKEN` is checked against `tenant:` and
    `require_spn:` before use.
-3. **Target.** The workspace is looked up by name. `-N` creates it and fails if it exists;
-   `create: true` creates it only when missing, on `capacity_id` or the only active capacity.
+3. **Target.** The workspace is looked up by name. With `-N` it must not exist yet (else an
+   error); with `create: true` it may be missing. A workspace to create only gets its
+   capacity here (`capacity_id`, else the only active one); step 9 creates it.
 4. **Anchors.** Every visible workspace whose name `fabdep.yml` could produce is a sibling.
-   For each sibling an item file mentions, its lakehouses are listed.
+   For each sibling an item file mentions, its lakehouses are listed. If the workspaces
+   can't be listed, detection falls back to lakehouse names (see below), with a warning.
 5. **Detection.** `ParameterDetector.detect_all()` (see below). Then `-L` drops the lakehouse
    rules, `manual_parameters` override or add rules for the environment, and SQL database
-   hosts and endpoint ids are looked up in the target.
-6. **Scope.** `--pr` becomes the items its pull-request commit changed; `-i` names are checked
-   against `.platform` display names (no match is an error); `-t`/`-x` become fabric-cicd's
+   hosts and endpoint ids are looked up in the target (a workspace still to be created has
+   none, so they keep fabric-cicd's dynamic variable or their source value, with a warning).
+6. **Scope.** `--pr` becomes the items its pull-request commit changed. Bare `--pr` takes the
+   newest commit in HEAD's first-parent history worded as a merged pull request, and fails
+   if HEAD has first-parent commits on top of it (a rebase merge or a direct push would
+   otherwise redeploy an older pull request); `--pr <commit>` takes that commit, so
+   `--pr HEAD` is HEAD's own changes. A pull request that changed no item ends the deploy
+   here, having created and published nothing. `-i` names are checked against `.platform`
+   display names (no match is an error); `-t`/`-x` become fabric-cicd's
    `item_type_in_scope`.
-7. **Guards**, before anything is published: `--fail-on-stale` (unremappable warehouse
-   attachments), report buttons whose User Data Function can't be rebound
+7. **Guards**, before anything is created or published: `--fail-on-stale` (unremappable
+   warehouse attachments), report buttons whose User Data Function can't be rebound
    (`--allow-unbound-udf`), and every in-scope semantic model's live RLS roles
    (`--allow-rls-change`).
-8. **Parameter file.** The repo's `parameter.yml`, if any, plus the detected rules whose
-   `find_value` it doesn't already list, written to a temporary directory and passed as
-   `parameter_file_path`. With nothing to add, fabric-cicd reads the repo's file itself. When
-   every detected workspace id already is the target's, only `manual_parameters` rules are added.
-9. **Publish.** `FabricWorkspace(...)` with the target id, environment, type scope,
-   parameter file and the shared credential, then `publish_all_items` (`items_to_include` for
-   `-i` and `--pr`).
-10. **Orphan cleanup.** `unpublish_all_orphan_items` removes workspace items the repo doesn't
-    contain, unless `-n`, `-i` or `--pr` is in effect. The temporary file is removed either way.
-11. **Framing** (`--frame`). `refresh.frame_models` for the semantic models the deploy
+8. **Parameter file.** The repo's `parameter.yml`, if any, plus the detected rules, written
+   to a temporary directory and passed as `parameter_file_path`. A detected rule is left out
+   when the file, or a template it `extend`s, has an entry for its `find_value` that rewrites
+   it everywhere in this environment: a value for the environment and no `item_type`,
+   `item_name` or `file_path` filter. The file's own entries come first; fabric-cicd appends
+   a template's after the detected rules. The file and its templates are read with
+   fabric-cicd's rules (no key twice, ignoring case; `_ALL_` only as the sole key). With
+   nothing to add, fabric-cicd reads the repo's file itself. When every detected workspace
+   id already is the target's, only `manual_parameters` rules are added.
+9. **Workspace creation** (`-N`, `create: true`), now that the options, the guards and the
+   parameter file have passed: a typo or a blocking guard leaves no empty workspace.
+10. **Publish.** `FabricWorkspace(...)` with the target id, environment, type scope,
+    parameter file and the shared credential, then `publish_all_items` (`items_to_include`
+    for `-i` and `--pr`).
+11. **Orphan cleanup.** `unpublish_all_orphan_items` removes workspace items the repo doesn't
+    contain, unless `-n`, `-i` or `--pr` is in effect. The temporary file is removed
+    whatever happens from step 8 on.
+12. **Framing** (`--frame`). `refresh.frame_models` for the semantic models the deploy
     published: sync the SQL analytics endpoints their Direct Lake tables read, refresh each
     model, poll, raise the first error.
 
@@ -106,7 +122,7 @@ fabric-cicd dynamic variable, a literal, or none).
 | --- | --- | --- |
 | Notebook | `notebook-content.py`, `notebook-content.sql` (`META` blocks), `notebook-settings.json` | default lakehouse and its workspace; warehouse attachments; lakehouse auto-binding |
 | SemanticModel | `definition/**/*.tmdl` | Direct Lake OneLake sources (`<workspace>/<lakehouse>`); `Sql.Database(s)("<host>", "<db>")` hosts and item ids |
-| Report | `definition/**/*.json`, only when the repo has a UserDataFunction | User Data Function button bindings |
+| Report | `definition/**/*.json` (parsed only when it mentions `dataFunction`) | User Data Function button bindings |
 | DataPipeline | `pipeline-content.json` | connection ids; `workspaceId` in activities |
 | CopyJob | `copyjob-content.json` | source and destination `workspaceId` and `artifactId` |
 
@@ -114,12 +130,15 @@ fabric-cicd dynamic variable, a literal, or none).
 
 ### Workspace ids
 
-- **The repo's own**: the target and the *anchors*, the workspaces the content ties to the
-  repo's own items (a notebook attached to a repo lakehouse, a Direct Lake source on one, a
-  button bound to a repo User Data Function) plus the siblings the deployer listed (for
-  `detect`, the `--source-workspace-id` values). They map to `$workspace.$id`. A sibling's id
-  gets a rule only where an item file contains it; its lakehouses' ids map to the repo
-  lakehouse of the same name.
+- **The repo's own**: the target and the *anchors*, mapped to `$workspace.$id`. Anchors are
+  the siblings the deployer listed (for `detect`, the `--source-workspace-id` values) and the
+  workspaces the content ties to the repo's own items: the one a button's function lives in,
+  when a repo User Data Function declares that function, and that of a notebook's default
+  lakehouse named like a repo lakehouse (and of a Direct Lake source on that lakehouse).
+  Lakehouse names count only in `detect` and when the deployer couldn't list the
+  workspaces; once it has, a lakehouse in any workspace other than the target and the
+  siblings is foreign, whatever its name. A sibling's id gets a rule only where an item file
+  contains it; its lakehouses' ids map to the repo lakehouse of the same name.
 - **The null UUID**: Fabric's "this workspace" placeholder, also written by lakehouse
   auto-binding. No rule; fabric-cicd resolves auto-bound lakehouses by logicalId.
 - **Foreign**: any other workspace, e.g. a pipeline invoking a notebook elsewhere, a Direct
@@ -146,10 +165,12 @@ is not a sibling of `{base} [DEV]`.
 | User Data Function id (report button) | `$items.UserDataFunction.<name>.$id` |
 | Connection id | none: connections are tenant-wide |
 
-A reference that names its item (`default_lakehouse_name`, a database's `<name>-<id>`, the
-function a button calls) maps to the repo item of that name, or declaring that function, or
-to nothing. An unnamed one maps to the repo's only candidate; with several, it deploys
-unchanged with a warning. Hosts are per workspace, so any matching item resolves them.
+The candidates for a reference are the repo's items of every type that could own it (a SQL
+endpoint: lakehouses and mirrored databases). A reference that names its item
+(`default_lakehouse_name`, a database's `<name>-<id>`, the function a button calls) maps to
+the candidate of that name, or declaring that function, or to nothing. An unnamed one maps
+to the only candidate; with several, or a name two candidates share, it deploys unchanged
+with a warning. Hosts are per workspace, so any matching item resolves them.
 
 ## Invariants
 
@@ -163,12 +184,12 @@ Changes must keep these true.
 - **Fail closed on ambiguity.** Never pick the first of several candidates: an id fabdep can't
   place deploys unchanged, with a warning. Whatever could make a deploy ship more, less or
   elsewhere than intended is an error: `-i` matching nothing, `--pr` without a pull-request
-  commit or in a shallow clone, several active capacities without `capacity_id`, an unbound
-  User Data Function button, any RLS difference, an unknown key in an `environments:` or
-  `manual_parameters` entry.
+  commit, with HEAD past it, or in a shallow clone, several active capacities without
+  `capacity_id`, an unbound User Data Function button, any RLS difference, an unknown key in
+  an `environments:` or `manual_parameters` entry.
 - **Only the repo's own workspaces are rewritten.** An id of an unrelated workspace is never
   pointed at the target.
-- **Guards run before anything is published or unpublished.**
+- **Guards run before anything is created, published or unpublished.**
 - **One identity.** fabdep's REST calls and fabric-cicd use the same checked credential.
 - **Tests never touch the network** or the developer's sign-in (see CONTRIBUTING.md).
 

@@ -71,7 +71,8 @@ $ fabdep
 - A way to sign in: the Azure CLI (`az login`) for the default `cli` mode, or another
   [authentication mode](#authentication).
 - The Contributor role (or higher) on each target workspace, and access to the connections
-  the items use.
+  the items use. To rewrite the IDs of the repo's other workspaces (dev's, when deploying
+  `main`), the identity must also be able to see those workspaces; any role will do.
 - For a service principal, the Fabric tenant setting *Service principals can call Fabric
   public APIs*; for fabdep to create workspaces, also *Service principals can create
   workspaces, connections, and deployment pipelines*.
@@ -137,7 +138,7 @@ manual_parameters:
   - find_value: 00000000-0000-0000-0000-0000000000aa
     replace_value:
       PROD: 00000000-0000-0000-0000-0000000000bb
-      _ALL_: 00000000-0000-0000-0000-0000000000cc
+      dev: 00000000-0000-0000-0000-0000000000cc
     item_type: SemanticModel
     description: Shared lakehouse SQL endpoint
 ```
@@ -146,26 +147,35 @@ manual_parameters:
   first glob that matches it, in file order. The entry's `workspace`, else
   `workspace_name_template`, names the target; templates take `{base}`, `{branch}` and
   `{BRANCH}` (the branch upper-cased).
-- **The repo's own workspaces.** IDs of the workspaces fabdep.yml can name are rewritten to
-  the target's, as are IDs of a workspace the content ties to a repo item (the workspace of
-  a notebook's default lakehouse, when the repo has that lakehouse). IDs of other
-  workspaces deploy unchanged, with a warning. With `environments`, only the map's
-  workspaces count, so give an entry to every branch the content may come from (an empty
-  one will do, like `dev:` above). See [ARCHITECTURE.md](ARCHITECTURE.md#detection).
+- **The repo's own workspaces.** IDs of the workspaces fabdep.yml can name, among those the
+  identity can see, are rewritten to the target's. IDs of other workspaces deploy
+  unchanged, with a warning, even where a notebook's lakehouse there is named like one of
+  the repo's. Only if fabdep can't list workspaces does it go by that name instead. With
+  `environments`, only the map's workspaces count, so give an entry to every branch the
+  content may come from (an empty one will do, like `dev:` above). See
+  [ARCHITECTURE.md](ARCHITECTURE.md#detection).
 - **Environment.** fabric-cicd's environment is the entry's `environment`, else the branch
   name. It selects the `replace_value`s of `manual_parameters` and of your `parameter.yml`,
   and Variable Library value sets.
 - **Creating workspaces.** `-N` creates the target and fails if it exists; `create: true`
   creates it when missing. Both use `capacity_id`, else the only active capacity (with
-  several active, set `capacity_id`).
+  several active, set `capacity_id`). The workspace is created only once the deploy's
+  options, guards and parameter file have passed, so a typo or a blocked guard leaves no
+  empty workspace behind.
 - **`manual_parameters`** adds to detection. A detected `find_value` gets your
   `replace_value` (the `find_value` itself keeps a reference unchanged); any other becomes a
   new rule if it occurs in an item file, else it is skipped with a warning. `find_value` may
-  be a list; `replace_value` is one value, or one per environment with `_ALL_` for the rest.
+  be a list. `replace_value` is one value, or one per environment, as above (an environment
+  it doesn't list keeps the detected replacement, if any); `_ALL_` covers every environment
+  and must then be the only key.
 - **Your `parameter.yml`.** A `parameter.yml` in the workspace folder is merged with the
-  detected rules and wins: its `find_replace` entries come first, detected rules for a
-  `find_value` it lists are dropped, and its other sections pass through. The merged file
-  is written to a temporary directory; fabdep never modifies the repo.
+  detected rules; its other sections pass through. Its `find_replace` entry for a
+  `find_value` (or an `extend`ed template's) replaces the detected rule only if it has a
+  value for the environment and no `item_type`, `item_name` or `file_path` filter.
+  Otherwise both apply: the file's own entries first, a template's after the detected rules
+  (fabric-cicd appends them). A key given twice (ignoring case), or `_ALL_` beside other
+  keys, is an error, as in fabric-cicd. The merged file is written to a temporary
+  directory; fabdep never modifies the repo.
 - **Validation.** Unknown top-level keys warn; unknown keys in an `environments` or
   `manual_parameters` entry fail. For editor checks, run
   `fabdep schema -o fabdep.schema.json` and start fabdep.yml with
@@ -200,9 +210,9 @@ merged pull request by Azure DevOps, GitHub (merge or squash), GitLab or Bitbuck
 on top of that one (a direct push, a rebase merge), `--pr` fails rather than redeploy an
 older pull request: name the commit with `--pr <commit>` (`--pr HEAD` is `HEAD`'s own
 changes). Changed files outside any item are ignored, a pull request that changed no item
-deploys nothing, and `--pr` never unpublishes an item the pull request deleted. `-i` and `--pr`
-rely on fabric-cicd's experimental `items_to_include`, which publishes only the items named:
-name what they depend on too.
+deploys nothing, and `--pr` never unpublishes an item the pull request deleted. `-i` and
+`--pr` rely on fabric-cicd's experimental `items_to_include`, which publishes only the items
+named: name what they depend on too.
 
 ### `fabdep plan`
 
@@ -255,7 +265,8 @@ environment variable, else `auth:` in fabdep.yml, else `cli`:
 
 ## Safety guards
 
-All guards run before anything is published, and `fabdep plan` reports each one's verdict.
+All guards run before anything is created or published, and `fabdep plan` reports each
+one's verdict.
 
 - **Row-level security.** For every semantic model in scope, fabdep compares the target's
   live role definitions with the repo's `definition/roles/`: the roles, their rules and each
@@ -266,9 +277,10 @@ All guards run before anything is published, and `fabdep plan` reports each one'
   git can't restore them). Adopt the target's roles with `fabdep rls pull --write`, or
   overwrite them on purpose with `--allow-rls-change`. A model not yet in the target passes.
 - **Report buttons bound to User Data Functions** are rebound to the target's function,
-  matched on the function name a repo `.UserDataFunction` item declares. If no repo item, or
-  more than one, declares it, the button would still call the source workspace's function,
-  so a deploy that publishes that report is blocked; `--allow-unbound-udf` ships it as is.
+  matched on the function name a repo `.UserDataFunction` item declares. If no repo item
+  declares it (the repo may have none), or more than one does, the button would still call
+  the source workspace's function, so a deploy that publishes that report is blocked;
+  `--allow-unbound-udf` ships it as is.
 - **Notebook warehouse attachments** that can't be remapped deploy with their source IDs and
   a warning; `-F` (`--fail-on-stale`) makes that an error, for CI.
 - **`-i` names** are matched against `.platform` display names: unmatched names are listed
@@ -276,8 +288,9 @@ All guards run before anything is published, and `fabdep plan` reports each one'
   nothing.
 - **Ambiguous and foreign references deploy unchanged, with a warning.** fabdep never picks
   the first of several candidates: a reference that doesn't name its item, when the repo has
-  several of that type (say, two lakehouses), is left alone, as is any ID of a workspace
-  that isn't one of the repo's own. Map either with `manual_parameters`.
+  several items that could be it (say, two lakehouses, or a lakehouse and a mirrored
+  database for a SQL endpoint ID), is left alone, as is any ID of a workspace that isn't one
+  of the repo's own. Map either with `manual_parameters`.
 
 ## CI/CD
 
@@ -321,11 +334,11 @@ message.
 | --- | --- |
 | `No fabdep.yml in ...` | Run `fabdep init` in the workspace folder, or pass that folder as the first argument. |
 | `Workspace not found: '...'` | fabdep suggests up to five similar names. Check `workspace_base_name`, the template and the branch (`-b`), and that the identity can see the workspace (`fabdep auth status`); `-N` or `create: true` creates it. |
-| `HEAD is detached` | Name the branch with `-b`; CI checkouts are often detached. |
+| `HEAD is detached`, `not in a git repository` | Name the branch with `-b`; CI checkouts are often detached. |
 | `fabdep.yml pins tenant ...` | The credential signed in to another tenant: `az login --tenant <tenant-id>`, or fix the mode's environment variables. |
 | HTTP 401 or 403 | Run `fabdep auth status`. The identity needs Contributor on the workspace and, as a service principal, the tenant setting under [Requirements](#requirements). |
 | `does not have access to the connection` | Connection IDs are tenant-wide and never rewritten; give the identity access to the connection (`fabdep detect` lists them). |
-| `--pr found no pull-request commit` | Merge pull requests with a merge or squash commit, or name the commit: `--pr <commit>`. |
+| `--pr found no pull-request commit`, `HEAD is N commit(s) past the newest pull-request commit` | Merge pull requests with a merge or squash commit, or name the commit: `--pr <commit>`. |
 | An option swallowed the folder | `-i`, `-t` and `-x` take several values and `--pr` an optional one: write `fabdep DIR -t Notebook`, not `fabdep -t Notebook DIR`. |
 
 Limitations:

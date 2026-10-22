@@ -15,18 +15,24 @@ Releases before the first public one are summarized in a few lines each.
 - `fabdep.yml` is required (no workspace name guessed from the folder). `capacity_id` must be
   a GUID, and is needed to create a workspace when several capacities are active.
 - fabric-cicd's environment is the branch name (or its `environments:` entry's), not `fabdep`.
-  The repo's `parameter.yml` now applies, merged with the detected rules; its entries win.
+  The repo's `parameter.yml` now applies: its entry for a `find_value` replaces the detected
+  rule if it has a value for the environment and no item or file filter, else both apply,
+  `parameter.yml`'s first.
 - `detect --save` keys replacements by `_ALL_` instead of `prod`.
-- Malformed `manual_parameters` entries fail the deploy; an environment-keyed `replace_value`
-  is read by environment, then `_ALL_`.
-- An unnamed reference with several candidate items, and a Direct Lake source or notebook
-  lakehouse in another workspace, deploy unchanged with a warning instead of being rebound.
+- Malformed `manual_parameters` entries fail the deploy. A `replace_value` mapping is read by
+  environment, and `_ALL_` must be its only key, as fabric-cicd requires.
+- An unnamed reference with several candidate items, of any type that could own it, and a
+  Direct Lake source or notebook lakehouse in another workspace (even named like a repo
+  lakehouse, if fabdep can list workspaces) deploy unchanged with a warning, not rebound.
 - Models on a `pbidedicated.windows.net` SQL host get the endpoint's `fabric.microsoft.com` host.
 - `--fail-on-stale` covers only warehouse attachments that can't be remapped.
 - The RLS guard checks every in-scope model, also one without roles in the repo, and blocks
   a changed role `PBI_Id` (the service would drop the role's members).
-- Bare `--pr` counts only commits worded as merged pull requests, not plain merges, and
-  warns when HEAD is past that commit (rebase merges, direct pushes).
+- A report button bound to a User Data Function no repo item declares blocks the deploy
+  (unless `--allow-unbound-udf`), also in a repo with no User Data Function.
+- Bare `--pr` takes the newest commit worded as a merged pull request (not a plain merge) in
+  HEAD's first-parent history, and fails when HEAD is past it (a rebase merge, a direct
+  push): pass `--pr <commit>`. `--pr HEAD` means HEAD's own changes.
 - An unknown `-t`/`-x` item type is an error naming the closest type.
 - `fabdep rls pull` without `--write` exits 3 when the roles differ (was 1), like `plan` when
   a guard would block; 1 means an error.
@@ -39,7 +45,8 @@ Releases before the first public one are summarized in a few lines each.
 
 - MIT license.
 - `environments:` maps branches (names or globs) to a `workspace`, an `environment` and
-  `create: true`; `workspace_name_template` sets the default name.
+  `create: true`; `workspace_name_template` sets the default name (warned about when it is
+  the branch alone).
 - `auth:`, `--auth` and `FABDEP_AUTH` choose the credential: `cli`, `env`, `workload`,
   `managed` or `default`. `fabdep auth status` shows who fabdep signs in as.
 - `fabdep plan` (or `deploy --dry-run`) shows what a deploy would change, without changing
@@ -60,15 +67,18 @@ Releases before the first public one are summarized in a few lines each.
   says it was removed, instead of being read as the workspace directory.
 - `fabdep detect` prints its results to stdout, so they can be redirected; warnings stay on
   stderr.
+- `-N` creates the workspace only once the deploy's options, guards and parameter file pass.
+- A pull request that changed no item deploys nothing with `--pr` (was: an error).
 
 ### Fixed
 
 - Repos without a lakehouse deploy; orphan cleanup no longer spares items named like it.
-- Requests time out, and retry throttling and server errors honouring `Retry-After`.
-- Workspace and capacity lists follow pagination. An unreadable model definition is an error
-  (`rls pull --write` could delete every role file).
+- Requests time out and retry 429, and 5xx on reads, honouring `Retry-After`.
+- Lists follow pagination (stopping at a repeated token or 1000 pages). An unreadable model
+  definition is an error (`rls pull --write` could delete every role file).
 - `--frame` refreshes only the models the deploy published; `-L` holds when it drops every rule.
 - `--pr` works from a git subfolder, and fails in a shallow clone instead of deploying all.
+- Outside a git repository, or on a detached HEAD, the error says to pass `--branch`.
 - Files with a UTF-8 BOM are read; a 404 is no longer reported as a sign-in problem.
 - `manual_parameters` apply when deploying back to the workspace the IDs came from.
 - Windows: sign-in works, and consoles that can't print `✓` no longer crash.
