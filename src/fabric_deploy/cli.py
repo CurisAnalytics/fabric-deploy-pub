@@ -240,7 +240,9 @@ def parse_args() -> argparse.Namespace:
         parents=[repo],
         help="Show the source IDs a deploy would rewrite",
         description="Find the workspace, lakehouse and connection IDs in the repo's item "
-        "files and the replacement each one gets on deploy.",
+        "files and the replacement detection gives each. Offline: fabdep.yml is not read, "
+        "so manual_parameters and sibling workspaces don't show; `fabdep plan` shows the "
+        "exact rules a deploy uses.",
     )
     _ = detect.add_argument(
         "-s",
@@ -316,8 +318,8 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Deploy even if it changes a semantic model's live row-level security. By "
         "default every in-scope model's roles are compared with the target's, and any "
-        "difference blocks the deploy: a changed or removed role (also when the repo has "
-        "no roles for the model), or a changed role PBI_Id, which makes the service "
+        "difference blocks the deploy: a changed, added or removed role (also when the "
+        "repo has no roles for the model), or a changed role PBI_Id, which makes the service "
         "recreate the role without its members.",
     )
     _ = deploy_options.add_argument(

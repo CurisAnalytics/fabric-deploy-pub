@@ -48,7 +48,7 @@ All in `src/fabric_deploy/`.
 | `scaffold` | The starter `fabdep.yml` (`fabdep init`) and the packaged `fabdep.schema.json` (`fabdep schema`). |
 | `plan` | `fabdep plan` and `deploy --dry-run`: runs a dry-run `WorkspaceDeployer` through scope, guard verdicts and parameter rules, lists the target's items to tell creates, updates and orphan unpublishes apart, and renders the result as text or JSON. Read calls only. |
 
-Imports point one way: `cli` → orchestration (`workspace`, `refresh`, `rls`) → `params`,
+Imports point one way: `cli` → orchestration (`plan`, `workspace`, `refresh`, `rls`) → `params`,
 `detect`, `scope`, `client` → `transport` → `identity` → `config` → `git`. `log` is used
 throughout; `scope`, `git` and `scaffold` import nothing from the package. Only `cli` prints
 results and exits; the other modules log and raise.
@@ -84,7 +84,7 @@ results and exits; the other modules log and raise.
 8. **Parameter file.** The repo's `parameter.yml`, if any, plus the detected rules whose
    `find_value` it doesn't already list, written to a temporary directory and passed as
    `parameter_file_path`. With nothing to add, fabric-cicd reads the repo's file itself. When
-   every detected workspace id already is the target's, no detected rules are added.
+   every detected workspace id already is the target's, only `manual_parameters` rules are added.
 9. **Publish.** `FabricWorkspace(...)` with the target id, environment, type scope,
    parameter file and the shared credential, then `publish_all_items` (`items_to_include` for
    `-i` and `--pr`).
