@@ -87,9 +87,7 @@ class TestTenantPinParsing:
             TenantPin.from_yaml_value(bad)
 
     def test_from_path_alias_string(self, tmp_path: Path):
-        (tmp_path / "fabdep.yml").write_text(
-            'workspace_base_name: "ws"\ntenant: contoso\n'
-        )
+        (tmp_path / "fabdep.yml").write_text('workspace_base_name: "ws"\ntenant: contoso\n')
         cfg = FabdepConfig.from_path(tmp_path, branch_override="dev")
         assert cfg.tenant == TenantPin(alias="contoso")
 
@@ -113,9 +111,7 @@ class TestTenantPinParsing:
 class TestTenantPinResolve:
     def test_alias_fills_from_registry(self):
         resolved = TenantPin(alias="fabrikam").resolve(REGISTRY)
-        assert resolved == TenantPin(
-            alias="fabrikam", id=FABRIKAM, config_dir="~/.azure-fabrikam"
-        )
+        assert resolved == TenantPin(alias="fabrikam", id=FABRIKAM, config_dir="~/.azure-fabrikam")
 
     def test_bound_subscription_from_registry(self):
         reg = {"contoso": {"id": CONTOSO, "subscription": "sub-contoso"}}
@@ -174,9 +170,7 @@ class TestAssertActiveTenant:
             assert_active_tenant(FABRIKAM)
 
     def test_not_logged_in_raises(self, monkeypatch):
-        monkeypatch.setattr(
-            "fabric_deploy.identity.active_account", lambda config_dir=None: None
-        )
+        monkeypatch.setattr("fabric_deploy.identity.active_account", lambda config_dir=None: None)
         with pytest.raises(TenantMismatchError, match="No active Azure login"):
             assert_active_tenant(FABRIKAM, config_dir="~/.azure-fabrikam")
 
@@ -243,9 +237,7 @@ class TestDeployerTenantPin:
 
         assert calls["require_spn"] is True
 
-    def test_pin_overrides_existing_config_dir(
-        self, tmp_path: Path, monkeypatch, mock_fabric_api
-    ):
+    def test_pin_overrides_existing_config_dir(self, tmp_path: Path, monkeypatch, mock_fabric_api):
         self._write(tmp_path, "tenant: fabrikam\n")
         monkeypatch.setattr("fabric_deploy.identity.tenant_registry", lambda: REGISTRY)
         monkeypatch.setattr(
@@ -259,9 +251,7 @@ class TestDeployerTenantPin:
 
         assert os.environ["AZURE_CONFIG_DIR"] == os.path.expanduser("~/.azure-fabrikam")
 
-    def test_config_dir_same_value_is_noop(
-        self, tmp_path: Path, monkeypatch, mock_fabric_api
-    ):
+    def test_config_dir_same_value_is_noop(self, tmp_path: Path, monkeypatch, mock_fabric_api):
         self._write(tmp_path, "tenant: fabrikam\n")
         monkeypatch.setattr("fabric_deploy.identity.tenant_registry", lambda: REGISTRY)
         monkeypatch.setattr(
@@ -448,7 +438,10 @@ class TestBoundPinSelection:
 
     def test_no_identity_in_tenant_raises_with_listing(self):
         self._registry({"id": CONTOSO})
-        self._az(_acct(FABRIKAM, "user", sub="w1", name="Fabrikam Personal"), _acct(FABRIKAM, "user", sub="w1", name="Fabrikam Personal"))
+        self._az(
+            _acct(FABRIKAM, "user", sub="w1", name="Fabrikam Personal"),
+            _acct(FABRIKAM, "user", sub="w1", name="Fabrikam Personal"),
+        )
 
         with pytest.raises(TenantMismatchError) as exc:
             apply_tenant_pin(TenantPin(alias="contoso"), self._logger())
@@ -475,7 +468,10 @@ class TestBoundPinSelection:
 
     def test_unknown_alias_error_lists_tenants(self):
         self.mp.setattr(identity, "tenant_registry", lambda: {"fabrikam": {"id": FABRIKAM}})
-        self._az(_acct(CONTOSO, "user", sub="c1", name="Contoso Personal"), _acct(CONTOSO, "user", sub="c1", name="Contoso Personal"))
+        self._az(
+            _acct(CONTOSO, "user", sub="c1", name="Contoso Personal"),
+            _acct(CONTOSO, "user", sub="c1", name="Contoso Personal"),
+        )
 
         with pytest.raises(ValueError, match="Unknown tenant alias 'contoso'") as exc:
             apply_tenant_pin(TenantPin(alias="contoso"), self._logger())
@@ -502,7 +498,10 @@ class TestDescribeTenants:
             _acct(FABRIKAM, "user", sub="w1", name="Fabrikam Personal"),
             _acct(CONTOSO, "user", sub="c1", name="Contoso Personal", default=False),
             _acct(CONTOSO, "servicePrincipal", sub="c2", name="N/A(tenant level)", default=False),
-            {**_acct(CONTOSO, "user", sub="c3", name="Disabled", default=False), "state": "Disabled"},
+            {
+                **_acct(CONTOSO, "user", sub="c3", name="Disabled", default=False),
+                "state": "Disabled",
+            },
         ]
         text = describe_tenants(accounts)  # type: ignore[arg-type]
         assert f"  {CONTOSO}  Contoso Personal, Contoso SPN" in text
@@ -561,21 +560,38 @@ class TestBindTenant:
         assert "az login --tenant" in str(exc.value)
 
     def test_rebind_replaces_login_entry_but_keeps_require_spn(self, profile):
-        profile.write_text(json.dumps({"tenants": {"contoso": {
-            "id": "old", "config_dir": "~/.azure-contoso", "app_id": "a", "cert_path": "c",
-            "require_spn": True,
-        }}}))
+        profile.write_text(
+            json.dumps(
+                {
+                    "tenants": {
+                        "contoso": {
+                            "id": "old",
+                            "config_dir": "~/.azure-contoso",
+                            "app_id": "a",
+                            "cert_path": "c",
+                            "require_spn": True,
+                        }
+                    }
+                }
+            )
+        )
         entry = bind_tenant("contoso", CONTOSO)
         assert entry == {"id": CONTOSO, "require_spn": True}
         assert "config_dir" not in json.loads(profile.read_text())["tenants"]["contoso"]
 
     def test_cli_handler_prints_binding(self, profile, capsys):
-        handle_auth_command(argparse.Namespace(auth_command="bind", alias="contoso", target="Contoso SPN"))
-        assert f"registered tenant 'contoso' -> {CONTOSO} (account c-spn)" in capsys.readouterr().out
+        handle_auth_command(
+            argparse.Namespace(auth_command="bind", alias="contoso", target="Contoso SPN")
+        )
+        assert (
+            f"registered tenant 'contoso' -> {CONTOSO} (account c-spn)" in capsys.readouterr().out
+        )
 
     def test_cli_handler_exits_nonzero_on_failure(self, profile, capsys):
         with pytest.raises(SystemExit):
-            handle_auth_command(argparse.Namespace(auth_command="bind", alias="contoso", target="nope"))
+            handle_auth_command(
+                argparse.Namespace(auth_command="bind", alias="contoso", target="nope")
+            )
 
 
 # --- fabdep auth login (registry writer) -----------------------------------
@@ -593,6 +609,7 @@ class TestLoginTenant:
         def _run(cmd, **kwargs):
             calls["cmd"] = cmd
             return subprocess.CompletedProcess(cmd, 0)
+
         return _run
 
     def test_spn_first_login_writes_full_entry(self, tmp_path, monkeypatch, profile):
@@ -603,7 +620,10 @@ class TestLoginTenant:
         monkeypatch.setattr("fabric_deploy.auth.active_account", lambda cfg=None: _acct(FABRIKAM))
 
         entry = login_tenant(
-            "fabrikam", app_id="app-1", tenant=FABRIKAM, cert=str(cert),
+            "fabrikam",
+            app_id="app-1",
+            tenant=FABRIKAM,
+            cert=str(cert),
             config_dir=str(tmp_path / ".azure-fabrikam"),
         )
 
@@ -615,9 +635,20 @@ class TestLoginTenant:
     def test_relogin_reuses_stored_params(self, tmp_path, monkeypatch, profile):
         cert = tmp_path / "spn.pem"
         cert.write_text("x")
-        profile.write_text(json.dumps({"tenants": {"fabrikam": {
-            "id": FABRIKAM, "config_dir": str(tmp_path / ".azure-fabrikam"),
-            "app_id": "app-1", "cert_path": str(cert)}}}))
+        profile.write_text(
+            json.dumps(
+                {
+                    "tenants": {
+                        "fabrikam": {
+                            "id": FABRIKAM,
+                            "config_dir": str(tmp_path / ".azure-fabrikam"),
+                            "app_id": "app-1",
+                            "cert_path": str(cert),
+                        }
+                    }
+                }
+            )
+        )
         calls = {}
         monkeypatch.setattr("fabric_deploy.auth.subprocess.run", self._capture_run(calls))
         monkeypatch.setattr("fabric_deploy.auth.active_account", lambda cfg=None: _acct(FABRIKAM))

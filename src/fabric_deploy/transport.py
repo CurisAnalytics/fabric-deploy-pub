@@ -68,9 +68,7 @@ def http_request(
         request_data = None
 
     try:
-        req = urllib.request.Request(
-            url, data=request_data, headers=headers, method=method
-        )
+        req = urllib.request.Request(url, data=request_data, headers=headers, method=method)
         with urllib.request.urlopen(req) as response:
             body = response.read().decode()
             parsed = json.loads(body) if body.strip() else {}
@@ -83,8 +81,7 @@ def http_request(
         ) from e
     except urllib.error.URLError as e:
         raise RuntimeError(
-            f"Failed to connect to the API.\n{e.reason}\n\n"
-            "Check your network connectivity."
+            f"Failed to connect to the API.\n{e.reason}\n\nCheck your network connectivity."
         ) from e
 
 
@@ -139,9 +136,7 @@ def poll_fabric_lro(
     retry_after = max(1, int(headers.get("Retry-After") or 5))
     if not location:
         # 202 with nothing to poll — don't report a no-op as success.
-        raise RuntimeError(
-            f"{error_context}: 202 Accepted but no Location header to poll."
-        )
+        raise RuntimeError(f"{error_context}: 202 Accepted but no Location header to poll.")
 
     waited = 0
     while True:
@@ -169,6 +164,5 @@ def poll_fabric_lro(
         retry_after = max(1, int(hdrs.get("Retry-After") or retry_after))
         if waited >= timeout_s:
             raise RuntimeError(
-                f"{error_context} did not finish within {timeout_s}s "
-                f"(last status: {op_status})."
+                f"{error_context} did not finish within {timeout_s}s (last status: {op_status})."
             )

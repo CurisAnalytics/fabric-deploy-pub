@@ -17,7 +17,6 @@ import yaml
 
 from .git import current_branch
 
-
 __all__ = ["FabdepConfig", "TenantPin", "TenantRegistryEntry"]
 
 FABDEP_YML_KEYS = frozenset({"workspace_base_name", "capacity_id", "tenant", "manual_parameters"})
@@ -65,8 +64,7 @@ class TenantPin:
         if isinstance(value, str) and value:
             return cls(alias=value)
         raise ValueError(
-            "fabdep.yml 'tenant' must be a registry alias string, e.g.:\n\n"
-            "  tenant: contoso\n"
+            "fabdep.yml 'tenant' must be a registry alias string, e.g.:\n\n  tenant: contoso\n"
         )
 
     def resolve(self, registry: dict[str, TenantRegistryEntry]) -> TenantPin:
@@ -117,9 +115,7 @@ class FabdepConfig:
     from_yaml: bool = False  # True when fabdep.yml existed; False on dirname fallback
 
     @classmethod
-    def from_path(
-        cls, repo_dir: Path | str, branch_override: str | None = None
-    ) -> FabdepConfig:
+    def from_path(cls, repo_dir: Path | str, branch_override: str | None = None) -> FabdepConfig:
         """Build a FabdepConfig from a workspace repository directory.
 
         - If `fabdep.yml` is present, parses it and uses `workspace_base_name`.

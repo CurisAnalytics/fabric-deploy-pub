@@ -17,7 +17,6 @@ from fabric_deploy.refresh import (
     frame_models,
 )
 
-
 # --- failed_table_syncs --------------------------------------------------
 
 
@@ -140,9 +139,7 @@ def patch_api(monkeypatch):
         ),
     )
     monkeypatch.setattr("fabric_deploy.refresh.apply_tenant_pin", lambda *a, **k: None)
-    monkeypatch.setattr(
-        "fabric_deploy.refresh.get_workspace_id_by_name", lambda name: "ws-id"
-    )
+    monkeypatch.setattr("fabric_deploy.refresh.get_workspace_id_by_name", lambda name: "ws-id")
     monkeypatch.setattr(
         "fabric_deploy.refresh.find_item_by_name",
         lambda ws, t, name=None: {"id": "ds-id", "displayName": name or "M"},

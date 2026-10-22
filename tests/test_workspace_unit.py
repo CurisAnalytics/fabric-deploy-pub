@@ -22,7 +22,6 @@ from fabric_deploy.workspace import WorkspaceDeployer, format_deploy_options
 
 from .conftest import SAMPLE_DEV_WORKSPACE_ID
 
-
 FAKE_WORKSPACE_ID = "00000000-0000-0000-0000-000000000001"
 
 
@@ -32,9 +31,7 @@ class TestFormatDeployOptions:
 
     def test_scoped_cross_branch_deploy(self):
         """The Woodgrove-style invocation: fabdep -t SemanticModel -b prod."""
-        line = format_deploy_options(
-            branch_override="prod", item_types=["SemanticModel"]
-        )
+        line = format_deploy_options(branch_override="prod", item_types=["SemanticModel"])
         assert line == "Options: --branch prod --item-types SemanticModel"
 
     def test_all_flags(self):
@@ -110,8 +107,7 @@ class TestFabricWorkspaceConstruction:
         )
         cred = kwargs["token_credential"]
         assert isinstance(cred, TokenCredential), (
-            f"`token_credential` must be a TokenCredential instance, got "
-            f"{type(cred).__name__}"
+            f"`token_credential` must be a TokenCredential instance, got {type(cred).__name__}"
         )
         # The resolved workspace id / repo dir are passed straight through.
         assert kwargs.get("workspace_id") == FAKE_WORKSPACE_ID
@@ -149,9 +145,7 @@ class TestFailOnStale:
     """Pin the --fail-on-stale contract: deploy raises before publish_all_items
     is called when the detector has recorded stale lakehouse attachments."""
 
-    def test_raises_before_publishing_when_stale_attachments_present(
-        self, deployer
-    ):
+    def test_raises_before_publishing_when_stale_attachments_present(self, deployer):
         deployer._detector.stale_attachments = [
             ("foo.Notebook/notebook-content.py", ["99999999-9999-9999-9999-999999999999"])
         ]
@@ -239,9 +233,7 @@ class TestUdfBindingGuard:
 
     def test_allow_flag_deploys_anyway(self, deployer):
         deployer._detector.udf_skipped = list(self.SKIPPED)
-        fake_publish = self._deploy(
-            deployer, item_types=["Report"], allow_unbound_udf=True
-        )
+        fake_publish = self._deploy(deployer, item_types=["Report"], allow_unbound_udf=True)
         assert fake_publish.called
 
     def test_report_out_of_type_scope_does_not_block(self, deployer):
@@ -251,9 +243,7 @@ class TestUdfBindingGuard:
 
     def test_report_not_in_include_items_does_not_block(self, deployer):
         deployer._detector.udf_skipped = list(self.SKIPPED)
-        fake_publish = self._deploy(
-            deployer, include_items=["Fill Lakehouse.Notebook"]
-        )
+        fake_publish = self._deploy(deployer, include_items=["Fill Lakehouse.Notebook"])
         assert fake_publish.called
 
     def test_no_skipped_buttons_does_not_block(self, deployer):
@@ -279,9 +269,7 @@ class TestDeployedSummaryLine:
                 exclude_types=["SemanticModel"],
             )
 
-        deployed_lines = [
-            r.message for r in caplog.records if r.message.startswith("Deployed ")
-        ]
+        deployed_lines = [r.message for r in caplog.records if r.message.startswith("Deployed ")]
         assert deployed_lines == ["Deployed 1 item(s): Fill Lakehouse.Notebook"]
 
 
@@ -299,14 +287,12 @@ class TestIncludeItemsValidation:
         return validate_include_items(items, deployer._repo_dir_resolved, deployer.logger)
 
     def test_validate_returns_matched_subset(self, deployer):
-        assert self._validate(deployer, ["Fill Lakehouse.Notebook"]) == [
-            "Fill Lakehouse.Notebook"
-        ]
+        assert self._validate(deployer, ["Fill Lakehouse.Notebook"]) == ["Fill Lakehouse.Notebook"]
 
     def test_validate_drops_unmatched_but_keeps_matched(self, deployer):
-        assert self._validate(
-            deployer, ["Fill Lakehouse.Notebook", "Ghost.Notebook"]
-        ) == ["Fill Lakehouse.Notebook"]
+        assert self._validate(deployer, ["Fill Lakehouse.Notebook", "Ghost.Notebook"]) == [
+            "Fill Lakehouse.Notebook"
+        ]
 
     def test_validate_raises_when_nothing_matches(self, deployer):
         with pytest.raises(RuntimeError, match="matched no items"):
@@ -332,14 +318,10 @@ class TestIncludeItemsValidation:
             patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
             patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
         ):
-            deployer.deploy(
-                include_items=["Fill Lakehouse.Notebook", "Ghost.Notebook"]
-            )
+            deployer.deploy(include_items=["Fill Lakehouse.Notebook", "Ghost.Notebook"])
 
         assert fake_publish.called
-        assert fake_publish.call_args.kwargs["items_to_include"] == [
-            "Fill Lakehouse.Notebook"
-        ]
+        assert fake_publish.call_args.kwargs["items_to_include"] == ["Fill Lakehouse.Notebook"]
 
 
 class TestParameterFileWriter:
@@ -347,9 +329,7 @@ class TestParameterFileWriter:
     every detected parameter flows through; only manual_parameters carry
     item_type filters into the emitted yaml."""
 
-    def test_all_detected_params_flow_through_regardless_of_scope(
-        self, deployer, tmp_path
-    ):
+    def test_all_detected_params_flow_through_regardless_of_scope(self, deployer, tmp_path):
         from fabric_deploy.detect import DetectedParameter
 
         wsid = "11111111-1111-1111-1111-111111111111"
@@ -366,19 +346,16 @@ class TestParameterFileWriter:
                 dynamic_variable="$items.Lakehouse.lh.$id",
             ),
         }
-        ParameterFile(tmp_path, deployer.logger).write(
-            deployer._detector, FAKE_WORKSPACE_ID, 0, 0
-        )
+        ParameterFile(tmp_path, deployer.logger).write(deployer._detector, FAKE_WORKSPACE_ID, 0, 0)
 
         # Both detected entries survive — scope no longer filters auto-detected.
         assert set(deployer._detector.parameters) == {wsid, lhid}
 
-    def test_emitted_yaml_omits_item_type_for_unscoped_entries(
-        self, deployer, tmp_path
-    ):
+    def test_emitted_yaml_omits_item_type_for_unscoped_entries(self, deployer, tmp_path):
         """Auto-detected entries have empty item_types and must NOT emit an
         `item_type:` line — fabric-cicd then applies them to all in-scope files."""
         import yaml
+
         from fabric_deploy.detect import DetectedParameter
 
         deployer._detector.parameters = {
@@ -388,20 +365,17 @@ class TestParameterFileWriter:
                 dynamic_variable="$workspace.$id",
             ),
         }
-        ParameterFile(tmp_path, deployer.logger).write(
-            deployer._detector, FAKE_WORKSPACE_ID, 0, 0
-        )
+        ParameterFile(tmp_path, deployer.logger).write(deployer._detector, FAKE_WORKSPACE_ID, 0, 0)
 
         param_file = tmp_path / "parameter.yml"
         assert param_file.exists()
         data = yaml.safe_load(param_file.read_text())
         assert "item_type" not in data["find_replace"][0]
 
-    def test_emitted_yaml_includes_item_type_for_manually_scoped_entries(
-        self, deployer, tmp_path
-    ):
+    def test_emitted_yaml_includes_item_type_for_manually_scoped_entries(self, deployer, tmp_path):
         """Manual overrides set item_types — those must round-trip into yaml."""
         import yaml
+
         from fabric_deploy.detect import DetectedParameter
 
         deployer._detector.parameters = {
@@ -412,14 +386,11 @@ class TestParameterFileWriter:
                 dynamic_variable="$workspace.$id",
             ),
         }
-        ParameterFile(tmp_path, deployer.logger).write(
-            deployer._detector, FAKE_WORKSPACE_ID, 0, 0
-        )
+        ParameterFile(tmp_path, deployer.logger).write(deployer._detector, FAKE_WORKSPACE_ID, 0, 0)
 
         param_file = tmp_path / "parameter.yml"
         data = yaml.safe_load(param_file.read_text())
         assert data["find_replace"][0]["item_type"] == ["SemanticModel"]
-
 
 
 # --- sibling-workspace anchor resolution ------------------------------------
@@ -464,7 +435,9 @@ class TestSiblingWorkspaceAnchors:
         """The content names DEV (legacy metadata here; a pipeline workspaceId
         or an abfss literal in an auto-bound repo), so DEV's lakehouse ids
         are fetched to map alongside its workspace id."""
-        d, _, list_items = _anchored_deployer(monkeypatch, sample_ws,
+        d, _, list_items = _anchored_deployer(
+            monkeypatch,
+            sample_ws,
             workspaces=[
                 {"id": FAKE_WORKSPACE_ID, "displayName": "Fabdep Test [MAIN]"},
                 {"id": DEV_WORKSPACE_ID, "displayName": "Fabdep Test [DEV]"},
@@ -481,7 +454,9 @@ class TestSiblingWorkspaceAnchors:
         assert d._detector.parameters[DEV_WORKSPACE_ID].dynamic_variable == "$workspace.$id"
 
     def test_unreferenced_sibling_is_anchored_but_not_listed(self, monkeypatch, sample_ws):
-        d, _, list_items = _anchored_deployer(monkeypatch, sample_ws,
+        d, _, list_items = _anchored_deployer(
+            monkeypatch,
+            sample_ws,
             workspaces=[{"id": QA_WORKSPACE_ID, "displayName": "Fabdep Test [QA]"}],
         )
 
@@ -489,7 +464,9 @@ class TestSiblingWorkspaceAnchors:
         assert not list_items.called
 
     def test_other_repos_workspaces_are_not_siblings(self, monkeypatch, sample_ws):
-        d, _, _ = _anchored_deployer(monkeypatch, sample_ws,
+        d, _, _ = _anchored_deployer(
+            monkeypatch,
+            sample_ws,
             workspaces=[
                 {"id": QA_WORKSPACE_ID, "displayName": "Other [DEV]"},
                 {"id": DEV_WORKSPACE_ID, "displayName": "Fabdep Test Extra [DEV]"},
@@ -500,7 +477,9 @@ class TestSiblingWorkspaceAnchors:
         assert d.source_workspace_ids == {FAKE_WORKSPACE_ID}
 
     def test_sibling_match_is_case_insensitive(self, monkeypatch, sample_ws):
-        d, _, _ = _anchored_deployer(monkeypatch, sample_ws,
+        d, _, _ = _anchored_deployer(
+            monkeypatch,
+            sample_ws,
             workspaces=[{"id": QA_WORKSPACE_ID, "displayName": "fabdep test [qa]"}],
         )
 
@@ -587,14 +566,19 @@ class TestRunSummaryLines:
 
         messages = [r.message for r in caplog.records]
         assert not any("fabdep v" in m for m in messages)
-        assert "Source Workspace: Fabdep Test [DEV] (00000000-0000-0000-0000-00000000000d)" in messages
+        assert (
+            "Source Workspace: Fabdep Test [DEV] (00000000-0000-0000-0000-00000000000d)" in messages
+        )
         assert f"Target Workspace: 'Fabdep Test [MAIN]' ({FAKE_WORKSPACE_ID})" in messages
-        assert not any(m.startswith("Workspace Name") or m.startswith("Parameter file") for m in messages)
+        assert not any(
+            m.startswith("Workspace Name") or m.startswith("Parameter file") for m in messages
+        )
 
     def test_banner_names_fabdep(self, caplog):
+        import logging
+
         from fabric_deploy import __version__
         from fabric_deploy.workspace import log_banner
-        import logging
 
         with caplog.at_level("INFO"):
             log_banner(logging.getLogger("fabric_deploy.test"), "Options: (defaults)")

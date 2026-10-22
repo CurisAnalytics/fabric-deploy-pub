@@ -258,9 +258,7 @@ class ParameterDetector:
         """Display names of .SQLDatabase items found in the repo."""
         return list(self._sqldatabase_names)
 
-    def _log_file_warning(
-        self, file_path: Path, error: Exception, context: str = ""
-    ) -> None:
+    def _log_file_warning(self, file_path: Path, error: Exception, context: str = "") -> None:
         """
         Log warning message for file processing errors.
 
@@ -361,9 +359,9 @@ class ParameterDetector:
         index: dict[str, str] = {}
         for item_dir, meta in self._platform_items("Lakehouse"):
             try:
-                config = json.loads(
-                    (item_dir / ".platform").read_text(encoding="utf-8")
-                ).get("config", {})
+                config = json.loads((item_dir / ".platform").read_text(encoding="utf-8")).get(
+                    "config", {}
+                )
             except Exception:
                 continue
             logical_id = config.get("logicalId") if isinstance(config, dict) else None
@@ -411,9 +409,7 @@ class ParameterDetector:
         )
         for platform_file in platform_files:
             try:
-                metadata = json.loads(
-                    platform_file.read_text(encoding="utf-8")
-                ).get("metadata", {})
+                metadata = json.loads(platform_file.read_text(encoding="utf-8")).get("metadata", {})
             except Exception as e:
                 self._log_file_warning(platform_file, e, "item metadata")
                 continue
@@ -437,9 +433,7 @@ class ParameterDetector:
             if meta.get("displayName")
         ]
 
-    def _process_files(
-        self, files, extract_func, parse_json: bool = False
-    ) -> None:
+    def _process_files(self, files, extract_func, parse_json: bool = False) -> None:
         """
         Generic file processor that handles iteration, reading, and error handling.
 
@@ -474,9 +468,7 @@ class ParameterDetector:
 
         return param
 
-    def _add_uuid_parameter(
-        self, value: str, source_file: str, description: str = ""
-    ):
+    def _add_uuid_parameter(self, value: str, source_file: str, description: str = ""):
         """Add parameter if value is a valid UUID."""
         if value and self.UUID_PATTERN.match(value):
             _ = self._add_parameter(
@@ -585,9 +577,7 @@ class ParameterDetector:
                 param.dynamic_variable = f"$items.Lakehouse.{owner}.$id"
 
         if self._auto_binding_enabled(file_path.parent):
-            self.auto_bound_notebooks.append(
-                str(file_path.parent.relative_to(self.repo_dir))
-            )
+            self.auto_bound_notebooks.append(str(file_path.parent.relative_to(self.repo_dir)))
 
         self._extract_warehouse_attachments(source_file, content)
         self._warn_on_stale_lakehouse_attachments(source_file, content)
@@ -615,9 +605,7 @@ class ParameterDetector:
 
             known = warehouse_meta.get("known_warehouses") or []
             types_by_id: dict[str, str] = {
-                k["id"]: (k.get("type") or "")
-                for k in known
-                if isinstance(k, dict) and k.get("id")
+                k["id"]: (k.get("type") or "") for k in known if isinstance(k, dict) and k.get("id")
             }
             default_wh = warehouse_meta.get("default_warehouse")
             if default_wh:
@@ -633,14 +621,11 @@ class ParameterDetector:
 
                 # MountedWarehouse is resolved to a literal at deploy time —
                 # but only if the repo has a SQLDatabase item to resolve from.
-                resolvable_later = (
-                    description == "SQL Database SQL Endpoint Item ID"
-                    and bool(self._sqldatabase_names)
+                resolvable_later = description == "SQL Database SQL Endpoint Item ID" and bool(
+                    self._sqldatabase_names
                 )
                 if not param.dynamic_variable and not resolvable_later:
-                    self.unresolved_warehouse_bindings.append(
-                        (source_file, wh_id, wh_type)
-                    )
+                    self.unresolved_warehouse_bindings.append((source_file, wh_id, wh_type))
                     self.logger.warning(
                         f"{source_file}: warehouse attachment {wh_id} "
                         f"(type={wh_type or 'unknown'}) has no replacement mapping — "
@@ -650,9 +635,7 @@ class ParameterDetector:
                         f"entry in fabdep.yml."
                     )
 
-    def _warn_on_stale_lakehouse_attachments(
-        self, source_file: str, content: str
-    ) -> None:
+    def _warn_on_stale_lakehouse_attachments(self, source_file: str, content: str) -> None:
         """Warn when a notebook has multiple lakehouses attached.
 
         Fabric retains every lakehouse a notebook has ever been attached to
@@ -752,9 +735,7 @@ class ParameterDetector:
             # SQL Database connections store the full "<display_name>-<itemId>"
             # form in TMDL — capture it so users can override via manual_parameters.
             if uuid and db_name:
-                _ = self._add_parameter(
-                    f"{db_name}-{uuid}", source_file, "SQL Database Name"
-                )
+                _ = self._add_parameter(f"{db_name}-{uuid}", source_file, "SQL Database Name")
 
     def _extract_from_pipeline(self, file_path: Path, data: dict) -> None:
         """Extract connection IDs from pipeline JSON."""
@@ -887,9 +868,7 @@ class ParameterDetector:
 
         for section_name in ["source", "destination"]:
             section = data.get("properties", {}).get(section_name, {})
-            type_properties = section.get("connectionSettings", {}).get(
-                "typeProperties", {}
-            )
+            type_properties = section.get("connectionSettings", {}).get("typeProperties", {})
 
             ws_id = type_properties.get("workspaceId")
             artifact_id = type_properties.get("artifactId")
@@ -897,9 +876,7 @@ class ParameterDetector:
                 # The artifact lives in that foreign workspace too — mapping
                 # it to the repo's Lakehouse would corrupt the reference.
                 if artifact_id and self.UUID_PATTERN.fullmatch(str(artifact_id)):
-                    _ = self._add_parameter(
-                        artifact_id, source_file, "Cross-workspace reference"
-                    )
+                    _ = self._add_parameter(artifact_id, source_file, "Cross-workspace reference")
                 continue
             self._add_uuid_parameter(artifact_id, source_file, "Lakehouse ID")
 
@@ -923,9 +900,7 @@ class ParameterDetector:
             if not definition.exists():
                 continue
             try:
-                functions = json.loads(definition.read_text(encoding="utf-8")).get(
-                    "functions", []
-                )
+                functions = json.loads(definition.read_text(encoding="utf-8")).get("functions", [])
             except Exception as e:
                 self._log_file_warning(definition, e, "user data function definition")
                 continue
@@ -962,9 +937,7 @@ class ParameterDetector:
         """Yield every `dataFunction` block with a `byReference` under `obj`."""
         if isinstance(obj, dict):
             candidate = obj.get("dataFunction")
-            if isinstance(candidate, dict) and isinstance(
-                candidate.get("byReference"), dict
-            ):
+            if isinstance(candidate, dict) and isinstance(candidate.get("byReference"), dict):
                 yield candidate
             for value in obj.values():
                 yield from self._iter_data_function_links(value)
@@ -1035,9 +1008,7 @@ class ParameterDetector:
                 self.udf_skipped.append((report_name, function_name, item_id, reason))
                 continue
 
-            param = self._add_parameter(
-                item_id, source_file, "User Data Function Item ID"
-            )
+            param = self._add_parameter(item_id, source_file, "User Data Function Item ID")
             param.dynamic_variable = f"$items.UserDataFunction.{udf_name}.$id"
 
             # The hosting workspace is the one the UDF item deploys into — the
@@ -1055,9 +1026,9 @@ class ParameterDetector:
         for parent in file_path.parents:
             if parent.name.endswith(".Report"):
                 try:
-                    meta = json.loads(
-                        (parent / ".platform").read_text(encoding="utf-8")
-                    )["metadata"]
+                    meta = json.loads((parent / ".platform").read_text(encoding="utf-8"))[
+                        "metadata"
+                    ]
                     return meta.get("displayName") or parent.stem
                 except Exception:
                     return parent.stem
@@ -1109,9 +1080,7 @@ class ParameterDetector:
 
         return {"find_replace": find_replace}
 
-    def save_parameter_yml(
-        self, output_path: Path | str, environment: str = "prod"
-    ) -> None:
+    def save_parameter_yml(self, output_path: Path | str, environment: str = "prod") -> None:
         """
         Generate and save parameter file with dynamic variables for auto-detect mode.
 
@@ -1221,9 +1190,7 @@ class ParameterDetector:
             else:
                 self.logger.info("    Dynamic variable: (skipped - requires manual setup)")
             if param.item_types:
-                self.logger.info(
-                    f"    Item Types: {', '.join(sorted(param.item_types))}"
-                )
+                self.logger.info(f"    Item Types: {', '.join(sorted(param.item_types))}")
             self.logger.info(f"    Found in: {len(param.source_files)} file(s)")
 
         if without_dynamic > 0:

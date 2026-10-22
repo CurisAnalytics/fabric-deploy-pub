@@ -16,7 +16,6 @@ from fabric_deploy.log import (
     is_transient_error,
 )
 
-
 # --- is_auth_error -------------------------------------------------------
 
 
@@ -146,10 +145,7 @@ def test_is_transient_error_does_not_retry_auth_error():
 
 def test_is_transient_error_does_not_retry_connection_error():
     """Connection misconfig is permanent — don't retry."""
-    msg = (
-        "User does not have access to the connection used in pipeline. "
-        "Internal server error"
-    )
+    msg = "User does not have access to the connection used in pipeline. Internal server error"
     assert is_transient_error(msg) is False
 
 
@@ -217,8 +213,7 @@ def test_error_hint_distinguishes_shared_error_code():
         "Direct Lake on SQL mode."
     )
     inplace = error_hint(
-        "Dataset_Import_FailedToImportDataset: You cannot change the storage "
-        "mode of partition 'x'."
+        "Dataset_Import_FailedToImportDataset: You cannot change the storage mode of partition 'x'."
     )
     assert hybrid != inplace
     assert "directLake" in hybrid

@@ -453,8 +453,7 @@ def apply_tenant_pin(pin: TenantPin | None, logger: logging.Logger) -> None:
         existing = os.environ.get("AZURE_CONFIG_DIR")
         if existing and existing != target:
             logger.info(
-                f"Overriding AZURE_CONFIG_DIR ({existing} -> {target}) "
-                "per fabdep.yml tenant pin"
+                f"Overriding AZURE_CONFIG_DIR ({existing} -> {target}) per fabdep.yml tenant pin"
             )
         # Set on the process env and intentionally not restored: AzureCliCredential
         # reads AZURE_CONFIG_DIR at call time, so it must persist through the run.
@@ -472,9 +471,7 @@ def apply_tenant_pin(pin: TenantPin | None, logger: logging.Logger) -> None:
     # identity can mint a token, so announcing "OK" reads as a green light the
     # check never gave. It speaks up by raising.
     if pin.config_dir:
-        _ = assert_active_tenant(
-            pin.id, config_dir=pin.config_dir, require_spn=pin.require_spn
-        )
+        _ = assert_active_tenant(pin.id, config_dir=pin.config_dir, require_spn=pin.require_spn)
     else:
         _select_tenant_identity(pin, logger)
 
@@ -509,7 +506,9 @@ def _select_tenant_identity(pin: TenantPin, logger: logging.Logger) -> None:
         what = (
             f"subscription {pin.subscription}"
             if pin.subscription
-            else "service principal" if pin.require_spn else "account"
+            else "service principal"
+            if pin.require_spn
+            else "account"
         )
         raise TenantMismatchError(
             f"No enabled az {what} in tenant {pin.id} (alias '{pin.alias}').\n"
@@ -523,6 +522,4 @@ def _select_tenant_identity(pin: TenantPin, logger: logging.Logger) -> None:
     aliases: dict[str, str] = read_fabdep_profile().get("aliases", {})
     label = aliases.get(chosen["id"], chosen.get("name", "?"))
     user = chosen.get("user", {}).get("name", "?")
-    logger.info(
-        f"Tenant '{pin.alias}': using '{label}' ({user}); active az account unchanged"
-    )
+    logger.info(f"Tenant '{pin.alias}': using '{label}' ({user}); active az account unchanged")

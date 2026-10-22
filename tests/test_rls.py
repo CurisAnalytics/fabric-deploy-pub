@@ -24,7 +24,9 @@ from fabric_deploy.rls import (
     roles_from_parts,
 )
 
-ROLE_RLS = "role RLS\n\tmodelPermission: read\n\n\ttablePermission contact = [User Name] = USERNAME()\n"
+ROLE_RLS = (
+    "role RLS\n\tmodelPermission: read\n\n\ttablePermission contact = [User Name] = USERNAME()\n"
+)
 ROLE_RLS_EDITED = ROLE_RLS.replace("USERNAME()", "USERPRINCIPALNAME()")
 ROLE_FS = "role fs_rls\n\tmodelPermission: read\n"
 
@@ -101,7 +103,7 @@ def test_diff_ignores_pbi_id_annotation():
     annotation PBI_Id. Must read as unchanged so a legit deploy isn't blocked.
     """
     base = (
-        'role GOTHAM\n\tmodelPermission: read\n\n'
+        "role GOTHAM\n\tmodelPermission: read\n\n"
         '\ttablePermission V_REGIONS = [region] == "GOTHAM CITY"\n\n'
         "\tannotation PBI_Id = "
     )
@@ -177,16 +179,15 @@ def test_guard_empty_model_names_is_noop(tmp_path, monkeypatch):
 def test_guard_passes_when_rls_matches(tmp_path, monkeypatch):
     _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS})
     monkeypatch.setattr(
-        "fabric_deploy.rls._remote_roles", lambda ws, name: read_local_roles(tmp_path / "M.SemanticModel")
+        "fabric_deploy.rls._remote_roles",
+        lambda ws, name: read_local_roles(tmp_path / "M.SemanticModel"),
     )
     guard_deploy_rls("ws", tmp_path, model_names=None, allow_change=False)
 
 
 def test_guard_blocks_on_drift(tmp_path, monkeypatch):
     _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS_EDITED})
-    monkeypatch.setattr(
-        "fabric_deploy.rls._remote_roles", lambda ws, name: _role("RLS", ROLE_RLS)
-    )
+    monkeypatch.setattr("fabric_deploy.rls._remote_roles", lambda ws, name: _role("RLS", ROLE_RLS))
     with pytest.raises(RuntimeError, match="Deploy blocked.*row-level security"):
         guard_deploy_rls("ws", tmp_path, model_names=None, allow_change=False)
 
@@ -215,7 +216,10 @@ def test_guard_with_allow_change_announces_the_skip(tmp_path, monkeypatch, caplo
     )
     with caplog.at_level(logging.INFO, logger="test_rls_guard"):
         guard_deploy_rls(
-            "ws", tmp_path, model_names=None, allow_change=True,
+            "ws",
+            tmp_path,
+            model_names=None,
+            allow_change=True,
             logger=logging.getLogger("test_rls_guard"),
         )
     assert any("skipped" in r.message for r in caplog.records)
@@ -231,7 +235,10 @@ def test_guard_with_allow_change_silent_without_repo_rls(tmp_path, monkeypatch, 
     )
     with caplog.at_level(logging.INFO, logger="test_rls_guard"):
         guard_deploy_rls(
-            "ws", tmp_path, model_names=None, allow_change=True,
+            "ws",
+            tmp_path,
+            model_names=None,
+            allow_change=True,
             logger=logging.getLogger("test_rls_guard"),
         )
     assert not caplog.records
@@ -253,7 +260,10 @@ def test_guard_announces_fetch_cost_before_reading_target(tmp_path, monkeypatch,
     )
     with caplog.at_level(logging.INFO, logger="test_rls_guard"):
         guard_deploy_rls(
-            "ws", tmp_path, model_names=None, allow_change=False,
+            "ws",
+            tmp_path,
+            model_names=None,
+            allow_change=False,
             logger=logging.getLogger("test_rls_guard"),
         )
     assert any("reading live role definitions" in r.message for r in caplog.records)
@@ -268,7 +278,10 @@ def test_guard_clean_check_omits_members_note(tmp_path, monkeypatch, caplog):
     )
     with caplog.at_level(logging.INFO, logger="test_rls_guard"):
         guard_deploy_rls(
-            "ws", tmp_path, model_names=None, allow_change=False,
+            "ws",
+            tmp_path,
+            model_names=None,
+            allow_change=False,
             logger=logging.getLogger("test_rls_guard"),
         )
     assert not any(MEMBERS_NOTE in r.message for r in caplog.records)
@@ -276,12 +289,13 @@ def test_guard_clean_check_omits_members_note(tmp_path, monkeypatch, caplog):
 
 def test_guard_permitted_change_logs_members_note(tmp_path, monkeypatch, caplog):
     _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS_EDITED})
-    monkeypatch.setattr(
-        "fabric_deploy.rls._remote_roles", lambda ws, name: _role("RLS", ROLE_RLS)
-    )
+    monkeypatch.setattr("fabric_deploy.rls._remote_roles", lambda ws, name: _role("RLS", ROLE_RLS))
     with caplog.at_level(logging.INFO, logger="test_rls_guard"):
         guard_deploy_rls(
-            "ws", tmp_path, model_names=None, allow_change=True,
+            "ws",
+            tmp_path,
+            model_names=None,
+            allow_change=True,
             logger=logging.getLogger("test_rls_guard"),
         )
     assert any(MEMBERS_NOTE in r.message for r in caplog.records)
@@ -296,7 +310,10 @@ def test_guard_no_local_rls_stays_silent(tmp_path, monkeypatch, caplog):
     )
     with caplog.at_level(logging.INFO, logger="test_rls_guard"):
         guard_deploy_rls(
-            "ws", tmp_path, model_names=None, allow_change=False,
+            "ws",
+            tmp_path,
+            model_names=None,
+            allow_change=False,
             logger=logging.getLogger("test_rls_guard"),
         )
     assert not caplog.records
@@ -333,7 +350,8 @@ def patch_pull_env(monkeypatch):
 def test_pull_in_sync_returns_false(tmp_path, monkeypatch, patch_pull_env):
     _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS})
     monkeypatch.setattr(
-        "fabric_deploy.rls._remote_roles", lambda ws, name: read_local_roles(tmp_path / "M.SemanticModel")
+        "fabric_deploy.rls._remote_roles",
+        lambda ws, name: read_local_roles(tmp_path / "M.SemanticModel"),
     )
     assert pull_rls(tmp_path) is False
 

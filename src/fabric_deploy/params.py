@@ -62,9 +62,7 @@ def apply_manual_overrides(
         item_type = param.get("item_type")
 
         if not find_value or not replace_value:
-            logger.warning(
-                "Skipping manual parameter with missing find_value or replace_value"
-            )
+            logger.warning("Skipping manual parameter with missing find_value or replace_value")
             continue
 
         if find_value in detector.parameters:
@@ -82,9 +80,7 @@ def apply_manual_overrides(
                 logger.debug(f"Manual item_type override for {find_value}: {item_type}")
 
             if description:
-                param_obj.description = (
-                    f"{param_obj.description} (manual override: {description})"
-                )
+                param_obj.description = f"{param_obj.description} (manual override: {description})"
             param_obj.source_files.add("fabdep.yml (manual override)")
             count += 1
             logger.debug(f"Manual override for {find_value}: {replace_value}")
@@ -138,9 +134,7 @@ def _inject_undetected_params(
         )
         item_type = entry.get("item_type")
         if item_type:
-            param_obj.item_types = (
-                set(item_type) if isinstance(item_type, list) else {item_type}
-            )
+            param_obj.item_types = set(item_type) if isinstance(item_type, list) else {item_type}
         param_obj.source_files = found_in | {"fabdep.yml (manual injection)"}
         detector.parameters[find_value] = param_obj
         count += 1
@@ -169,8 +163,7 @@ def resolve_warehouse_endpoint_params(
     pending = [
         p
         for p in detector.parameters.values()
-        if p.description == "SQL Database SQL Endpoint Item ID"
-        and not p.dynamic_variable
+        if p.description == "SQL Database SQL Endpoint Item ID" and not p.dynamic_variable
     ]
     if not pending:
         return 0
@@ -191,8 +184,7 @@ def resolve_warehouse_endpoint_params(
             f"will deploy with source GUIDs: {e}"
         )
         detector.unresolved_warehouse_bindings.extend(
-            (sorted(p.source_files)[0], p.find_value, "MountedWarehouse")
-            for p in pending
+            (sorted(p.source_files)[0], p.find_value, "MountedWarehouse") for p in pending
         )
         return 0
 
@@ -277,8 +269,7 @@ def _apply_domain_substitutions(param_file: Path, detector: ParameterDetector) -
     pbidedicated_params = [
         param
         for param in detector.parameters.values()
-        if param.metadata.get("domain_suffix", "").lower()
-        == "pbidedicated.windows.net"
+        if param.metadata.get("domain_suffix", "").lower() == "pbidedicated.windows.net"
         and param.metadata.get("db_name")
     ]
     if not pbidedicated_params:
@@ -302,12 +293,14 @@ def _apply_domain_substitutions(param_file: Path, detector: ParameterDetector) -
             rf"\s*,\s*\"{re.escape(db_name)}"
         )
 
-        param_data["find_replace"].append({
-            "find_value": targeted_find,
-            "replace_value": {"fabdep": "pbidedicated.windows.net"},
-            "is_regex": "true",
-            "item_type": ["SemanticModel"],
-        })
+        param_data["find_replace"].append(
+            {
+                "find_value": targeted_find,
+                "replace_value": {"fabdep": "pbidedicated.windows.net"},
+                "is_regex": "true",
+                "item_type": ["SemanticModel"],
+            }
+        )
 
     with open(param_file, "w") as f:
         yaml.dump(param_data, f, default_flow_style=False, sort_keys=False)
@@ -397,8 +390,11 @@ class ParameterFile:
             )
 
         unresolved_sem_model = [
-            p for p in detector.parameters.values()
-            if "SemanticModel" in p.item_types and not p.dynamic_variable and p.description != "External connection ID"
+            p
+            for p in detector.parameters.values()
+            if "SemanticModel" in p.item_types
+            and not p.dynamic_variable
+            and p.description != "External connection ID"
         ]
         if unresolved_sem_model:
             self.logger.warning(

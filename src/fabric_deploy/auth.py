@@ -47,9 +47,7 @@ def login_tenant(
     can't drift from reality.
     """
     existing = tenant_registry().get(alias, {})
-    cfg = os.path.expanduser(
-        config_dir or existing.get("config_dir") or f"~/.azure-{alias}"
-    )
+    cfg = os.path.expanduser(config_dir or existing.get("config_dir") or f"~/.azure-{alias}")
     env = {**os.environ, "AZURE_CONFIG_DIR": cfg}
 
     if user:
@@ -76,18 +74,25 @@ def login_tenant(
         if not os.path.exists(cert):
             raise FileNotFoundError(f"cert not found: {cert}")
         cmd = [
-            "az", "login", "--service-principal",
-            "--username", app_id, "--tenant", tenant, "--certificate", cert,
-            "--allow-no-subscriptions", "--output", "none",
+            "az",
+            "login",
+            "--service-principal",
+            "--username",
+            app_id,
+            "--tenant",
+            tenant,
+            "--certificate",
+            cert,
+            "--allow-no-subscriptions",
+            "--output",
+            "none",
         ]
 
     subprocess.run(cmd, env=env, check=True)
 
     acct = active_account(cfg)
     if acct is None:
-        raise RuntimeError(
-            f"login for '{alias}' reported success but no active account in {cfg}"
-        )
+        raise RuntimeError(f"login for '{alias}' reported success but no active account in {cfg}")
 
     entry: TenantRegistryEntry = {"id": acct["tenantId"], "config_dir": cfg}
     if not user:
@@ -214,8 +219,7 @@ def switch_account(account: str) -> None:
         by_name = [a for a in accounts if a["name"].lower() == account.lower()]
         if not by_name:
             raise ValueError(
-                f"Account '{account}' not found.\n"
-                "Run 'fabdep auth list' to see available accounts."
+                f"Account '{account}' not found.\nRun 'fabdep auth list' to see available accounts."
             )
         if len(by_name) > 1:
             raise ValueError(

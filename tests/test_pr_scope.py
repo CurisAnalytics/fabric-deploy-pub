@@ -16,7 +16,6 @@ import pytest
 from fabric_deploy.git import changed_paths_in, latest_pr_commit
 from fabric_deploy.scope import items_for_changed_paths
 
-
 # --- helpers ---------------------------------------------------------------
 
 
@@ -247,16 +246,14 @@ class TestItemsFromPr:
         )
         monkeypatch.setattr(
             "fabric_deploy.workspace.changed_paths_in",
-            lambda _d, commit: ["Load GL.Notebook/notebook-content.py"]
-            if commit == "deadbee"
-            else [],
+            lambda _d, commit: (
+                ["Load GL.Notebook/notebook-content.py"] if commit == "deadbee" else []
+            ),
         )
         assert deployer._items_from_pr("deadbee") == ["Load GL.Notebook"]
 
     def test_raises_when_no_pr_commit_found(self, deployer, monkeypatch):
-        monkeypatch.setattr(
-            "fabric_deploy.workspace.latest_pr_commit", lambda _d: None
-        )
+        monkeypatch.setattr("fabric_deploy.workspace.latest_pr_commit", lambda _d: None)
         with pytest.raises(RuntimeError, match="found no pull-request commit"):
             deployer._items_from_pr("HEAD")
 

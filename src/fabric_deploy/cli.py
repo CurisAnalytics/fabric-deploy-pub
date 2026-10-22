@@ -18,9 +18,9 @@ from .log import (
     error_hint,
     format_account_list,
     format_auth_error_message,
+    get_logger,
     is_auth_error,
     is_connection_error,
-    get_logger,
     is_expired_credential_error,
     print_error,
 )
@@ -97,9 +97,7 @@ def parse_args() -> argparse.Namespace:
         description="Deploy Fabric workspace items - auto-detects configuration from parameter.yml",
         epilog="Run from your Fabric workspace directory.",
     )
-    parser.add_argument(
-        "--version", "-V", action="version", version=f"%(prog)s {__version__}"
-    )
+    parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
 
     subparsers = parser.add_subparsers(
         dest="command", help="Available commands (defaults to 'deploy')"
@@ -110,13 +108,9 @@ def parse_args() -> argparse.Namespace:
         dest="auth_command", required=True, help="Auth actions"
     )
 
-    _ = auth_subparsers.add_parser(
-        "list", help="List current and available Azure accounts"
-    )
+    _ = auth_subparsers.add_parser("list", help="List current and available Azure accounts")
 
-    switch_parser = auth_subparsers.add_parser(
-        "switch", help="Switch to different account"
-    )
+    switch_parser = auth_subparsers.add_parser("switch", help="Switch to different account")
     _ = switch_parser.add_argument(
         "account", help="Subscription ID or account name (alias supported)"
     )
@@ -490,9 +484,7 @@ def handle_detect_command(args: argparse.Namespace) -> None:
             output_file = Path(args.directory) / "parameter.yml.detected"
             detector.save_parameter_yml(output_path=output_file, environment="prod")
 
-            with_dynamic = sum(
-                1 for p in detector.parameters.values() if p.dynamic_variable
-            )
+            with_dynamic = sum(1 for p in detector.parameters.values() if p.dynamic_variable)
             total = len(detector.parameters)
 
             print(f"✓ Saved {with_dynamic} parameter(s) to: {output_file}\n")
@@ -501,9 +493,7 @@ def handle_detect_command(args: argparse.Namespace) -> None:
                     f"Note: {total - with_dynamic} parameter(s) without dynamic variables were skipped\n"
                     "(External connections require manual setup and typically don't change between deployments)\n"
                 )
-            print(
-                "Using dynamic variables: $workspace.$id, $items.Lakehouse.<name>.$id, etc.\n"
-            )
+            print("Using dynamic variables: $workspace.$id, $items.Lakehouse.<name>.$id, etc.\n")
 
     except FileNotFoundError as e:
         print_error(f"\n{e}\n")
@@ -577,11 +567,7 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
         models = None
         scoped = args.include_items or deployer.deployed_items  # pyright: ignore[reportPossiblyUnboundVariable]
         if scoped:
-            sm = [
-                it.rsplit(".", 1)[0]
-                for it in scoped
-                if it.endswith(".SemanticModel")
-            ]
+            sm = [it.rsplit(".", 1)[0] for it in scoped if it.endswith(".SemanticModel")]
             models = sm or None
         try:
             from .refresh import frame_models

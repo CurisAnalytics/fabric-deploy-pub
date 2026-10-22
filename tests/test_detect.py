@@ -9,7 +9,6 @@ import pytest
 
 from fabric_deploy.detect import DetectedParameter, ParameterDetector
 
-
 # --- helpers ---------------------------------------------------------------
 
 WORKSPACE_ID = "11111111-1111-1111-1111-111111111111"
@@ -79,23 +78,21 @@ def _make_copyjob(repo: Path, name: str, content: dict) -> None:
 
 class TestNotebookExtraction:
     @pytest.mark.parametrize("prefix,ext", [("#", "py"), ("--", "sql")])
-    def test_extracts_workspace_and_lakehouse_ids(
-        self, tmp_path: Path, prefix: str, ext: str
-    ):
+    def test_extracts_workspace_and_lakehouse_ids(self, tmp_path: Path, prefix: str, ext: str):
         """Both Python (`# META`) and T-SQL (`-- META`) notebooks extract IDs."""
         _make_lakehouse(tmp_path, "lh")
         p = prefix
         _make_notebook(
             tmp_path,
             "n1",
-            f'{p} META {{\n'
+            f"{p} META {{\n"
             f'{p} META   "dependencies": {{\n'
             f'{p} META     "lakehouse": {{\n'
             f'{p} META       "default_lakehouse_workspace_id": "{WORKSPACE_ID}",\n'
             f'{p} META       "default_lakehouse": "{LAKEHOUSE_ID}"\n'
-            f'{p} META     }}\n'
-            f'{p} META   }}\n'
-            f'{p} META }}\n',
+            f"{p} META     }}\n"
+            f"{p} META   }}\n"
+            f"{p} META }}\n",
             ext=ext,
         )
         d = ParameterDetector(tmp_path)
@@ -117,17 +114,17 @@ class TestNotebookExtraction:
         _make_notebook(
             tmp_path,
             "n1",
-            f'{p} META {{\n'
+            f"{p} META {{\n"
             f'{p} META   "dependencies": {{\n'
             f'{p} META     "lakehouse": {{\n'
             f'{p} META       "default_lakehouse": "{LAKEHOUSE_ID}",\n'
             f'{p} META       "known_lakehouses": [\n'
             f'{p} META         {{"id": "{LAKEHOUSE_ID}"}},\n'
             f'{p} META         {{"id": "{stale_id}"}}\n'
-            f'{p} META       ]\n'
-            f'{p} META     }}\n'
-            f'{p} META   }}\n'
-            f'{p} META }}\n',
+            f"{p} META       ]\n"
+            f"{p} META     }}\n"
+            f"{p} META   }}\n"
+            f"{p} META }}\n",
             ext=ext,
         )
         d = ParameterDetector(tmp_path)
@@ -135,8 +132,7 @@ class TestNotebookExtraction:
             d.detect_all()
 
         assert any(
-            "2 lakehouses attached" in r.message and stale_id in r.message
-            for r in caplog.records
+            "2 lakehouses attached" in r.message and stale_id in r.message for r in caplog.records
         ), [r.message for r in caplog.records]
 
     def test_no_warning_on_clean_single_attachment(
@@ -146,24 +142,22 @@ class TestNotebookExtraction:
         _make_notebook(
             tmp_path,
             "n1",
-            '# META {\n'
+            "# META {\n"
             '# META   "dependencies": {\n'
             '# META     "lakehouse": {\n'
             f'# META       "default_lakehouse": "{LAKEHOUSE_ID}",\n'
             '# META       "known_lakehouses": [\n'
             f'# META         {{"id": "{LAKEHOUSE_ID}"}}\n'
-            '# META       ]\n'
-            '# META     }\n'
-            '# META   }\n'
-            '# META }\n',
+            "# META       ]\n"
+            "# META     }\n"
+            "# META   }\n"
+            "# META }\n",
         )
         d = ParameterDetector(tmp_path)
         with caplog.at_level("WARNING", logger="fabric_deploy.detect"):
             d.detect_all()
 
-        assert not any(
-            "lakehouses attached" in r.message for r in caplog.records
-        )
+        assert not any("lakehouses attached" in r.message for r in caplog.records)
 
     def test_synapse_notebook_dir_is_detected(self, tmp_path: Path):
         """A `*.SynapseNotebook/` dir whose .platform says `type: Notebook`
@@ -190,8 +184,7 @@ class TestNotebookExtraction:
         _make_notebook(
             tmp_path,
             "n1",
-            f'"default_lakehouse_workspace_id": "{null}"\n'
-            f'"default_lakehouse": "{null}"\n',
+            f'"default_lakehouse_workspace_id": "{null}"\n"default_lakehouse": "{null}"\n',
         )
         d = ParameterDetector(tmp_path)
         d.detect_all()
@@ -210,10 +203,7 @@ class TestNotebookExtraction:
         d.detect_all()
 
         assert d.parameters[WORKSPACE_ID].dynamic_variable == "$workspace.$id"
-        assert (
-            d.parameters[LAKEHOUSE_ID].dynamic_variable
-            == "$items.Lakehouse.lh.$id"
-        )
+        assert d.parameters[LAKEHOUSE_ID].dynamic_variable == "$items.Lakehouse.lh.$id"
 
 
 # --- semantic model extraction --------------------------------------------
@@ -223,7 +213,7 @@ class TestSemanticModelExtraction:
     def test_extracts_lakehouse_sql_endpoint(self, tmp_path: Path):
         _make_lakehouse(tmp_path, "lh")
         body = (
-            'expression Source = '
+            "expression Source = "
             f'Sql.Database("HOST-XXXX.datawarehouse.fabric.microsoft.com", "lh-{ENDPOINT_ID}")'
         )
         _make_semantic_model(tmp_path, "sm", body)
@@ -241,15 +231,12 @@ class TestSemanticModelExtraction:
 
         # UUID captured as the endpoint item ID
         assert ENDPOINT_ID in d.parameters
-        assert (
-            d.parameters[ENDPOINT_ID].description
-            == "Lakehouse SQL Analytics Endpoint Item ID"
-        )
+        assert d.parameters[ENDPOINT_ID].description == "Lakehouse SQL Analytics Endpoint Item ID"
 
     def test_extracts_sql_database(self, tmp_path: Path):
         _make_sqldb(tmp_path, "mydb")
         body = (
-            'Source = '
+            "Source = "
             f'Sql.Database("HOST-YYYY.database.fabric.microsoft.com", "mydb-{ENDPOINT_ID}")'
         )
         _make_semantic_model(tmp_path, "sm", body)
@@ -259,15 +246,10 @@ class TestSemanticModelExtraction:
 
         host = "HOST-YYYY.database.fabric.microsoft.com"
         assert host in d.parameters
-        assert (
-            d.parameters[host].description == "SQL Database Connection String"
-        )
+        assert d.parameters[host].description == "SQL Database Connection String"
         assert d.parameters[host].metadata["domain_type"] == "database"
         # Connection string now auto-resolves via fabric-cicd's $sqlendpoint
-        assert (
-            d.parameters[host].dynamic_variable
-            == "$items.SQLDatabase.mydb.$sqlendpoint"
-        )
+        assert d.parameters[host].dynamic_variable == "$items.SQLDatabase.mydb.$sqlendpoint"
 
         # SQL Database Item ID captured
         assert ENDPOINT_ID in d.parameters
@@ -300,10 +282,7 @@ class TestSemanticModelExtraction:
 
         assert LAKEHOUSE_ID in d.parameters
         assert d.parameters[LAKEHOUSE_ID].description == "Lakehouse ID"
-        assert (
-            d.parameters[LAKEHOUSE_ID].dynamic_variable
-            == "$items.Lakehouse.lh.$id"
-        )
+        assert d.parameters[LAKEHOUSE_ID].dynamic_variable == "$items.Lakehouse.lh.$id"
 
     def test_onelake_dfs_url_merges_with_notebook_detection(self, tmp_path: Path):
         """When the same IDs appear in a Notebook AND a SemanticModel, both
@@ -356,9 +335,7 @@ class TestSemanticModelExtraction:
         # should be detected from this model.
         assert len(d.parameters) == 1
 
-    def test_mirrored_database_repo_resolves_analytics_endpoint(
-        self, tmp_path: Path
-    ):
+    def test_mirrored_database_repo_resolves_analytics_endpoint(self, tmp_path: Path):
         """A repo whose only SQL-endpoint item is a MirroredDatabase resolves
         the `datawarehouse.*` hostname and endpoint item id to fabric-cicd's
         MirroredDatabase dynamic variables (added in fabric-cicd 1.3)."""
@@ -373,10 +350,7 @@ class TestSemanticModelExtraction:
         d.detect_all()
 
         host = "HOST-XXXX.datawarehouse.fabric.microsoft.com"
-        assert (
-            d.parameters[host].dynamic_variable
-            == "$items.MirroredDatabase.mdb.$sqlendpoint"
-        )
+        assert d.parameters[host].dynamic_variable == "$items.MirroredDatabase.mdb.$sqlendpoint"
         assert (
             d.parameters[ENDPOINT_ID].dynamic_variable
             == "$items.MirroredDatabase.mdb.$sqlendpointid"
@@ -402,7 +376,7 @@ class TestSemanticModelExtraction:
     def test_pbidedicated_domain_metadata(self, tmp_path: Path):
         _make_lakehouse(tmp_path, "lh")
         body = (
-            'Source = '
+            "Source = "
             f'Sql.Database("HOST-AAAA.datawarehouse.pbidedicated.windows.net", "lh-{ENDPOINT_ID}")'
         )
         _make_semantic_model(tmp_path, "sm", body)
@@ -508,10 +482,7 @@ class TestPipelineExtraction:
             ("pl.DataPipeline/pipeline-content.json", OTHER_WORKSPACE_ID)
         ]
         # Verbatim = excluded from the generated find_replace rules.
-        find_values = [
-            e["find_value"]
-            for e in d.generate_parameter_yml()["find_replace"]
-        ]
+        find_values = [e["find_value"] for e in d.generate_parameter_yml()["find_replace"]]
         assert OTHER_WORKSPACE_ID not in find_values
 
     def test_skips_null_uuid_workspaceid(self, tmp_path: Path):
@@ -521,9 +492,7 @@ class TestPipelineExtraction:
             "pl",
             {
                 "properties": {
-                    "activities": [
-                        {"typeProperties": {"workspaceId": ParameterDetector.NULL_UUID}}
-                    ]
+                    "activities": [{"typeProperties": {"workspaceId": ParameterDetector.NULL_UUID}}]
                 }
             },
         )
@@ -577,10 +546,7 @@ class TestCopyJobExtraction:
 
         assert d.parameters[WORKSPACE_ID].description == "Workspace ID"
         assert d.parameters[LAKEHOUSE_ID].description == "Lakehouse ID"
-        assert (
-            d.parameters[OTHER_WORKSPACE_ID].description
-            == "Cross-workspace reference"
-        )
+        assert d.parameters[OTHER_WORKSPACE_ID].description == "Cross-workspace reference"
         assert d.parameters[ENDPOINT_ID].description == "Cross-workspace reference"
         assert d.parameters[ENDPOINT_ID].dynamic_variable == ""
 
@@ -594,9 +560,7 @@ class TestCopyJobExtraction:
             {
                 "properties": {
                     "source": {
-                        "connectionSettings": {
-                            "typeProperties": {"artifactId": LAKEHOUSE_ID}
-                        }
+                        "connectionSettings": {"typeProperties": {"artifactId": LAKEHOUSE_ID}}
                     },
                 }
             },
@@ -605,14 +569,9 @@ class TestCopyJobExtraction:
         d.detect_all()
 
         assert d.parameters[LAKEHOUSE_ID].description == "Lakehouse ID"
-        assert (
-            d.parameters[LAKEHOUSE_ID].dynamic_variable
-            == "$items.Lakehouse.lh.$id"
-        )
+        assert d.parameters[LAKEHOUSE_ID].dynamic_variable == "$items.Lakehouse.lh.$id"
 
-    def test_copyjob_null_workspaceid_is_local_not_cross_workspace(
-        self, tmp_path: Path
-    ):
+    def test_copyjob_null_workspaceid_is_local_not_cross_workspace(self, tmp_path: Path):
         """The null UUID is Fabric's "this workspace" placeholder — never a
         cross-workspace reference (no warning, no parameter), and the
         artifact keeps its same-workspace mapping."""
@@ -639,10 +598,7 @@ class TestCopyJobExtraction:
         assert ParameterDetector.NULL_UUID not in d.parameters
         assert d.offtarget_workspace_refs == []
         assert d.parameters[LAKEHOUSE_ID].description == "Lakehouse ID"
-        assert (
-            d.parameters[LAKEHOUSE_ID].dynamic_variable
-            == "$items.Lakehouse.lh.$id"
-        )
+        assert d.parameters[LAKEHOUSE_ID].dynamic_variable == "$items.Lakehouse.lh.$id"
 
 
 # --- should_skip_replacement ---------------------------------------------
@@ -662,9 +618,7 @@ class TestShouldSkipReplacement:
     ):
         _make_lakehouse(tmp_path, "lh")
         if detected_wsid is not None:
-            _make_notebook(
-                tmp_path, "n1", f'"default_lakehouse_workspace_id": "{detected_wsid}"'
-            )
+            _make_notebook(tmp_path, "n1", f'"default_lakehouse_workspace_id": "{detected_wsid}"')
         d = ParameterDetector(tmp_path)
         d.detect_all()
         assert d.should_skip_replacement(target_wsid) is expected
@@ -678,12 +632,8 @@ class TestFilterLakehouseParams:
         d = ParameterDetector(tmp_path)
         # Manually populate parameters with a mix of types
         d.parameters = {
-            WORKSPACE_ID: DetectedParameter(
-                find_value=WORKSPACE_ID, description="Workspace ID"
-            ),
-            LAKEHOUSE_ID: DetectedParameter(
-                find_value=LAKEHOUSE_ID, description="Lakehouse ID"
-            ),
+            WORKSPACE_ID: DetectedParameter(find_value=WORKSPACE_ID, description="Workspace ID"),
+            LAKEHOUSE_ID: DetectedParameter(find_value=LAKEHOUSE_ID, description="Lakehouse ID"),
             "host": DetectedParameter(
                 find_value="host",
                 description="SQL Analytics Endpoint Connection String",
@@ -737,14 +687,9 @@ class TestGenerateDynamicVariable:
         _make_sqldb(tmp_path, "mydb")
         d = ParameterDetector(tmp_path)
         d._sqldatabase_names = d._detect_item_names("SQLDatabase")
-        assert (
-            d._generate_dynamic_variable("SQL Database Item ID")
-            == "$items.SQLDatabase.mydb.$id"
-        )
+        assert d._generate_dynamic_variable("SQL Database Item ID") == "$items.SQLDatabase.mydb.$id"
 
-    def test_sqldatabase_connection_string_resolves_to_sqlendpoint(
-        self, tmp_path: Path
-    ):
+    def test_sqldatabase_connection_string_resolves_to_sqlendpoint(self, tmp_path: Path):
         """SQL Database Connection String should map to $sqlendpoint, not empty.
 
         fabric-cicd 1.0's PROPERTY_PATH_ATTR_MAPPING for SQLDatabase resolves
@@ -811,16 +756,16 @@ WAREHOUSE_EP_ID = "66666666-6666-6666-6666-666666666666"
 def _warehouse_meta(prefix: str, wh_id: str, wh_type: str) -> str:
     p = prefix
     return (
-        f'{p} META {{\n'
+        f"{p} META {{\n"
         f'{p} META   "dependencies": {{\n'
         f'{p} META     "warehouse": {{\n'
         f'{p} META       "default_warehouse": "{wh_id}",\n'
         f'{p} META       "known_warehouses": [\n'
         f'{p} META         {{"id": "{wh_id}", "type": "{wh_type}"}}\n'
-        f'{p} META       ]\n'
-        f'{p} META     }}\n'
-        f'{p} META   }}\n'
-        f'{p} META }}\n'
+        f"{p} META       ]\n"
+        f"{p} META     }}\n"
+        f"{p} META   }}\n"
+        f"{p} META }}\n"
     )
 
 
@@ -856,9 +801,7 @@ class TestWarehouseAttachmentExtraction:
         """MountedWarehouse resolves at deploy time — no dynamic, no warning."""
         _make_lakehouse(tmp_path, "lh")
         _make_item(tmp_path, "mydb", "SQLDatabase", subdir="ERP")  # nested on purpose
-        _make_notebook(
-            tmp_path, "n1", _warehouse_meta("#", WAREHOUSE_EP_ID, "MountedWarehouse")
-        )
+        _make_notebook(tmp_path, "n1", _warehouse_meta("#", WAREHOUSE_EP_ID, "MountedWarehouse"))
         d = ParameterDetector(tmp_path)
         d.detect_all()
 
@@ -873,9 +816,7 @@ class TestWarehouseAttachmentExtraction:
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ):
         _make_lakehouse(tmp_path, "lh")
-        _make_notebook(
-            tmp_path, "n1", _warehouse_meta("#", WAREHOUSE_EP_ID, "MountedWarehouse")
-        )
+        _make_notebook(tmp_path, "n1", _warehouse_meta("#", WAREHOUSE_EP_ID, "MountedWarehouse"))
         d = ParameterDetector(tmp_path)
         with caplog.at_level("WARNING", logger="fabric_deploy.detect"):
             d.detect_all()
@@ -887,9 +828,7 @@ class TestWarehouseAttachmentExtraction:
     def test_datawarehouse_maps_to_warehouse_id(self, tmp_path: Path):
         _make_lakehouse(tmp_path, "lh")
         _make_item(tmp_path, "wh", "Warehouse")
-        _make_notebook(
-            tmp_path, "n1", _warehouse_meta("#", WAREHOUSE_EP_ID, "Datawarehouse")
-        )
+        _make_notebook(tmp_path, "n1", _warehouse_meta("#", WAREHOUSE_EP_ID, "Datawarehouse"))
         d = ParameterDetector(tmp_path)
         d.detect_all()
 
@@ -898,13 +837,9 @@ class TestWarehouseAttachmentExtraction:
         assert p.dynamic_variable == "$items.Warehouse.wh.$id"
         assert d.unresolved_warehouse_bindings == []
 
-    def test_unknown_attachment_type_warns(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ):
+    def test_unknown_attachment_type_warns(self, tmp_path: Path, caplog: pytest.LogCaptureFixture):
         _make_lakehouse(tmp_path, "lh")
-        _make_notebook(
-            tmp_path, "n1", _warehouse_meta("#", WAREHOUSE_EP_ID, "SomethingNew")
-        )
+        _make_notebook(tmp_path, "n1", _warehouse_meta("#", WAREHOUSE_EP_ID, "SomethingNew"))
         d = ParameterDetector(tmp_path)
         with caplog.at_level("WARNING", logger="fabric_deploy.detect"):
             d.detect_all()
@@ -921,13 +856,13 @@ class TestWarehouseAttachmentExtraction:
         _make_notebook(
             tmp_path,
             "n1",
-            '# META {\n'
+            "# META {\n"
             '# META   "dependencies": {\n'
             '# META     "warehouse": {\n'
             f'# META       "default_warehouse": "{WAREHOUSE_EP_ID}"\n'
-            '# META     }\n'
-            '# META   }\n'
-            '# META }\n',
+            "# META     }\n"
+            "# META   }\n"
+            "# META }\n",
         )
         d = ParameterDetector(tmp_path)
         with caplog.at_level("WARNING", logger="fabric_deploy.detect"):
@@ -962,9 +897,7 @@ def _make_udf(repo: Path, name: str, functions: list[str]) -> None:
     )
 
 
-def _data_function_visual(
-    item_id: str, workspace_id: str, function_name: str | None
-) -> dict:
+def _data_function_visual(item_id: str, workspace_id: str, function_name: str | None) -> dict:
     """A PBIR action button bound to a User Data Function."""
     metadata: dict = {"autoRefresh": True, "parameters": []}
     if function_name is not None:
@@ -976,19 +909,13 @@ def _data_function_visual(
                 "visualLink": [
                     {
                         "properties": {
-                            "type": {
-                                "expr": {"Literal": {"Value": "'DataFunction'"}}
-                            },
+                            "type": {"expr": {"Literal": {"Value": "'DataFunction'"}}},
                             "dataFunction": {
                                 "kind": "ItemLocation",
                                 "byReference": {
-                                    "itemId": {
-                                        "expr": {"Literal": {"Value": f"'{item_id}'"}}
-                                    },
+                                    "itemId": {"expr": {"Literal": {"Value": f"'{item_id}'"}}},
                                     "workspaceId": {
-                                        "expr": {
-                                            "Literal": {"Value": f"'{workspace_id}'"}
-                                        }
+                                        "expr": {"Literal": {"Value": f"'{workspace_id}'"}}
                                     },
                                 },
                                 "metadata": {"dataFunction": metadata},
@@ -1019,9 +946,7 @@ class TestUserDataFunctionRebind:
         _make_report_visual(
             tmp_path,
             "Finance Report",
-            _data_function_visual(
-                UDF_ITEM_ID, WORKSPACE_ID, "update_report_json"
-            ),
+            _data_function_visual(UDF_ITEM_ID, WORKSPACE_ID, "update_report_json"),
         )
         d = ParameterDetector(tmp_path)
         d.detect_all()
@@ -1044,16 +969,12 @@ class TestUserDataFunctionRebind:
         """An unassigned button carries "''" for both ids — nothing to rebind."""
         _make_lakehouse(tmp_path, "lh")
         _make_udf(tmp_path, "Fns", ["f"])
-        _make_report_visual(
-            tmp_path, "R", _data_function_visual("", "", None)
-        )
+        _make_report_visual(tmp_path, "R", _data_function_visual("", "", None))
         d = ParameterDetector(tmp_path)
         d.detect_all()
 
         assert d.udf_bindings == []
-        assert not any(
-            p.description == "User Data Function Item ID" for p in d.parameters.values()
-        )
+        assert not any(p.description == "User Data Function Item ID" for p in d.parameters.values())
 
     def test_unknown_function_is_not_rebound(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -1137,9 +1058,7 @@ class TestUserDataFunctionRebind:
     def test_reports_ignored_when_repo_has_no_udf(self, tmp_path: Path):
         """No UserDataFunction item -> report definitions aren't walked at all."""
         _make_lakehouse(tmp_path, "lh")
-        _make_report_visual(
-            tmp_path, "R", _data_function_visual(UDF_ITEM_ID, WORKSPACE_ID, "f")
-        )
+        _make_report_visual(tmp_path, "R", _data_function_visual(UDF_ITEM_ID, WORKSPACE_ID, "f"))
         d = ParameterDetector(tmp_path)
         d.detect_all()
 
@@ -1194,9 +1113,7 @@ def _enable_auto_binding(repo: Path, notebook_dir: str) -> None:
 def _pinned_notebook_activity(workspace_id: str) -> dict:
     return {
         "properties": {
-            "activities": [
-                {"typeProperties": {"workspaceId": workspace_id, "notebookId": "x"}}
-            ]
+            "activities": [{"typeProperties": {"workspaceId": workspace_id, "notebookId": "x"}}]
         }
     }
 

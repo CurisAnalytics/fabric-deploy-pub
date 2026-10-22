@@ -228,7 +228,7 @@ def format_account_list(accounts: Sequence[AzureAccount]) -> str:
     for acct in sorted_accounts:
         marker = " [CURRENT]" if acct.get("isDefault") else ""
         lines.append(f"  • {acct['name']}{marker}")
-        user_type = acct['user'].get('type', '')
+        user_type = acct["user"].get("type", "")
         qualifier = "SPN" if user_type.lower() == "serviceprincipal" else "User"
         lines.append(f"    {qualifier}: {acct['user']['name']}")
         lines.append(f"    Subscription: {acct['id']}")

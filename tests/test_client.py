@@ -61,9 +61,7 @@ def test_list_workspace_items_follows_continuation_token(monkeypatch):
 
 
 def _items(monkeypatch, items):
-    monkeypatch.setattr(
-        "fabric_deploy.client.list_workspace_items", lambda ws, t: items
-    )
+    monkeypatch.setattr("fabric_deploy.client.list_workspace_items", lambda ws, t: items)
 
 
 def test_find_item_single_when_no_name(monkeypatch):
@@ -177,30 +175,28 @@ def _sqldbs(monkeypatch, value):
 def test_sqldatabase_host_strips_port_suffix(monkeypatch):
     _sqldbs(
         monkeypatch,
-        [{
-            "displayName": "mydb",
-            "properties": {"serverFqdn": "abc-def.database.fabric.microsoft.com,1433"},
-        }],
+        [
+            {
+                "displayName": "mydb",
+                "properties": {"serverFqdn": "abc-def.database.fabric.microsoft.com,1433"},
+            }
+        ],
     )
-    assert (
-        get_sqldatabase_server_host("ws", "mydb")
-        == "abc-def.database.fabric.microsoft.com"
-    )
+    assert get_sqldatabase_server_host("ws", "mydb") == "abc-def.database.fabric.microsoft.com"
 
 
 def test_sqldatabase_host_portless_fqdn_unchanged(monkeypatch):
     _sqldbs(
         monkeypatch,
-        [{
-            "displayName": "MyDB",
-            "properties": {"serverFqdn": "abc-def.database.fabric.microsoft.com"},
-        }],
+        [
+            {
+                "displayName": "MyDB",
+                "properties": {"serverFqdn": "abc-def.database.fabric.microsoft.com"},
+            }
+        ],
     )
     # also exercises case-insensitive name matching
-    assert (
-        get_sqldatabase_server_host("ws", "mydb")
-        == "abc-def.database.fabric.microsoft.com"
-    )
+    assert get_sqldatabase_server_host("ws", "mydb") == "abc-def.database.fabric.microsoft.com"
 
 
 def test_sqldatabase_host_no_match_raises_with_listing(monkeypatch):

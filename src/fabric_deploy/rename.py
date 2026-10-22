@@ -65,9 +65,7 @@ def rename_items_by_display_name(
                 if new_path.exists():
                     _rmtree(new_path)
                 _ = parent.rename(new_path)
-                logger.info(
-                    f"Renamed: {_format_path(parent)} -> {_format_path(new_path)}"
-                )
+                logger.info(f"Renamed: {_format_path(parent)} -> {_format_path(new_path)}")
             renamed_count += 1
         except (json.JSONDecodeError, KeyError) as e:
             logger.warning(f"Skipping {target}: Invalid .platform file ({e})")
@@ -78,12 +76,9 @@ def rename_items_by_display_name(
 
     if dry_run:
         logger.info(
-            f"\nDry run complete: {renamed_count} item(s) would be renamed, "
-            f"{skipped_count} skipped"
+            f"\nDry run complete: {renamed_count} item(s) would be renamed, {skipped_count} skipped"
         )
         if renamed_count > 0:
             logger.info("Run with --execute flag to perform actual renames")
     else:
-        logger.info(
-            f"\nRename complete: {renamed_count} item(s) renamed, {skipped_count} skipped"
-        )
+        logger.info(f"\nRename complete: {renamed_count} item(s) renamed, {skipped_count} skipped")

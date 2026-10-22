@@ -16,7 +16,6 @@ import pytest
 
 from fabric_deploy.workspace import WorkspaceDeployer
 
-
 DETECTED_UUID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 UNRELATED_UUID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 
@@ -49,7 +48,7 @@ class TestManualParameters:
         _build_repo(
             tmp_path,
             'workspace_base_name: "ws"\n'
-            'manual_parameters:\n'
+            "manual_parameters:\n"
             f'  - find_value: "{DETECTED_UUID}"\n'
             '    replace_value: "kept-as-external"\n'
             '    description: "external workspace"\n',
@@ -69,7 +68,7 @@ class TestManualParameters:
         _build_repo(
             tmp_path,
             'workspace_base_name: "ws"\n'
-            'manual_parameters:\n'
+            "manual_parameters:\n"
             f'  - find_value: "{UNRELATED_UUID}"\n'
             '    replace_value: "anything"\n',
         )
@@ -81,15 +80,13 @@ class TestManualParameters:
         assert d._manual_count == 0
         assert any(UNRELATED_UUID in rec.message for rec in caplog.records)
 
-    def test_undetected_value_in_item_file_is_injected(
-        self, tmp_path: Path, mock_fabric_api
-    ):
+    def test_undetected_value_in_item_file_is_injected(self, tmp_path: Path, mock_fabric_api):
         """A find_value detection didn't see, but which exists in an item file
         (e.g. a PowerApp app id in report JSON), becomes a new parameter."""
         _build_repo(
             tmp_path,
             'workspace_base_name: "ws"\n'
-            'manual_parameters:\n'
+            "manual_parameters:\n"
             f'  - find_value: "{UNRELATED_UUID}"\n'
             '    replace_value: "new-app-guid"\n'
             '    item_type: ["Report"]\n'
@@ -131,7 +128,7 @@ class TestManualParameters:
         _build_repo(
             tmp_path,
             'workspace_base_name: "ws"\n'
-            'manual_parameters:\n'
+            "manual_parameters:\n"
             '  - find_value: "only-lives-in-fabdep-yml"\n'
             '    replace_value: "x"\n',
         )
@@ -155,26 +152,24 @@ class TestManualParameters:
         _build_repo(
             tmp_path,
             'workspace_base_name: "ws"\n'
-            'manual_parameters:\n'
+            "manual_parameters:\n"
             f'  - find_value: "{DETECTED_UUID}"\n'
             '    replace_value: "x"\n'
-            f'    item_type: {item_type_yaml}\n',
+            f"    item_type: {item_type_yaml}\n",
         )
 
         d = WorkspaceDeployer(tmp_path, branch_override="dev")
 
         assert d._detector.parameters[DETECTED_UUID].item_types == expected
 
-    def test_dict_replace_value_extracts_first_value(
-        self, tmp_path: Path, mock_fabric_api
-    ):
+    def test_dict_replace_value_extracts_first_value(self, tmp_path: Path, mock_fabric_api):
         """When replace_value is given as {env: value}, take the value."""
         _build_repo(
             tmp_path,
             'workspace_base_name: "ws"\n'
-            'manual_parameters:\n'
+            "manual_parameters:\n"
             f'  - find_value: "{DETECTED_UUID}"\n'
-            '    replace_value:\n'
+            "    replace_value:\n"
             '      prod: "prod-value"\n',
         )
 
@@ -188,7 +183,7 @@ class TestManualParameters:
         _build_repo(
             tmp_path,
             'workspace_base_name: "ws"\n'
-            'manual_parameters:\n'
+            "manual_parameters:\n"
             '  - replace_value: "no-find"\n'
             f'  - find_value: "{DETECTED_UUID}"\n'
             '  - find_value: "valid-but-unmatched"\n'

@@ -12,7 +12,6 @@ from fabric_deploy.workspace import WorkspaceDeployer
 
 from .conftest import SAMPLE_DEV_WORKSPACE_ID, SAMPLE_LAKEHOUSE_ID
 
-
 # Resolve the fabdep binary once. Prefer PATH; fall back to the venv that
 # launched pytest (sys.executable's bin dir). Tests skip if neither exists.
 _FABDEP = shutil.which("fabdep") or str(Path(sys.executable).parent / "fabdep")
@@ -108,7 +107,6 @@ class TestCLI:
 
         # Should succeed (dry-run doesn't make changes)
         assert result.returncode == 0, f"Command failed: {result.stderr}"
-
 
 
 class TestDetectSourceWorkspaceFlag:

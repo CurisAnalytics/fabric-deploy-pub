@@ -12,8 +12,8 @@ from azure.identity import AzureCliCredential
 from fabric_deploy import identity
 from fabric_deploy.config import TenantPin
 from fabric_deploy.identity import (
-    StaticTokenCredential,
     _BEARER_ENV,
+    StaticTokenCredential,
     _jwt_exp,
     fabric_credential,
     get_access_token,
@@ -134,9 +134,7 @@ def cli_fallback(monkeypatch):
     monkeypatch.setattr(identity, "_CLI_CREDENTIAL", None)
     monkeypatch.setattr(identity, "_ACTIVE_PIN", None)
     monkeypatch.setattr(identity, "AzureCliCredential", _FakeCliCredential)
-    monkeypatch.setattr(
-        identity, "active_account", lambda config_dir=None: _account("spn-sub")
-    )
+    monkeypatch.setattr(identity, "active_account", lambda config_dir=None: _account("spn-sub"))
     _FakeCliCredential.working = set()
     yield monkeypatch
     _FakeCliCredential.working = set()

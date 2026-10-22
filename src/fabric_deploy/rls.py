@@ -28,8 +28,8 @@ from __future__ import annotations
 import difflib
 import json
 import logging
-from concurrent.futures import ThreadPoolExecutor
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -313,8 +313,7 @@ def guard_deploy_rls(
         return
 
     log.info(
-        f"RLS guard: reading live role definitions for {len(guarded)} model(s) "
-        "from the target..."
+        f"RLS guard: reading live role definitions for {len(guarded)} model(s) from the target..."
     )
 
     # Each live read is a full getDefinition round trip; they are independent,
@@ -324,6 +323,7 @@ def guard_deploy_rls(
             zip(
                 guarded,
                 pool.map(lambda name: _remote_roles(workspace_id, name), guarded),
+                strict=True,
             )
         )
 
@@ -343,7 +343,10 @@ def guard_deploy_rls(
             continue
 
         rendering = _render_diff(
-            diff, add_label="deploy ADDS", remove_label="deploy WIPES", change_label="deploy CHANGES"
+            diff,
+            add_label="deploy ADDS",
+            remove_label="deploy WIPES",
+            change_label="deploy CHANGES",
         )
         log.error(f"RLS drift for '{name}' — deploy would change live RLS:\n{rendering}")
         blocked.append(name)

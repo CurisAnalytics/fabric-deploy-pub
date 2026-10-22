@@ -25,8 +25,8 @@ from .client import (
     refresh_sql_endpoint_metadata,
 )
 from .config import FabdepConfig
-from .log import get_logger
 from .identity import apply_tenant_pin
+from .log import get_logger
 
 __all__ = [
     "extract_refresh_error",
@@ -113,9 +113,7 @@ def _repo_display_names(repo_dir: Path, item_type: str) -> list[str]:
     return names
 
 
-def _resolve_sql_endpoint(
-    workspace_id: str, repo_dir: Path, logger: logging.Logger
-) -> str | None:
+def _resolve_sql_endpoint(workspace_id: str, repo_dir: Path, logger: logging.Logger) -> str | None:
     """Best-effort resolve the SQL endpoint to sync.
 
     Matches the repo's lakehouse display name first; falls back to the sole
@@ -213,9 +211,7 @@ def frame_models(
 
         err = extract_refresh_error(detail)
         if err:
-            raise RuntimeError(
-                f"Framing failed for '{item['displayName']}': {err}"
-            )
+            raise RuntimeError(f"Framing failed for '{item['displayName']}': {err}")
         log.info(f"  Refresh {detail.get('status', 'Completed')}.")
 
     log.info(

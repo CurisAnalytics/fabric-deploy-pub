@@ -27,6 +27,7 @@ from .client import (
 )
 from .config import FabdepConfig
 from .detect import ParameterDetector, find_in_item_files
+from .git import changed_paths_in, latest_pr_commit
 from .identity import apply_tenant_pin, fabric_credential
 from .log import get_logger, is_transient_error, patch_fabric_cicd_logger
 from .params import (
@@ -35,7 +36,6 @@ from .params import (
     resolve_sqldatabase_hostname_params,
     resolve_warehouse_endpoint_params,
 )
-from .git import changed_paths_in, latest_pr_commit
 from .scope import (
     items_for_changed_paths,
     repo_item_types,
@@ -152,12 +152,8 @@ class WorkspaceDeployer:
     # siblings by id → display name, for the run summary.
     source_workspace_ids: set[str] = field(init=False, default_factory=set, repr=False)
     source_workspaces: dict[str, str] = field(init=False, default_factory=dict, repr=False)
-    source_lakehouse_ids: dict[str, str] = field(
-        init=False, default_factory=dict, repr=False
-    )
-    repo_item_types: set[str] = field(
-        init=False, repr=False
-    )  # Item types present in repo
+    source_lakehouse_ids: dict[str, str] = field(init=False, default_factory=dict, repr=False)
+    repo_item_types: set[str] = field(init=False, repr=False)  # Item types present in repo
 
     _repo_dir_resolved: Path = field(init=False, repr=False)
     config: FabdepConfig = field(init=False, repr=False)
@@ -318,9 +314,7 @@ class WorkspaceDeployer:
 
         referenced = {
             ws_id
-            for ws_id, files in find_in_item_files(
-                self._repo_dir_resolved, siblings
-            ).items()
+            for ws_id, files in find_in_item_files(self._repo_dir_resolved, siblings).items()
             if files
         }
         for ws_id in sorted(referenced):
@@ -373,15 +367,11 @@ class WorkspaceDeployer:
         # workspace (no fabric-cicd dynamic exists). Manual overrides above
         # win; same-workspace deploys skip replacement entirely.
         if not detector.should_skip_replacement(self.workspace_id):
-            _ = resolve_warehouse_endpoint_params(
-                detector, self.workspace_id, self.logger
-            )
+            _ = resolve_warehouse_endpoint_params(detector, self.workspace_id, self.logger)
             # SQL database hostnames also resolve to literals: fabric-cicd's
             # $sqlendpoint dynamic returns serverFqdn with a ",1433" port
             # suffix that must not land in bare-hostname find_values.
-            _ = resolve_sqldatabase_hostname_params(
-                detector, self.workspace_id, self.logger
-            )
+            _ = resolve_sqldatabase_hostname_params(detector, self.workspace_id, self.logger)
 
         self._detector = detector
 
@@ -391,9 +381,7 @@ class WorkspaceDeployer:
         if len(lakehouses) == 0:
             raise ValueError("No lakehouse found in repository directory")
         elif len(lakehouses) > 1:
-            self.logger.warning(
-                f"Multiple lakehouses found: {[d.name for d in lakehouses]}"
-            )
+            self.logger.warning(f"Multiple lakehouses found: {[d.name for d in lakehouses]}")
         platform_file = lakehouses[0] / ".platform"
         try:
             metadata = loads(platform_file.read_text())
@@ -416,11 +404,7 @@ class WorkspaceDeployer:
         from .rls import guard_deploy_rls
 
         if include_items:
-            models = [
-                it.rsplit(".", 1)[0]
-                for it in include_items
-                if it.endswith(".SemanticModel")
-            ]
+            models = [it.rsplit(".", 1)[0] for it in include_items if it.endswith(".SemanticModel")]
         elif item_type_in_scope is None or "SemanticModel" in item_type_in_scope:
             models = None  # every SemanticModel in the repo is in scope
         else:
@@ -504,14 +488,11 @@ class WorkspaceDeployer:
             sha, subject = pr, ""
 
         changed = changed_paths_in(self._repo_dir_resolved, sha)
-        matched, unmatched = items_for_changed_paths(
-            changed, self._repo_dir_resolved
-        )
+        matched, unmatched = items_for_changed_paths(changed, self._repo_dir_resolved)
 
         label = f"{sha[:8]}" + (f" ({subject})" if subject else "")
         self.logger.info(
-            f"--pr: {label} changed {len(changed)} file(s) across "
-            f"{len(matched)} item(s)."
+            f"--pr: {label} changed {len(changed)} file(s) across {len(matched)} item(s)."
         )
         if unmatched:
             # Deleted items land here too — their directory is gone, so there
@@ -617,9 +598,7 @@ class WorkspaceDeployer:
                 "Name-based item filtering is experimental. "
                 "Selective deployment may cause dependency issues. Use at your own risk."
             )
-            self.logger.warning(
-                "Orphan cleanup disabled when using --include-items for safety."
-            )
+            self.logger.warning("Orphan cleanup disabled when using --include-items for safety.")
             # Fail fast on a name mismatch instead of silently deploying nothing.
             include_items = validate_include_items(
                 include_items, self._repo_dir_resolved, self.logger
@@ -637,11 +616,7 @@ class WorkspaceDeployer:
                 f"See warnings above for stale IDs."
             )
 
-        if (
-            fail_on_stale
-            and self._detector
-            and self._detector.unresolved_warehouse_bindings
-        ):
+        if fail_on_stale and self._detector and self._detector.unresolved_warehouse_bindings:
             files = ", ".join(
                 sorted({f for f, _, _ in self._detector.unresolved_warehouse_bindings})
             )
@@ -697,12 +672,9 @@ class WorkspaceDeployer:
                 deployed = [
                     it
                     for it in include_items
-                    if item_type_in_scope is None
-                    or it.rsplit(".", 1)[-1] in item_type_in_scope
+                    if item_type_in_scope is None or it.rsplit(".", 1)[-1] in item_type_in_scope
                 ]
-                self.logger.info(
-                    f"Deployed {len(deployed)} item(s): {', '.join(deployed)}"
-                )
+                self.logger.info(f"Deployed {len(deployed)} item(s): {', '.join(deployed)}")
             self.logger.info("Deployment complete!")
         finally:
             if self._paramfile.created:

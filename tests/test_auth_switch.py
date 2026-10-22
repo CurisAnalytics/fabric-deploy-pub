@@ -6,7 +6,6 @@ import pytest
 
 from fabric_deploy.auth import switch_account
 
-
 _ACCOUNTS = [
     {
         "id": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",

@@ -6,7 +6,6 @@ import re
 import subprocess
 from pathlib import Path
 
-
 __all__ = ["current_branch", "changed_paths_in", "latest_pr_commit"]
 
 # How the two hosts we use write a pull-request commit subject. ADO writes

@@ -8,7 +8,6 @@ from unittest.mock import patch
 
 import pytest
 
-
 FAKE_WORKSPACE_ID = "00000000-0000-0000-0000-000000000001"
 FAKE_CAPACITY_ID = "00000000-0000-0000-0000-0000000000c0"
 
@@ -98,4 +97,6 @@ def _isolate_azure_identity(monkeypatch, tmp_path):
     monkeypatch.setattr(identity, "_ACTIVE_PIN", None)
     monkeypatch.setattr(identity, "_CLI_CREDENTIAL", None)
     monkeypatch.setattr(identity, "_list_accounts", lambda: [])
-    monkeypatch.setattr("fabric_deploy.profile.FABDEP_PROFILE_PATH", tmp_path / "fabdep-profile.json")
+    monkeypatch.setattr(
+        "fabric_deploy.profile.FABDEP_PROFILE_PATH", tmp_path / "fabdep-profile.json"
+    )

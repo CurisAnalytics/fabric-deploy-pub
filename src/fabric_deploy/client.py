@@ -14,7 +14,6 @@ from .transport import (
     poll_fabric_lro,
 )
 
-
 # pyright: reportMissingTypeArgument=false
 # pyright: reportUnknownMemberType=false
 # pyright: reportUnknownParameterType=false
@@ -96,9 +95,7 @@ def get_default_capacity_id() -> str:
     active_capacities = [c for c in capacities if c.get("state") == "Active"]
 
     if not active_capacities:
-        available = [
-            f"{c['displayName']} ({c['sku']}, {c['state']})" for c in capacities
-        ]
+        available = [f"{c['displayName']} ({c['sku']}, {c['state']})" for c in capacities]
         if available:
             raise ValueError(
                 "No active capacities found.\n\n"
@@ -131,9 +128,7 @@ def find_workspace_id_by_name(workspace_name: str) -> str | None:
     """
     workspaces = list_workspaces()
 
-    matches = [
-        ws for ws in workspaces if ws["displayName"].lower() == workspace_name.lower()
-    ]
+    matches = [ws for ws in workspaces if ws["displayName"].lower() == workspace_name.lower()]
 
     if len(matches) == 0:
         return None
@@ -208,9 +203,7 @@ def create_workspace(workspace_name: str, capacity_id: str) -> str:
 # --- Item lookup ---------------------------------------------------------
 
 
-def list_workspace_items(
-    workspace_id: str, item_type: str | None = None
-) -> list[dict]:
+def list_workspace_items(workspace_id: str, item_type: str | None = None) -> list[dict]:
     """List items in a workspace, optionally filtered by Fabric item type.
 
     Args:
@@ -241,9 +234,7 @@ def list_workspace_items(
             return items
 
 
-def find_item_by_name(
-    workspace_id: str, item_type: str, name: str | None = None
-) -> dict:
+def find_item_by_name(workspace_id: str, item_type: str, name: str | None = None) -> dict:
     """Resolve a single workspace item of `item_type` by display name.
 
     With `name=None`, succeeds only when exactly one item of that type exists
@@ -323,9 +314,7 @@ def get_sqldatabase_server_host(workspace_id: str, name: str) -> str:
 
     server_fqdn = matches[0].get("properties", {}).get("serverFqdn", "")
     if not server_fqdn:
-        raise ValueError(
-            f"SQLDatabase '{name}' has no serverFqdn yet (still provisioning?)"
-        )
+        raise ValueError(f"SQLDatabase '{name}' has no serverFqdn yet (still provisioning?)")
     return server_fqdn.split(",")[0]
 
 
@@ -401,8 +390,10 @@ def refresh_semantic_model(
         )
         status = detail.get("status")
         # "Unknown" with no endTime means still in progress.
-        if status and status != "InProgress" and not (
-            status == "Unknown" and not detail.get("endTime")
+        if (
+            status
+            and status != "InProgress"
+            and not (status == "Unknown" and not detail.get("endTime"))
         ):
             return detail
         if waited >= timeout_s:

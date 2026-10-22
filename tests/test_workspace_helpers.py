@@ -52,9 +52,7 @@ class TestResolveItemScope:
 
     def test_item_types_takes_priority_over_exclude(self):
         """When both are given, --item-types wins."""
-        assert resolve_item_scope(["Notebook"], ["Notebook", "Report"], None, LOG) == [
-            "Notebook"
-        ]
+        assert resolve_item_scope(["Notebook"], ["Notebook", "Report"], None, LOG) == ["Notebook"]
 
     def test_include_items_derives_scope_from_suffixes(self):
         scope = resolve_item_scope(None, None, ["Foo.Notebook", "Bar.Report"], LOG)
@@ -71,9 +69,7 @@ class TestResolveItemScope:
         assert any("BogusType" in rec.message for rec in caplog.records)
 
     def test_include_items_skips_entries_without_known_suffix(self):
-        scope = resolve_item_scope(
-            None, None, ["Foo.Notebook", "PlainName", "Bar.NotAType"], LOG
-        )
+        scope = resolve_item_scope(None, None, ["Foo.Notebook", "PlainName", "Bar.NotAType"], LOG)
         assert scope == ["Notebook"]
 
 
@@ -104,9 +100,7 @@ class TestPlatformTypeDiscovery:
 
     def test_include_items_resolves_synapse_notebook(self, tmp_path: Path):
         _make_item(tmp_path, "foo.SynapseNotebook", "foo", "Notebook")
-        assert validate_include_items(["foo.Notebook"], tmp_path, LOG) == [
-            "foo.Notebook"
-        ]
+        assert validate_include_items(["foo.Notebook"], tmp_path, LOG) == ["foo.Notebook"]
 
     def test_unaccepted_platform_type_is_ignored(self, tmp_path: Path):
         _make_item(tmp_path, "foo.Notebook", "foo", "NotARealType")
@@ -342,15 +336,12 @@ class TestResolveSqlDatabaseHostnameParams:
             # client strips the ",1433" the Fabric API appends to serverFqdn
             return "target-host.database.fabric.microsoft.com"
 
-        monkeypatch.setattr(
-            "fabric_deploy.client.get_sqldatabase_server_host", fake_host
-        )
+        monkeypatch.setattr("fabric_deploy.client.get_sqldatabase_server_host", fake_host)
         count = params_mod.resolve_sqldatabase_hostname_params(d, self.WS, LOG)
 
         assert count == 1
         assert (
-            d.parameters[self.HOST].dynamic_variable
-            == "target-host.database.fabric.microsoft.com"
+            d.parameters[self.HOST].dynamic_variable == "target-host.database.fabric.microsoft.com"
         )
 
     def test_manual_override_wins(self, tmp_path: Path, monkeypatch):
@@ -362,9 +353,7 @@ class TestResolveSqlDatabaseHostnameParams:
         def boom(*a, **k):
             raise AssertionError("should not hit the API for resolved params")
 
-        monkeypatch.setattr(
-            "fabric_deploy.client.get_sqldatabase_server_host", boom
-        )
+        monkeypatch.setattr("fabric_deploy.client.get_sqldatabase_server_host", boom)
         assert params_mod.resolve_sqldatabase_hostname_params(d, self.WS, LOG) == 0
         assert d.parameters[self.HOST].dynamic_variable == "manually-set-host"
 
@@ -376,14 +365,9 @@ class TestResolveSqlDatabaseHostnameParams:
         def fail(*a, **k):
             raise ValueError("No SQLDatabase matching 'mydb' found")
 
-        monkeypatch.setattr(
-            "fabric_deploy.client.get_sqldatabase_server_host", fail
-        )
+        monkeypatch.setattr("fabric_deploy.client.get_sqldatabase_server_host", fail)
         assert params_mod.resolve_sqldatabase_hostname_params(d, self.WS, LOG) == 0
-        assert (
-            d.parameters[self.HOST].dynamic_variable
-            == "$items.SQLDatabase.mydb.$sqlendpoint"
-        )
+        assert d.parameters[self.HOST].dynamic_variable == "$items.SQLDatabase.mydb.$sqlendpoint"
 
     def test_no_sqldatabase_params_is_noop(self, tmp_path: Path, monkeypatch):
         from fabric_deploy import params as params_mod
@@ -401,7 +385,5 @@ class TestResolveSqlDatabaseHostnameParams:
         def boom(*a, **k):
             raise AssertionError("should not hit the API without SQLDatabase params")
 
-        monkeypatch.setattr(
-            "fabric_deploy.client.get_sqldatabase_server_host", boom
-        )
+        monkeypatch.setattr("fabric_deploy.client.get_sqldatabase_server_host", boom)
         assert params_mod.resolve_sqldatabase_hostname_params(d, self.WS, LOG) == 0
