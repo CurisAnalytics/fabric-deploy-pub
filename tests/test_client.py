@@ -22,7 +22,6 @@ from fabric_deploy.client import (
     refresh_sql_endpoint_metadata,
 )
 from fabric_deploy.identity import POWERBI_SCOPE, get_access_token
-from fabric_deploy.transport import poll_fabric_lro
 
 
 def _jwt(exp_offset: int = 3600) -> str:
@@ -89,46 +88,6 @@ def test_find_item_ambiguous_raises(monkeypatch):
         find_item_by_name("ws", "SemanticModel")
 
 
-# --- poll_fabric_lro ----------------------------------------------------
-
-
-def test_poll_lro_runs_then_succeeds_and_fetches_result(monkeypatch):
-    monkeypatch.setattr("fabric_deploy.transport.time.sleep", lambda _s: None)
-    state = {"polls": 0}
-
-    def fake_http(url, method="GET", data=None, scope=None, error_context=""):
-        if url.endswith("/result"):
-            return 200, {}, {"value": [{"tableName": "t", "status": "Success"}]}
-        state["polls"] += 1
-        if state["polls"] == 1:
-            return 200, {"Retry-After": "1"}, {"status": "Running"}
-        return 200, {}, {"status": "Succeeded"}
-
-    monkeypatch.setattr("fabric_deploy.transport.http_request", fake_http)
-    result = poll_fabric_lro(
-        {"Location": "https://x/op", "x-ms-operation-id": "op1", "Retry-After": "1"},
-        "sync",
-    )
-    assert result["value"][0]["tableName"] == "t"
-    assert state["polls"] == 2  # polled through the Running state
-
-
-def test_poll_lro_raises_on_failed(monkeypatch):
-    monkeypatch.setattr("fabric_deploy.transport.time.sleep", lambda _s: None)
-
-    def fake_http(url, method="GET", data=None, scope=None, error_context=""):
-        return 200, {}, {"status": "Failed", "error": {"message": "boom"}}
-
-    monkeypatch.setattr("fabric_deploy.transport.http_request", fake_http)
-    with pytest.raises(RuntimeError, match="Failed"):
-        poll_fabric_lro({"Location": "https://x/op", "Retry-After": "1"}, "sync")
-
-
-def test_poll_lro_raises_when_no_location():
-    with pytest.raises(RuntimeError, match="no Location"):
-        poll_fabric_lro({}, "sync")
-
-
 # --- refresh_semantic_model poll loop ------------------------------------
 
 
@@ -138,7 +97,7 @@ def test_refresh_semantic_model_polls_until_completed(monkeypatch):
 
     def fake_http(url, method="GET", data=None, scope=None, error_context=""):
         if method == "POST":
-            return 202, {"Location": "https://api.powerbi.com/r/req1"}, {}
+            return 202, {"location": "https://api.powerbi.com/r/req1"}, {}
         gets["n"] += 1
         if gets["n"] == 1:
             return 200, {}, {"status": "Unknown"}  # no endTime -> in progress

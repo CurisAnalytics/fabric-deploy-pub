@@ -372,7 +372,7 @@ def refresh_semantic_model(
         error_context="trigger semantic model refresh",
     )
 
-    location = headers.get("Location") or headers.get("location")
+    location = headers.get("location")
     request_id = headers.get("x-ms-request-id") or headers.get("RequestId")
     if location and location.startswith("/"):
         location = powerbi_url(location)

@@ -52,7 +52,8 @@ def http_request(
 
     Unlike `fabric_api_request`, this exposes the status code and response
     headers — needed to follow long-running operations (202 + `Location` /
-    `Retry-After`). An empty response body parses to `{}`.
+    `Retry-After`). Header names are lower-cased (HTTP header names are
+    case-insensitive). An empty response body parses to `{}`.
 
     Args:
         url: Absolute request URL.
@@ -82,9 +83,9 @@ def http_request(
     try:
         req = urllib.request.Request(url, data=request_data, headers=headers, method=method)
         with urllib.request.urlopen(req) as response:
+            status = response.status
+            resp_headers = {name.lower(): value for name, value in response.headers.items()}
             body = response.read().decode()
-            parsed = json.loads(body) if body.strip() else {}
-            return response.status, dict(response.headers), parsed
     except urllib.error.HTTPError as e:
         error_body = e.read().decode() if e.fp else ""
         raise RuntimeError(
@@ -94,6 +95,15 @@ def http_request(
     except urllib.error.URLError as e:
         raise RuntimeError(
             f"Failed to connect to the API.\n{e.reason}\n\nCheck your network connectivity."
+        ) from e
+
+    if not body.strip():
+        return status, resp_headers, {}
+    try:
+        return status, resp_headers, json.loads(body)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"Failed to {error_context}: the response (HTTP {status}) is not JSON:\n{body[:500]}"
         ) from e
 
 
@@ -139,13 +149,18 @@ def poll_fabric_lro(
     (`Retry-After`), then fetches the operation result. Raises on a Failed /
     Cancelled operation, a 202 with no `Location` to poll, or a timeout.
 
+    Args:
+        headers: The 202 response's headers, as `http_request` returns them.
+        error_context: Operation name for error messages.
+        timeout_s: Give up after this many seconds.
+
     Returns:
         The operation result body (`{}` if the operation has no result).
     """
-    location = headers.get("Location") or headers.get("location")
-    op_id = headers.get("x-ms-operation-id") or headers.get("x-ms-operationid")
+    location = headers.get("location")
+    op_id = headers.get("x-ms-operation-id")
     # Clamp to >= 1: a Retry-After of 0 would never advance `waited` -> spin.
-    retry_after = max(1, int(headers.get("Retry-After") or 5))
+    retry_after = max(1, int(headers.get("retry-after") or 5))
     if not location:
         # 202 with nothing to poll — don't report a no-op as success.
         raise RuntimeError(f"{error_context}: 202 Accepted but no Location header to poll.")
@@ -173,7 +188,7 @@ def poll_fabric_lro(
             return body
         if op_status in ("Failed", "Cancelled"):
             raise RuntimeError(f"{error_context} {op_status}: {body.get('error')}")
-        retry_after = max(1, int(hdrs.get("Retry-After") or retry_after))
+        retry_after = max(1, int(hdrs.get("retry-after") or retry_after))
         if waited >= timeout_s:
             raise RuntimeError(
                 f"{error_context} did not finish within {timeout_s}s (last status: {op_status})."
