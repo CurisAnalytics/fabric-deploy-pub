@@ -46,7 +46,7 @@ All in `src/fabric_deploy/`.
 | `git` | Current branch, the latest pull-request commit, the paths a commit changed. |
 | `log` | Console output (stderr; colour only on a terminal without `NO_COLOR`), fabric-cicd log formatting, error classification and hints. |
 | `scaffold` | The starter `fabdep.yml` (`fabdep init`) and the packaged `fabdep.schema.json` (`fabdep schema`). |
-| `plan` | Read-only dry run (`fabdep plan`). |
+| `plan` | `fabdep plan` and `deploy --dry-run`: runs a dry-run `WorkspaceDeployer` through scope, guard verdicts and parameter rules, lists the target's items to tell creates, updates and orphan unpublishes apart, and renders the result as text or JSON. Read calls only. |
 
 Imports point one way: `cli` → orchestration (`workspace`, `refresh`, `rls`) → `params`,
 `detect`, `scope`, `client` → `transport` → `identity` → `config` → `git`. `log` is used
