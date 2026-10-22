@@ -1,9 +1,12 @@
 """CLI interface for fabric-deploy package."""
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 from textwrap import dedent
+
+from fabric_cicd._common._logging import log_header
 
 from .config import AUTH_MODES, load_tenant_pin
 from .detect import ParameterDetector
@@ -24,7 +27,63 @@ from .log import (
     is_expired_credential_error,
     print_error,
 )
-from .workspace import WorkspaceDeployer, format_deploy_options, log_banner
+from .workspace import PR_HEAD, WorkspaceDeployer
+
+
+def format_deploy_options(
+    branch_override: str | None = None,
+    new_workspace: bool = False,
+    skip_lakehouse: bool = False,
+    no_cleanup: bool = False,
+    item_types: list[str] | None = None,
+    exclude_types: list[str] | None = None,
+    include_items: list[str] | None = None,
+    fail_on_stale: bool = False,
+    allow_rls_change: bool = False,
+    allow_unbound_udf: bool = False,
+    pr: str | None = None,
+) -> str:
+    """One-line record of every non-default deploy option, in CLI-flag form.
+
+    Printed under the version banner so a run's scrollback says which flags
+    were in effect without reconstructing the command line.
+    """
+    opts: list[str] = []
+    if branch_override:
+        opts.append(f"--branch {branch_override}")
+    if new_workspace:
+        opts.append("--new-workspace")
+    if skip_lakehouse:
+        opts.append("--skip-lakehouse")
+    if no_cleanup:
+        opts.append("--no-cleanup")
+    if item_types:
+        opts.append(f"--item-types {' '.join(item_types)}")
+    if exclude_types:
+        opts.append(f"--exclude-types {' '.join(exclude_types)}")
+    if include_items:
+        opts.append(f"--include-items {' '.join(repr(i) for i in include_items)}")
+    if pr:
+        opts.append("--pr" if pr == PR_HEAD else f"--pr {pr}")
+    if fail_on_stale:
+        opts.append("--fail-on-stale")
+    if allow_rls_change:
+        opts.append("--allow-rls-change")
+    if allow_unbound_udf:
+        opts.append("--allow-unbound-udf")
+    return f"Options: {' '.join(opts) if opts else '(defaults)'}"
+
+
+def log_banner(logger: logging.Logger, options_line: str) -> None:
+    """The `fabdep vX` header plus the options line.
+
+    Printed before the deployer is constructed: construction already resolves
+    workspaces and runs detection, whose warnings belong under the header.
+    """
+    from . import __version__
+
+    log_header(logger, f"fabdep v{__version__}")
+    logger.info(options_line)
 
 
 def handle_command_error(error: Exception, context: str) -> None:
@@ -205,7 +264,7 @@ def parse_args() -> argparse.Namespace:
     _ = deploy_parser.add_argument(
         "--pr",
         nargs="?",
-        const="HEAD",
+        const=PR_HEAD,
         metavar="COMMIT",
         help="Deploy only the items the latest pull request touched, instead "
         "of reading the diff by hand. Finds the most recent merge / 'Merged PR "
@@ -449,10 +508,10 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
             allow_rls_change=bool(args.allow_rls_change),
             allow_unbound_udf=bool(args.allow_unbound_udf),
             pr=args.pr,
-            banner=False,
         )
     except Exception as e:
         handle_command_error(e, "Deployment")
+    print()
 
     if getattr(args, "frame", False):
         # Frame the model(s) just deployed. If the run was scoped (-i, or --pr

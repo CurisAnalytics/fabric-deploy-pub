@@ -15,7 +15,6 @@ from fabric_cicd import (
     publish_all_items,
     unpublish_all_orphan_items,
 )
-from fabric_cicd._common._logging import log_header
 
 from .client import (
     create_workspace,
@@ -45,64 +44,6 @@ from .scope import (
 # Sentinel for a bare `--pr`: search back from HEAD for the PR commit, rather
 # than treating a specific commit-ish as the PR.
 PR_HEAD = "HEAD"
-
-
-def format_deploy_options(
-    branch_override: str | None = None,
-    new_workspace: bool = False,
-    skip_lakehouse: bool = False,
-    no_cleanup: bool = False,
-    item_types: list[str] | None = None,
-    exclude_types: list[str] | None = None,
-    include_items: list[str] | None = None,
-    fail_on_stale: bool = False,
-    allow_rls_change: bool = False,
-    allow_unbound_udf: bool = False,
-    pr: str | None = None,
-) -> str:
-    """One-line record of every non-default deploy option, in CLI-flag form.
-
-    Printed under the version banner so a run's scrollback says which flags
-    were in effect without reconstructing the command line.
-    """
-    opts: list[str] = []
-    if branch_override:
-        opts.append(f"--branch {branch_override}")
-    if new_workspace:
-        opts.append("--new-workspace")
-    if skip_lakehouse:
-        opts.append("--skip-lakehouse")
-    if no_cleanup:
-        opts.append("--no-cleanup")
-    if item_types:
-        opts.append(f"--item-types {' '.join(item_types)}")
-    if exclude_types:
-        opts.append(f"--exclude-types {' '.join(exclude_types)}")
-    if include_items:
-        opts.append(f"--include-items {' '.join(repr(i) for i in include_items)}")
-    if pr:
-        opts.append("--pr" if pr == PR_HEAD else f"--pr {pr}")
-    if fail_on_stale:
-        opts.append("--fail-on-stale")
-    if allow_rls_change:
-        opts.append("--allow-rls-change")
-    if allow_unbound_udf:
-        opts.append("--allow-unbound-udf")
-    return f"Options: {' '.join(opts) if opts else '(defaults)'}"
-
-
-def log_banner(logger: logging.Logger, options_line: str) -> None:
-    """The `fabdep vX` header plus the options line.
-
-    Printed before anything else a run logs. The CLI calls it before the
-    deployer is constructed — construction already resolves workspaces and
-    runs detection, whose warnings would otherwise land above the header —
-    and tells `deploy()` not to print it again.
-    """
-    from . import __version__
-
-    log_header(logger, f"fabdep v{__version__}")
-    logger.info(options_line)
 
 
 @dataclass
@@ -149,7 +90,6 @@ class WorkspaceDeployer:
     source_workspace_ids: set[str] = field(init=False, default_factory=set, repr=False)
     source_workspaces: dict[str, str] = field(init=False, default_factory=dict, repr=False)
     source_lakehouse_ids: dict[str, str] = field(init=False, default_factory=dict, repr=False)
-    repo_item_types: set[str] = field(init=False, repr=False)  # Item types present in repo
 
     _repo_dir_resolved: Path = field(init=False, repr=False)
     config: FabdepConfig = field(init=False, repr=False)
@@ -188,7 +128,6 @@ class WorkspaceDeployer:
         self._resolve_workspace_id()
         self._resolve_source_anchors()
         self._detect_parameters()
-        self.repo_item_types = repo_item_types(self._repo_dir_resolved)
 
     def _apply_tenant_pin(self) -> None:
         """Adopt fabdep.yml's identity keys before any Fabric API call."""
@@ -206,10 +145,7 @@ class WorkspaceDeployer:
         if self.new_workspace:
             capacity_id = self.config.capacity_id
             if not capacity_id:
-                print()
-                self.logger.info("No capacity_id specified, using default capacity")
                 capacity_id = get_default_capacity_id()
-                self.logger.info(f"Using capacity: {capacity_id}")
             self._create_workspace_if_needed(capacity_id)
 
         try:
@@ -501,7 +437,6 @@ class WorkspaceDeployer:
         allow_rls_change: bool = False,
         allow_unbound_udf: bool = False,
         pr: str | None = None,
-        banner: bool = True,
     ) -> None:
         """
         Deploy Fabric workspace items.
@@ -528,32 +463,12 @@ class WorkspaceDeployer:
                 PR_HEAD ("HEAD") searches back from HEAD for the PR commit; any
                 other value is used as the commit-ish directly. Resolves into
                 `include_items`, so it cannot be combined with it.
-            banner: Print the `fabdep vX` header and options line first. The
-                CLI prints them itself before constructing the deployer and
-                passes False.
 
         Raises:
             RuntimeError: If `pr` is combined with `include_items`, no PR commit
                 is found, or the PR touched no deployable item.
         """
 
-        if banner:
-            log_banner(
-                self.logger,
-                format_deploy_options(
-                    branch_override=self.branch_override,
-                    new_workspace=self.new_workspace,
-                    skip_lakehouse=self.skip_lakehouse,
-                    no_cleanup=no_cleanup,
-                    item_types=item_types,
-                    exclude_types=exclude_types,
-                    include_items=include_items,
-                    fail_on_stale=fail_on_stale,
-                    allow_rls_change=allow_rls_change,
-                    allow_unbound_udf=allow_unbound_udf,
-                    pr=pr,
-                ),
-            )
         for ws_id, name in sorted(self.source_workspaces.items(), key=lambda kv: kv[1]):
             self.logger.info(f"Source Workspace: {name} ({ws_id})")
         self.logger.info(f"Target Workspace: '{self.workspace_name}' ({self.workspace_id})")
@@ -617,7 +532,9 @@ class WorkspaceDeployer:
             self.logger.info(line)
 
         if item_type_in_scope:
-            types_to_deploy = sorted(set(item_type_in_scope) & self.repo_item_types)
+            types_to_deploy = sorted(
+                set(item_type_in_scope) & repo_item_types(self._repo_dir_resolved)
+            )
             if types_to_deploy:
                 self.logger.info(f"Item types in scope: {', '.join(types_to_deploy)}")
             else:
@@ -649,7 +566,6 @@ class WorkspaceDeployer:
             self.logger.info("Deployment complete!")
         finally:
             self._paramfile.cleanup()
-            print()
 
     def _deploy_items(
         self,

@@ -264,11 +264,3 @@ class TestItemsFromPr:
 def test_pr_and_include_items_conflict(deployer):
     with pytest.raises(RuntimeError, match="--pr and --include-items"):
         deployer.deploy(pr="HEAD", include_items=["Load GL.Notebook"])
-
-
-def test_pr_appears_in_the_options_line():
-    from fabric_deploy.workspace import format_deploy_options
-
-    assert "--pr" in format_deploy_options(pr="HEAD")
-    assert format_deploy_options(pr="HEAD") == "Options: --pr"
-    assert format_deploy_options(pr="abc1234") == "Options: --pr abc1234"

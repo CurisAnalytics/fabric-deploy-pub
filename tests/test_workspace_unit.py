@@ -19,48 +19,11 @@ from azure.core.credentials import TokenCredential
 
 from fabric_deploy.params import ParameterFile
 from fabric_deploy.scope import _repo_items, validate_include_items
-from fabric_deploy.workspace import WorkspaceDeployer, format_deploy_options
+from fabric_deploy.workspace import WorkspaceDeployer
 
 from .conftest import SAMPLE_DEV_WORKSPACE_ID, SAMPLE_LAKEHOUSE_ID
 
 FAKE_WORKSPACE_ID = "00000000-0000-0000-0000-000000000001"
-
-
-class TestFormatDeployOptions:
-    def test_defaults(self):
-        assert format_deploy_options() == "Options: (defaults)"
-
-    def test_scoped_cross_branch_deploy(self):
-        """The Woodgrove-style invocation: fabdep -t SemanticModel -b prod."""
-        line = format_deploy_options(branch_override="prod", item_types=["SemanticModel"])
-        assert line == "Options: --branch prod --item-types SemanticModel"
-
-    def test_all_flags(self):
-        line = format_deploy_options(
-            branch_override="prod",
-            new_workspace=True,
-            skip_lakehouse=True,
-            no_cleanup=True,
-            item_types=["Notebook", "DataPipeline"],
-            exclude_types=["Report"],
-            include_items=["My Model.SemanticModel"],
-            fail_on_stale=True,
-            allow_rls_change=True,
-            allow_unbound_udf=True,
-        )
-        for needle in (
-            "--branch prod",
-            "--new-workspace",
-            "--skip-lakehouse",
-            "--no-cleanup",
-            "--item-types Notebook DataPipeline",
-            "--exclude-types Report",
-            "--include-items 'My Model.SemanticModel'",
-            "--fail-on-stale",
-            "--allow-rls-change",
-            "--allow-unbound-udf",
-        ):
-            assert needle in line
 
 
 @pytest.fixture
@@ -632,7 +595,7 @@ class TestSkipLakehouseWithAutoBinding:
 
 
 class TestRunSummaryLines:
-    def test_deploy_without_banner_still_names_source_and_target(self, deployer, caplog):
+    def test_deploy_names_source_and_target_without_a_banner(self, deployer, caplog):
         deployer.source_workspaces = {"00000000-0000-0000-0000-00000000000d": "Fabdep Test [DEV]"}
         with (
             patch("fabric_deploy.workspace.FabricWorkspace"),
@@ -641,7 +604,7 @@ class TestRunSummaryLines:
             patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
             caplog.at_level("INFO"),
         ):
-            deployer.deploy(item_types=["Notebook"], banner=False)
+            deployer.deploy(item_types=["Notebook"])
 
         messages = [r.message for r in caplog.records]
         assert not any("fabdep v" in m for m in messages)
@@ -652,14 +615,3 @@ class TestRunSummaryLines:
         assert not any(
             m.startswith("Workspace Name") or m.startswith("Parameter file") for m in messages
         )
-
-    def test_banner_names_fabdep(self, caplog):
-        import logging
-
-        from fabric_deploy import __version__
-        from fabric_deploy.workspace import log_banner
-
-        with caplog.at_level("INFO"):
-            log_banner(logging.getLogger("fabric_deploy.test"), "Options: (defaults)")
-        assert any(f"fabdep v{__version__}" in r.message for r in caplog.records)
-        assert caplog.records[-1].message == "Options: (defaults)"

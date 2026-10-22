@@ -1,5 +1,6 @@
 """CLI tests against the sample workspace fixture."""
 
+import logging
 import os
 import shutil
 import subprocess
@@ -8,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from fabric_deploy.cli import format_deploy_options, log_banner
+from fabric_deploy.scope import repo_item_types
 from fabric_deploy.workspace import WorkspaceDeployer
 
 from .conftest import SAMPLE_DEV_WORKSPACE_ID, SAMPLE_LAKEHOUSE_ID
@@ -46,7 +49,7 @@ class TestCLI:
             print("\nWorkspace object created successfully")
 
             # Deploy each item type separately
-            for item_type in deployer.repo_item_types:
+            for item_type in repo_item_types(test_workspace_dir):
                 print(f"Deploying items of type: {item_type}")
                 deployer.deploy(item_types=[item_type])
         finally:
@@ -125,3 +128,51 @@ class TestDetectSourceWorkspaceFlag:
         )
         assert result.returncode == 0, result.stderr
         assert "Source workspace anchor" in result.stdout + result.stderr
+
+
+class TestBanner:
+    def test_defaults(self):
+        assert format_deploy_options() == "Options: (defaults)"
+
+    def test_scoped_cross_branch_deploy(self):
+        line = format_deploy_options(branch_override="prod", item_types=["SemanticModel"])
+        assert line == "Options: --branch prod --item-types SemanticModel"
+
+    def test_all_flags(self):
+        line = format_deploy_options(
+            branch_override="prod",
+            new_workspace=True,
+            skip_lakehouse=True,
+            no_cleanup=True,
+            item_types=["Notebook", "DataPipeline"],
+            exclude_types=["Report"],
+            include_items=["My Model.SemanticModel"],
+            fail_on_stale=True,
+            allow_rls_change=True,
+            allow_unbound_udf=True,
+        )
+        for needle in (
+            "--branch prod",
+            "--new-workspace",
+            "--skip-lakehouse",
+            "--no-cleanup",
+            "--item-types Notebook DataPipeline",
+            "--exclude-types Report",
+            "--include-items 'My Model.SemanticModel'",
+            "--fail-on-stale",
+            "--allow-rls-change",
+            "--allow-unbound-udf",
+        ):
+            assert needle in line
+
+    def test_pr(self):
+        assert format_deploy_options(pr="HEAD") == "Options: --pr"
+        assert format_deploy_options(pr="abc1234") == "Options: --pr abc1234"
+
+    def test_banner_names_fabdep(self, caplog):
+        from fabric_deploy import __version__
+
+        with caplog.at_level("INFO"):
+            log_banner(logging.getLogger("fabric_deploy.test"), "Options: (defaults)")
+        assert any(f"fabdep v{__version__}" in r.message for r in caplog.records)
+        assert caplog.records[-1].message == "Options: (defaults)"
