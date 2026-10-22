@@ -201,3 +201,60 @@ class TestHelp:
         args = _parse(monkeypatch, *command, "-b", "prod", "-i", "M.SemanticModel", "--auth", "env")
         assert (args.branch, args.include_items, args.auth) == ("prod", ["M.SemanticModel"], "env")
         assert args.directory == Path(".")
+
+
+def _run(monkeypatch, *argv: str) -> None:
+    from fabric_deploy.cli import main
+
+    monkeypatch.setattr(sys, "argv", ["fabdep", *argv])
+    main()
+
+
+class TestFrameScope:
+    """`deploy --frame` refreshes only the semantic models the deploy published."""
+
+    @pytest.fixture
+    def framed(self, monkeypatch) -> list[list[str] | None]:
+        calls: list[list[str] | None] = []
+
+        class FakeDeployer:
+            def __init__(self, **_: object) -> None:
+                self.deployed_items: list[str] = []
+
+            def deploy(self, include_items=None, pr=None, **_: object) -> None:
+                pr_items = ["Sales.SemanticModel", "Load.Notebook"] if pr else []
+                self.deployed_items = list(include_items or pr_items)
+
+        def frame_models(**kwargs: object) -> list[dict]:
+            calls.append(kwargs["models"])  # type: ignore[arg-type]
+            return []
+
+        monkeypatch.setattr("fabric_deploy.cli.WorkspaceDeployer", FakeDeployer)
+        monkeypatch.setattr("fabric_deploy.cli.frame_models", frame_models)
+        return calls
+
+    @pytest.mark.parametrize(
+        ("argv", "expected"),
+        [
+            ([], [None]),  # whole repo: every model
+            (["-i", "Sales.SemanticModel", "Load.Notebook"], [["Sales"]]),
+            (["--pr"], [["Sales"]]),
+            (["-t", "semanticmodel"], [None]),
+            (["-i", "Load.Notebook"], []),
+            (["-t", "Notebook"], []),
+            (["-x", "SemanticModel"], []),
+            (["-t", "Notebook", "-i", "Sales.SemanticModel"], []),
+        ],
+    )
+    def test_frames_what_the_deploy_published(self, monkeypatch, framed, argv, expected):
+        _run(monkeypatch, "deploy", "--frame", *argv)
+        assert framed == expected
+
+    def test_says_why_nothing_was_framed(self, monkeypatch, framed, caplog):
+        with caplog.at_level("INFO"):
+            _run(monkeypatch, "deploy", "--frame", "-i", "Load.Notebook")
+        assert "no semantic model" in caplog.text
+
+    def test_no_frame_without_the_flag(self, monkeypatch, framed):
+        _run(monkeypatch, "deploy")
+        assert framed == []

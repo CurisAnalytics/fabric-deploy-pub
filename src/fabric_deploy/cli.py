@@ -27,6 +27,7 @@ from .log import (
     is_expired_credential_error,
     print_error,
 )
+from .refresh import frame_models
 from .workspace import PR_HEAD, WorkspaceDeployer
 
 _TOP_LEVEL_FLAGS = ("-h", "--help", "-V", "--version")
@@ -290,8 +291,8 @@ def parse_args() -> argparse.Namespace:
     _ = deploy.add_argument(
         "--frame",
         action="store_true",
-        help="After deploy, frame the Direct Lake model(s): sync SQL endpoint "
-        "-> refresh -> poll -> surface the first framing error",
+        help="After deploying, refresh the semantic models the deploy published, first "
+        "syncing the SQL analytics endpoints their Direct Lake tables read",
     )
     _ = deploy.add_argument(
         "--allow-rls-change",
@@ -461,31 +462,39 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
         handle_command_error(e, "Deployment")
     print()
 
-    if getattr(args, "frame", False):
-        # Frame the model(s) just deployed. If the run was scoped (-i, or --pr
-        # resolving to an item list), frame those SemanticModels; otherwise
-        # frame every model in the repo.
-        models = None
-        scoped = args.include_items or deployer.deployed_items  # pyright: ignore[reportPossiblyUnboundVariable]
-        if scoped:
-            sm = [it.rsplit(".", 1)[0] for it in scoped if it.endswith(".SemanticModel")]
-            models = sm or None
-        try:
-            from .refresh import frame_models
-
-            frame_models(
-                repo_dir=args.directory,
-                branch_override=args.branch,
-                models=models,
+    if args.frame:
+        models = _published_models(args, deployer.deployed_items)  # pyright: ignore[reportPossiblyUnboundVariable]
+        if models == []:
+            get_logger("fabric_deploy.cli").info(
+                "--frame: the deploy published no semantic model, so there is nothing to frame."
             )
+            return
+        try:
+            _ = frame_models(repo_dir=args.directory, branch_override=args.branch, models=models)
         except Exception as e:
             handle_command_error(e, "Framing")
 
 
+def _published_models(args: argparse.Namespace, deployed_items: list[str]) -> list[str] | None:
+    """Display names of the semantic models a deploy published; None means all the repo's.
+
+    Mirrors the deploy's scope: the -t/-x type filter (case-insensitive, as the
+    deploy applies it), then the item list that -i or --pr resolved to.
+    """
+    if args.item_types:  # -t wins over -x, as in the deploy
+        in_scope = "semanticmodel" in {t.lower() for t in args.item_types}
+    else:
+        in_scope = "semanticmodel" not in {t.lower() for t in args.exclude_types or ()}
+    if not in_scope:
+        return []
+    if not deployed_items:
+        return None
+    suffix = ".SemanticModel"
+    return [item.removesuffix(suffix) for item in deployed_items if item.endswith(suffix)]
+
+
 def handle_refresh_command(args: argparse.Namespace) -> None:
     """Handle refresh subcommand execution (Direct Lake framing)."""
-    from .refresh import frame_models
-
     try:
         frame_models(
             repo_dir=args.directory,
