@@ -5,7 +5,6 @@
 # pyright: reportUnknownVariableType=false
 
 import logging
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -18,6 +17,7 @@ from fabric_cicd import (
 
 from .client import (
     create_workspace,
+    find_workspace_id_by_name,
     get_default_capacity_id,
     get_workspace_id_by_name,
     list_workspace_items,
@@ -56,8 +56,9 @@ class WorkspaceDeployer:
             repo_dir: Path to the repository directory containing Fabric workspace items
             logger_name: Optional custom logger name (defaults to module name)
             branch_override: Override git branch for workspace name resolution (defaults to current branch)
-            new_workspace: Create workspace if it doesn't exist
+            new_workspace: Create the target workspace; fails if it already exists
             skip_lakehouse: Skip lakehouse parameter replacement (for feature branches sharing dev lakehouse)
+            environment: fabric-cicd environment name (defaults to fabdep.yml's, else the branch)
 
     IMPORTANT: Initialization has side effects!
     - Reads fabdep.yml from disk
@@ -72,17 +73,15 @@ class WorkspaceDeployer:
     repo_dir: Path | str
     logger_name: str | None = None
     branch_override: str | None = None  # Override git branch for workspace resolution
-    new_workspace: bool = False  # Create workspace if it doesn't exist
+    new_workspace: bool = False  # Create the workspace; refuse an existing one
     skip_lakehouse: bool = False  # Skip its parameter replacement (feature branch mode)
     # fabric-cicd environment: selects environment-keyed replace_values and the
-    # Variable Library value set. Empty means the target branch name.
+    # Variable Library value set. Empty means fabdep.yml's choice for the branch.
     environment: str = ""
 
     # Configuration fields - auto-loaded in __post_init__
     workspace_id: str = field(init=False, repr=False)
-    workspace_name: str = field(
-        init=False, repr=False
-    )  # Resolved workspace name (base_name [branch])
+    workspace_name: str = field(init=False, repr=False)  # the target's display name
     # This repo's workspaces (target + siblings) and the lakehouses of the
     # siblings the content references, by item id — the detector's anchors
     # (see _resolve_source_anchors). `source_workspaces` is the referenced
@@ -123,7 +122,7 @@ class WorkspaceDeployer:
             self._repo_dir_resolved, branch_override=self.branch_override
         )
         self.workspace_name = self.config.workspace_name
-        self.environment = self.environment or self.config.branch
+        self.environment = self.environment or self.config.environment
         self._apply_tenant_pin()
         self._resolve_workspace_id()
         self._resolve_source_anchors()
@@ -134,31 +133,28 @@ class WorkspaceDeployer:
         apply_tenant_pin(self.config.tenant, self.logger)
 
     def _resolve_workspace_id(self) -> None:
-        """Look up (or, with `new_workspace=True`, first create) the target workspace."""
-        if self.new_workspace:
-            self._create_workspace_if_needed(self.config.capacity_id or get_default_capacity_id())
-        self.workspace_id = get_workspace_id_by_name(self.workspace_name)
+        """Look up the target workspace, creating it first with `new_workspace`
+        or, when fabdep.yml sets `create: true` for the branch, if it is missing."""
+        if self.new_workspace or (
+            self.config.create_workspace and find_workspace_id_by_name(self.workspace_name) is None
+        ):
+            self.workspace_id = self._create_workspace()
+        else:
+            self.workspace_id = get_workspace_id_by_name(self.workspace_name)
 
-    def _create_workspace_if_needed(self, capacity_id: str) -> None:
-        """
-        Create workspace if it doesn't exist.
-
-        Args:
-            capacity_id: Fabric capacity ID for workspace creation
+    def _create_workspace(self) -> str:
+        """Create the target workspace on fabdep.yml's capacity, else the only active one.
 
         Raises:
-            ValueError: If workspace already exists (prevents accidental overwrites)
+            ValueError: If it already exists: `new_workspace` never reuses one.
         """
-        # Try to create workspace (will raise ValueError if already exists)
+        capacity_id = self.config.capacity_id or get_default_capacity_id()
         self.logger.info(f"Creating workspace: {self.workspace_name}")
         try:
             workspace_id = create_workspace(
-                workspace_name=self.workspace_name,
-                capacity_id=capacity_id,
+                workspace_name=self.workspace_name, capacity_id=capacity_id
             )
-            self.logger.info(f"✓ Workspace created: {workspace_id}")
         except ValueError as e:
-            # Refuse `-N` against existing workspaces — protects against silent reuse.
             if "already exists" in str(e):
                 raise ValueError(
                     f"Workspace '{self.workspace_name}' already exists.\n\n"
@@ -166,31 +162,23 @@ class WorkspaceDeployer:
                     "To deploy to an existing workspace, remove the -N flag."
                 ) from None
             raise
-        except Exception as e:
-            self.logger.error(f"Failed to create workspace: {e}")
-            raise
-
-    # One of this repo's workspaces: `{base} [{branch}]`.
-    @staticmethod
-    def _sibling_pattern(base_name: str) -> re.Pattern[str]:
-        return re.compile(rf"^{re.escape(base_name)} \[[^\]]+\]$", re.IGNORECASE)
+        self.logger.info(f"✓ Workspace created: {workspace_id}")
+        return workspace_id
 
     def _resolve_source_anchors(self) -> None:
         """Anchor the ids of this repo's other workspaces as environment ids.
 
-        fabdep's model is `{base} [{branch}]`: every workspace with this repo's
-        base name is one of its environments, and content exported from any of
-        them carries that environment's ids. A deploy rewrites those to the
-        target's; a workspace id outside this family belongs to another repo
-        and deploys verbatim. Legacy notebook metadata let detection
-        recover the source workspace from content alone; Fabric's lakehouse
-        auto-binding in git replaces it with the null UUID, so the family is
-        resolved here from the workspace list instead — whatever branch is
-        checked out (a `prod` checkout after a dev→prod merge still carries
-        DEV's ids). The lakehouses of each sibling the content references are
-        listed too, so their physical ids map where notebook code still
-        carries them (abfss literals). A lookup that fails is a warning, not
-        an error: detection falls back to whatever anchors the content has.
+        Every workspace this fabdep.yml deploys to (see
+        `FabdepConfig.is_repo_workspace`) is one of the repo's environments, and
+        content exported from any of them carries that environment's ids. A
+        deploy rewrites those to the target's; any other workspace id deploys
+        unchanged. Fabric's lakehouse auto-binding writes the null UUID where
+        notebook metadata once named the source workspace, so the set comes from
+        the workspace list rather than the content, whatever branch is checked
+        out (a `main` checkout after a dev-to-main merge still carries the dev
+        workspace's ids). The lakehouses of each sibling the content references
+        are listed too, so their ids map where notebook code still carries them
+        (abfss paths). A failed lookup is a warning, not an error.
         """
         self.source_workspace_ids = {self.workspace_id}
         self.source_workspaces = {}
@@ -199,19 +187,18 @@ class WorkspaceDeployer:
             workspaces = list_workspaces()
         except Exception as e:
             self.logger.warning(
-                f"Could not list workspaces to anchor this repo's environments "
-                f"({e}); workspaceIds that no notebook, model or report anchors "
-                f"deploy verbatim."
+                f"Could not list workspaces ({e}), so ids from this repo's other "
+                f"workspaces are replaced only where item metadata names their "
+                f"workspace; other workspace ids deploy unchanged."
             )
             return
 
-        is_sibling = self._sibling_pattern(self.config.workspace_base_name).match
         siblings = {
             ws["id"]: ws["displayName"]
             for ws in workspaces
             if ws.get("id")
             and ws["id"] != self.workspace_id
-            and is_sibling(ws.get("displayName") or "")
+            and self.config.is_repo_workspace(ws.get("displayName") or "")
         }
         if not siblings:
             return
@@ -570,4 +557,4 @@ class WorkspaceDeployer:
         # include_items + unpublish is a footgun: if names don't match, nothing
         # publishes and orphan cleanup would wipe the workspace.
         if not no_cleanup and not include_items:
-            unpublish_all_orphan_items(target_workspace)
+            _ = unpublish_all_orphan_items(target_workspace)

@@ -277,7 +277,8 @@ def parse_args() -> argparse.Namespace:
         "--new-workspace",
         "-N",
         action="store_true",
-        help="Create workspace if it doesn't exist",
+        help="Create the target workspace; fails if it already exists (to create it only "
+        "when missing, set 'create: true' for the branch under 'environments:' in fabdep.yml)",
     )
     _ = deploy_parser.add_argument(
         "--skip-lakehouse",

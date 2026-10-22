@@ -539,11 +539,27 @@ class TestSiblingWorkspaceAnchors:
 
         assert QA_WORKSPACE_ID in d.source_workspace_ids
 
+    def test_environments_map_names_the_siblings(self, monkeypatch, sample_ws):
+        (sample_ws / "fabdep.yml").write_text(
+            'workspace_base_name: "Fabdep Test"\n'
+            "environments:\n  MAIN:\n  dev:\n    workspace: Fabdep Dev\n"
+        )
+        d, _, _ = _anchored_deployer(
+            monkeypatch,
+            sample_ws,
+            workspaces=[
+                {"id": DEV_WORKSPACE_ID, "displayName": "Fabdep Dev"},
+                {"id": QA_WORKSPACE_ID, "displayName": "Fabdep Test [QA]"},
+            ],
+        )
+
+        assert d.source_workspace_ids == {FAKE_WORKSPACE_ID, DEV_WORKSPACE_ID}
+
     def test_listing_failure_warns_and_keeps_target_anchor(self, monkeypatch, sample_ws, caplog):
         d, _, _ = _anchored_deployer(monkeypatch, sample_ws, workspaces=[], list_error="403")
 
         assert d.source_workspace_ids == {FAKE_WORKSPACE_ID}
-        assert "anchor" in caplog.text
+        assert "Could not list workspaces (403)" in caplog.text
 
     def test_lakehouse_listing_failure_warns_and_continues(self, monkeypatch, sample_ws, caplog):
         list_ws = MagicMock(
