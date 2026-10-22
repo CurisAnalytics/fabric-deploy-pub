@@ -86,18 +86,19 @@ class WorkspaceDeployer:
             new_workspace: Create the target workspace; fails if it already exists
             skip_lakehouse: Skip lakehouse parameter replacement (for feature branches sharing dev lakehouse)
             environment: fabric-cicd environment name (defaults to fabdep.yml's, else the branch)
-            dry_run: Make read calls only, for `fabdep plan`: work out whether the
-                deploy would create the workspace instead of creating it
+            dry_run: Make read calls only, for `fabdep plan`: such a deployer
+                can't deploy
 
     IMPORTANT: Initialization has side effects!
     - Reads fabdep.yml from disk
-    - Makes network calls to Fabric API (workspace ID resolution or creation,
-      the repo's sibling workspaces, and the lakehouses of those the content
-      references)
+    - Makes read calls to the Fabric API (the target workspace, the repo's
+      sibling workspaces, and the lakehouses of those the content references)
     - Scans workspace files to detect source IDs (stored, not written to disk)
 
-    The parameter file is written to a temporary directory during deploy(),
-    never into the repo.
+    A workspace to create (`new_workspace`, or `create: true`) is created by
+    deploy(), once the deploy's options and guards have passed. The parameter
+    file is written to a temporary directory during deploy(), never into the
+    repo.
     """
 
     repo_dir: Path | str
@@ -111,7 +112,7 @@ class WorkspaceDeployer:
     dry_run: bool = False  # Read calls only (fabdep plan); such a deployer can't deploy
 
     # Configuration fields - auto-loaded in __post_init__
-    # Empty in a dry run whose deploy would create the workspace.
+    # Empty until deploy() creates the workspace, when it is to be created.
     workspace_id: str = field(init=False, repr=False)
     workspace_name: str = field(init=False, repr=False)  # the target's display name
     creates_workspace: bool = field(init=False, default=False, repr=False)
@@ -144,9 +145,9 @@ class WorkspaceDeployer:
         1. Resolves repository directory path
         2. Initializes logger
         3. Reads fabdep.yml from disk
-        4. Makes network calls to the Fabric REST API: the target workspace ID
-           (creating the workspace when asked to), the repo's sibling
-           workspaces, and lakehouses of referenced siblings
+        4. Makes read calls to the Fabric REST API: the target workspace ID
+           (whether to create it), the repo's sibling workspaces, and
+           lakehouses of referenced siblings
         5. Scans workspace files to detect source IDs (stored in memory, not written to disk)
 
         Parameter file writing is deferred to deploy() when the item scope is known.
@@ -167,34 +168,34 @@ class WorkspaceDeployer:
         self._detect_parameters()
 
     def _resolve_workspace_id(self) -> None:
-        """Look up the target workspace, creating it first with `new_workspace`
-        or, when fabdep.yml sets `create: true` for the branch, if it is missing.
-
-        A dry run only works out whether the deploy would create it, and leaves
-        `workspace_id` empty if so.
+        """Look up the target workspace, or work out that the deploy creates it:
+        with `new_workspace`, or when fabdep.yml sets `create: true` for the
+        branch and it is missing. A workspace to create keeps an empty
+        `workspace_id` until deploy() creates it.
 
         Raises:
             ValueError: With `new_workspace`, if it already exists.
         """
-        self.creates_workspace = self.new_workspace or (
-            self.config.create_workspace and find_workspace_id_by_name(self.workspace_name) is None
+        existing = None
+        if self.new_workspace or self.config.create_workspace:
+            existing = find_workspace_id_by_name(self.workspace_name)
+            if existing is not None and self.new_workspace:
+                raise ValueError(self._exists_message())
+        self.creates_workspace = existing is None and (
+            self.new_workspace or self.config.create_workspace
         )
         if not self.creates_workspace:
-            self.workspace_id = get_workspace_id_by_name(self.workspace_name)
+            self.workspace_id = existing or get_workspace_id_by_name(self.workspace_name)
             return
         self.capacity_id = self.config.capacity_id or get_default_capacity_id()
-        if not self.dry_run:
-            self.workspace_id = self._create_workspace()
-        elif self.new_workspace and find_workspace_id_by_name(self.workspace_name) is not None:
-            raise ValueError(self._exists_message())
-        else:
-            self.workspace_id = ""
+        self.workspace_id = ""
 
     def _create_workspace(self) -> str:
         """Create the target workspace on fabdep.yml's capacity, else the only active one.
 
         Raises:
-            ValueError: If it already exists: `new_workspace` never reuses one.
+            ValueError: If it exists by now: `new_workspace` never reuses one,
+                and with `create: true` the checks ran against no workspace.
         """
         self.logger.info(f"Creating workspace: {self.workspace_name}")
         try:
@@ -202,9 +203,15 @@ class WorkspaceDeployer:
                 workspace_name=self.workspace_name, capacity_id=self.capacity_id
             )
         except ValueError as e:
-            if "already exists" in str(e):
+            if "already exists" not in str(e):
+                raise
+            if self.new_workspace:
                 raise ValueError(self._exists_message()) from None
-            raise
+            raise ValueError(
+                f"Workspace '{self.workspace_name}' was created by someone else while this "
+                "deploy ran (fabdep.yml has create: true for the branch, and it was missing "
+                "when the deploy started). Run the deploy again to deploy to it."
+            ) from None
         self.logger.info(f"✓ Workspace created: {workspace_id}")
         return workspace_id
 
@@ -561,13 +568,19 @@ class WorkspaceDeployer:
         Raises:
             RuntimeError: If the scope can't be resolved (see `resolve_scope`)
                 or a guard blocks the deploy.
+            ValueError: If the repo's parameter file is invalid, or a
+                workspace to create exists by now. None of these failures
+                leaves a workspace created or anything published.
         """
         if self.dry_run:
             raise RuntimeError("This deployer is for a dry run: it can't deploy.")
 
         for ws_id, name in sorted(self.source_workspaces.items(), key=lambda kv: kv[1]):
             self.logger.info(f"Source Workspace: {name} ({ws_id})")
-        self.logger.info(f"Target Workspace: '{self.workspace_name}' ({self.workspace_id})")
+        self.logger.info(
+            f"Target Workspace: '{self.workspace_name}' "
+            + (f"({self.workspace_id})" if self.workspace_id else "(to be created)")
+        )
 
         scope = self.resolve_scope(
             no_cleanup=no_cleanup,
@@ -596,6 +609,9 @@ class WorkspaceDeployer:
                     self._manual_count,
                     self._skipped_lakehouse_count,
                 )
+            # Only now: the options, the guards and the parameter files all passed.
+            if self.creates_workspace and not self.workspace_id:
+                self.workspace_id = self._create_workspace()
 
             for line in self._paramfile.summary:
                 self.logger.info(line)

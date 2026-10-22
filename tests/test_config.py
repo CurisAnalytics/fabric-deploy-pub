@@ -212,8 +212,17 @@ class TestTargetWorkspace:
         ],
     )
     def test_resolves_or_creates_the_workspace(
-        self, tmp_path: Path, mock_fabric_api, body, branch, new_workspace, exists, created_on
+        self,
+        tmp_path: Path,
+        mock_fabric_api,
+        fabric_cicd,
+        body,
+        branch,
+        new_workspace,
+        exists,
+        created_on,
     ):
+        """A workspace to create is created by the deploy, not by building the deployer."""
         (tmp_path / "fabdep.yml").write_text(body)
         config = FabdepConfig.from_path(tmp_path, branch_override=branch)
         create = MagicMock(return_value=self.CREATED)
@@ -223,6 +232,8 @@ class TestTargetWorkspace:
             patch("fabric_deploy.workspace.find_workspace_id_by_name", find),
         ):
             d = WorkspaceDeployer(tmp_path, branch_override=branch, new_workspace=new_workspace)
+            create.assert_not_called()
+            d.deploy()
 
         if created_on is None:
             create.assert_not_called()
@@ -233,6 +244,53 @@ class TestTargetWorkspace:
                 workspace_name=config.workspace_name, capacity_id=capacity
             )
             assert d.workspace_id == self.CREATED
+            assert fabric_cicd.workspace.call_args.kwargs["workspace_id"] == self.CREATED
+
+    @pytest.mark.parametrize(
+        ("new_workspace", "options", "error"),
+        [
+            pytest.param(True, {"item_types": ["Notebok"]}, "Notebok", id="-N-unknown-type"),
+            pytest.param(True, {"pr": "HEAD"}, "no pull-request commit", id="-N-no-pr-commit"),
+            pytest.param(
+                False, {"include_items": ["Nope.Notebook"]}, "Nope", id="create-unknown-item"
+            ),
+            pytest.param(
+                True,
+                {"parameter.yml": "find_replace: x\n"},
+                "parameter.yml",
+                id="-N-bad-parameter-file",
+            ),
+        ],
+    )
+    def test_nothing_is_created_when_the_deploy_options_fail(
+        self,
+        tmp_path: Path,
+        mock_fabric_api,
+        fabric_cicd,
+        monkeypatch,
+        new_workspace,
+        options,
+        error,
+    ):
+        (tmp_path / "fabdep.yml").write_text(MAP)
+        if user_file := options.pop("parameter.yml", None):
+            (tmp_path / "parameter.yml").write_text(user_file)
+        monkeypatch.setattr("fabric_deploy.workspace.latest_pr_commit", lambda _d: None)
+        create = MagicMock(return_value=self.CREATED)
+        with (
+            patch("fabric_deploy.workspace.create_workspace", create),
+            patch(
+                "fabric_deploy.workspace.find_workspace_id_by_name", MagicMock(return_value=None)
+            ),
+        ):
+            d = WorkspaceDeployer(
+                tmp_path, branch_override="feature/x", new_workspace=new_workspace
+            )
+            with pytest.raises((ValueError, RuntimeError), match=error):
+                d.deploy(**options)
+
+        create.assert_not_called()
+        fabric_cicd.workspace.assert_not_called()
 
     def test_unknown_workspace_fails(self, tmp_path: Path, mock_fabric_api, monkeypatch):
         (tmp_path / "fabdep.yml").write_text(BASE)
@@ -246,12 +304,36 @@ class TestTargetWorkspace:
 
     def test_new_workspace_refuses_an_existing_one(self, tmp_path: Path, mock_fabric_api):
         (tmp_path / "fabdep.yml").write_text(BASE)
-        exists = MagicMock(side_effect=ValueError("Workspace already exists: 'Base [DEV]'"))
         with (
-            patch("fabric_deploy.workspace.create_workspace", exists),
+            patch("fabric_deploy.workspace.find_workspace_id_by_name", MagicMock(return_value="x")),
             pytest.raises(ValueError, match="remove the -N flag"),
         ):
             WorkspaceDeployer(tmp_path, branch_override="dev", new_workspace=True)
+
+    @pytest.mark.parametrize(
+        ("body", "branch", "new_workspace", "message"),
+        [
+            pytest.param(BASE, "dev", True, "remove the -N flag", id="-N"),
+            pytest.param(MAP, "feature/x", False, "create: true", id="create-entry"),
+        ],
+    )
+    def test_workspace_that_appears_before_the_create(
+        self, tmp_path: Path, mock_fabric_api, fabric_cicd, body, branch, new_workspace, message
+    ):
+        """Someone else created it after the deployer looked: only -N is to blame for -N."""
+        (tmp_path / "fabdep.yml").write_text(body)
+        exists = MagicMock(side_effect=ValueError("Workspace already exists: 'x'"))
+        with (
+            patch("fabric_deploy.workspace.create_workspace", exists),
+            patch(
+                "fabric_deploy.workspace.find_workspace_id_by_name", MagicMock(return_value=None)
+            ),
+        ):
+            d = WorkspaceDeployer(tmp_path, branch_override=branch, new_workspace=new_workspace)
+            with pytest.raises(ValueError, match=message) as raised:
+                d.deploy()
+        assert ("-N" in str(raised.value)) == new_workspace
+        fabric_cicd.workspace.assert_not_called()
 
 
 def test_environment_reaches_the_deployer(tmp_path: Path, mock_fabric_api):
