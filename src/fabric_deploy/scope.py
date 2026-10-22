@@ -24,7 +24,7 @@ __all__ = [
 def _platform_meta(platform_file: Path) -> tuple[str, str] | None:
     """Return (displayName, type) from a .platform file, or None if unreadable."""
     try:
-        meta = loads(platform_file.read_text())["metadata"]
+        meta = loads(platform_file.read_text(encoding="utf-8-sig"))["metadata"]
         return meta["displayName"], meta["type"]
     except Exception:
         return None

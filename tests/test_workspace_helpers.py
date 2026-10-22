@@ -99,6 +99,16 @@ class TestPlatformTypeDiscovery:
         _make_item(tmp_path, "foo.SynapseNotebook", "foo", "Notebook")
         assert validate_include_items(["foo.Notebook"], tmp_path, LOG) == ["foo.Notebook"]
 
+    def test_platform_files_are_utf8_with_or_without_bom(self, tmp_path: Path):
+        import json
+
+        for name, encoding in (("Ventes été", "utf-8"), ("Achats été", "utf-8-sig")):
+            item = tmp_path / f"{name}.Notebook"
+            item.mkdir()
+            meta = {"metadata": {"displayName": name, "type": "Notebook"}}
+            (item / ".platform").write_bytes(json.dumps(meta, ensure_ascii=False).encode(encoding))
+        assert sorted(_repo_items(tmp_path)) == ["Achats été.Notebook", "Ventes été.Notebook"]
+
     def test_unaccepted_platform_type_is_ignored(self, tmp_path: Path):
         _make_item(tmp_path, "foo.Notebook", "foo", "NotARealType")
         assert repo_item_types(tmp_path) == set()
