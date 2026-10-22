@@ -321,6 +321,13 @@ class FabdepConfig:
         if not isinstance(manual_parameters, list):
             raise ValueError("fabdep.yml manual_parameters must be a list of entries.")
         capacity_id = config.get("capacity_id")
+        if capacity_id is not None and not (
+            isinstance(capacity_id, str) and _GUID.fullmatch(capacity_id)
+        ):
+            raise ValueError(
+                "fabdep.yml capacity_id must be a Fabric capacity ID (a GUID, not the "
+                f"capacity's name), got {capacity_id!r}."
+            )
 
         branch = branch_override or current_branch(resolved)
         # An exact key wins; otherwise the first glob that matches.
@@ -334,7 +341,7 @@ class FabdepConfig:
             environment=(entry and entry.environment) or branch,
             repo_workspaces=re.compile("|".join(f"(?:{p})" for p in repo_workspaces), re.I),
             create_workspace=bool(entry and entry.create),
-            capacity_id=str(capacity_id) if capacity_id else None,
+            capacity_id=capacity_id,
             manual_parameters=cast(list[object], manual_parameters),
             auth=AuthSettings.from_config(config),
         )

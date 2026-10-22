@@ -146,6 +146,8 @@ class TestWorkspaceNames:
                 'environments:\n  "feature/*":\n    workspace: "{base}-{branch}"\n',
                 r"must set workspace_base_name.*'feature/\*'",
             ),
+            (BASE + "capacity_id: F64\n", "capacity_id must be a Fabric capacity ID"),
+            (BASE + "capacity_id: 12345\n", "capacity_id must be a Fabric capacity ID"),
         ],
     )
     def test_invalid_settings(self, tmp_path: Path, body: str, message: str):
