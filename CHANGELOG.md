@@ -10,15 +10,64 @@ Releases before the first public one are summarized in a few lines each.
 
 ### Breaking
 
+- `tenant:` must be a tenant ID (GUID) and every token must match it, relayed ones included;
+  no fallback to another signed-in identity. `require_spn:` is a top-level key.
+- `fabdep.yml` is required (no workspace name guessed from the folder). `capacity_id` must be
+  a GUID, and is needed to create a workspace when several capacities are active.
+- fabric-cicd's environment is the branch name (or its `environments:` entry's), not `fabdep`.
+  The repo's `parameter.yml` now applies, merged with the detected rules; its entries win.
+- `detect --save` keys replacements by `_ALL_` instead of `prod`.
+- Malformed `manual_parameters` entries fail the deploy; an environment-keyed `replace_value`
+  is read by environment, then `_ALL_`.
+- An unnamed reference with several candidate items, and a Direct Lake source or notebook
+  lakehouse in another workspace, deploy unchanged with a warning instead of being rebound.
+- Models on a `pbidedicated.windows.net` SQL host get the endpoint's `fabric.microsoft.com` host.
+- `--fail-on-stale` covers only warehouse attachments that can't be remapped.
+- The RLS guard checks every in-scope model, also one without roles in the repo, and blocks
+  a changed role `PBI_Id` (the service would drop the role's members).
+- Bare `--pr` counts only commits worded as merged pull requests, not plain merges.
+- Errors go to stderr; colour only on a terminal without `NO_COLOR`. A directory argument
+  that doesn't exist is a usage error (exit 2).
+- Python API: `WorkspaceDeployer` drops `max_retries`, `repo_item_types` and
+  `deploy(banner=)` and gains `environment`; `TenantPin` is `AuthSettings`.
+
 ### Added
 
 - MIT license; public release preparation.
+- `environments:` maps branches (names or globs) to a `workspace`, an `environment` and
+  `create: true`; `workspace_name_template` sets the default name.
+- `auth:`, `--auth` and `FABDEP_AUTH` choose the credential: `cli`, `env`, `workload`,
+  `managed` or `default`. `fabdep auth status` shows who fabdep signs in as.
+- `fabdep plan` (or `deploy --dry-run`) shows what a deploy would change, without changing
+  anything; `--output json` for tools.
+- `fabdep init` writes a starter `fabdep.yml`; `fabdep schema` prints its JSON Schema.
+- `examples/` for GitHub Actions and Azure Pipelines.
+- A `manual_parameters` `find_value` can be a list.
+- API calls follow fabric-cicd's `FABRIC_API_ROOT_URL` / `DEFAULT_API_ROOT_URL`.
 
 ### Changed
 
+- `refresh` and `--frame` sync every SQL endpoint the Direct Lake models read, and none for
+  other models.
+- Tokens are cached and shared with fabric-cicd; a relayed token is logged.
+- "Workspace not found" suggests similar names; `fabdep -h` shows the deploy options.
+
 ### Fixed
 
+- Repos without a lakehouse deploy; orphan cleanup no longer spares items named like it.
+- Requests time out, and retry throttling and server errors honouring `Retry-After`.
+- Workspace and capacity lists follow pagination. An unreadable model definition is an error
+  (`rls pull --write` could delete every role file).
+- `--frame` refreshes only the models the deploy published; `-L` holds when it drops every rule.
+- `--pr` works from a git subfolder, and fails in a shallow clone instead of deploying all.
+- Files with a UTF-8 BOM are read; a 404 is no longer reported as a sign-in problem.
+- Windows: sign-in works, and consoles that can't print `✓` no longer crash.
+
 ### Removed
+
+- `fabdep rename`; `--max-retries` (`-r`), as requests now retry on their own.
+- `fabdep auth list`, `switch`, `rename`, `login` and `bind`, the fabdep profile and tenant
+  aliases: set `tenant:` to the tenant ID and choose the credential with `auth:`.
 
 ## 1.11.1 - 2026-10-21
 
