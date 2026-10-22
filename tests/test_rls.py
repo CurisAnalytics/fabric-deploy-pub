@@ -7,7 +7,6 @@ network surface (`_remote_roles`) mocked.
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 from pathlib import Path
@@ -27,6 +26,8 @@ from fabric_deploy.rls import (
 )
 from fabric_deploy.workspace import WorkspaceDeployer
 
+from .conftest import make_item
+
 ROLE_RLS = (
     "role RLS\n\tmodelPermission: read\n\n\ttablePermission contact = [User Name] = USERNAME()\n"
 )
@@ -38,20 +39,9 @@ ID_B = "\tannotation PBI_Id = 000000000000000000000000000000b2\n"
 
 def _make_model(tmp_path, name="M", roles=None, model_tmdl=None):
     """Create a `.SemanticModel` repo dir with an optional roles/ folder."""
-    d = tmp_path / f"{name}.SemanticModel"
-    d.mkdir()
-    (d / ".platform").write_text(
-        json.dumps({"metadata": {"displayName": name, "type": "SemanticModel"}})
-    )
-    defn = d / "definition"
-    defn.mkdir()
-    (defn / "model.tmdl").write_text(model_tmdl or "model Model\n\nref role RLS\n")
-    if roles:
-        rdir = defn / "roles"
-        rdir.mkdir()
-        for fname, text in roles.items():
-            (rdir / fname).write_text(text)
-    return d
+    files = {"definition/model.tmdl": model_tmdl or "model Model\n\nref role RLS\n"}
+    files.update({f"definition/roles/{fname}": text for fname, text in (roles or {}).items()})
+    return make_item(tmp_path, name, "SemanticModel", files=files)
 
 
 # --- extraction ----------------------------------------------------------

@@ -27,6 +27,8 @@ environments:
     workspace: Legacy
   feature/pinned:
     workspace: Pinned
+  "hotfix-?":
+    workspace: "{base} - {branch}"
 """
 
 
@@ -35,15 +37,7 @@ def _config(repo: Path, body: str, branch: str = "dev") -> FabdepConfig:
     return FabdepConfig.from_path(repo, branch_override=branch)
 
 
-class TestLoadConfig:
-    def test_yaml_present_resolves_workspace(self, tmp_path: Path, mock_fabric_api):
-        (tmp_path / "fabdep.yml").write_text('workspace_base_name: "myws"\n')
-
-        d = WorkspaceDeployer(tmp_path, branch_override="prod")
-
-        assert d.workspace_name == "myws [PROD]"
-        assert d.workspace_id == mock_fabric_api.workspace_id
-
+class TestFabdepYml:
     def test_missing_fabdep_yml_raises_before_any_api_call(self, tmp_path: Path, monkeypatch):
         """The folder name is no stand-in for the workspace name."""
         monkeypatch.setattr(
@@ -101,6 +95,9 @@ class TestWorkspaceNames:
             ("feature/legacy-y", "Contoso Sales [FEATURE/LEGACY-Y]", "feature/legacy-y", True),
             # ... but an exact key beats every glob.
             ("feature/pinned", "Pinned", "feature/pinned", False),
+            # `?` matches one character.
+            ("hotfix-1", "Contoso Sales - hotfix-1", "hotfix-1", False),
+            ("hotfix-12", "Contoso Sales [HOTFIX-12]", "hotfix-12", False),
             # Branch names are case-sensitive; no entry falls back to the template.
             ("Main", "Contoso Sales [MAIN]", "Main", False),
             ("hotfix", "Contoso Sales [HOTFIX]", "hotfix", False),
@@ -184,56 +181,64 @@ class TestSiblingWorkspaces:
             "Contoso Sales [FEATURE/ABC]",  # "feature/*" falls back to the template
             "Legacy",
             "Pinned",
+            "Contoso Sales - hotfix-2",
             "Contoso Sales [QA]",  # a branch without an entry: not one the map names
             "Contoso Sales (Test)",
+            "Contoso Sales - hotfix-22",
         ]
-        assert self._siblings(tmp_path, MAP, names) == names[:6]
+        assert self._siblings(tmp_path, MAP, names) == names[:7]
 
 
-class TestCreateWorkspace:
+class TestTargetWorkspace:
+    """Which workspace a deployer targets, and when it creates it."""
+
     CREATED = "00000000-0000-0000-0000-0000000000cc"
+    CAPACITY = "00000000-0000-0000-0000-0000000000c1"
 
-    def _deployer(self, tmp_path: Path, *, exists: str | None, **kwargs):
-        (tmp_path / "fabdep.yml").write_text(MAP)
+    @pytest.mark.parametrize(
+        ("body", "branch", "new_workspace", "exists", "created_on"),
+        [
+            pytest.param(MAP, "dev", False, True, None, id="existing"),
+            pytest.param(MAP, "feature/x", False, False, "default", id="create-entry-missing"),
+            pytest.param(MAP, "feature/x", False, True, None, id="create-entry-exists"),
+            pytest.param(
+                BASE + f"capacity_id: {CAPACITY}\n", "dev", True, False, CAPACITY, id="-N-capacity"
+            ),
+            pytest.param(BASE, "dev", True, False, "default", id="-N-only-active-capacity"),
+        ],
+    )
+    def test_resolves_or_creates_the_workspace(
+        self, tmp_path: Path, mock_fabric_api, body, branch, new_workspace, exists, created_on
+    ):
+        (tmp_path / "fabdep.yml").write_text(body)
+        config = FabdepConfig.from_path(tmp_path, branch_override=branch)
         create = MagicMock(return_value=self.CREATED)
+        find = MagicMock(return_value=mock_fabric_api.workspace_id if exists else None)
         with (
             patch("fabric_deploy.workspace.create_workspace", create),
-            patch("fabric_deploy.workspace.find_workspace_id_by_name", return_value=exists),
+            patch("fabric_deploy.workspace.find_workspace_id_by_name", find),
         ):
-            d = WorkspaceDeployer(tmp_path, **kwargs)
-        return d, create
+            d = WorkspaceDeployer(tmp_path, branch_override=branch, new_workspace=new_workspace)
 
-    def test_create_entry_creates_a_missing_workspace(self, tmp_path: Path, mock_fabric_api):
-        d, create = self._deployer(tmp_path, exists=None, branch_override="feature/x")
-        create.assert_called_once_with(
-            workspace_name="Contoso Sales [FEATURE/X]", capacity_id=mock_fabric_api.capacity_id
-        )
-        assert d.workspace_id == self.CREATED
+        if created_on is None:
+            create.assert_not_called()
+            assert d.workspace_id == mock_fabric_api.workspace_id
+        else:
+            capacity = mock_fabric_api.capacity_id if created_on == "default" else created_on
+            create.assert_called_once_with(
+                workspace_name=config.workspace_name, capacity_id=capacity
+            )
+            assert d.workspace_id == self.CREATED
 
-    def test_create_entry_reuses_an_existing_workspace(self, tmp_path: Path, mock_fabric_api):
-        d, create = self._deployer(
-            tmp_path, exists=mock_fabric_api.workspace_id, branch_override="feature/x"
-        )
-        assert not create.called
-        assert d.workspace_id == mock_fabric_api.workspace_id
+    def test_unknown_workspace_fails(self, tmp_path: Path, mock_fabric_api, monkeypatch):
+        (tmp_path / "fabdep.yml").write_text(BASE)
 
-    def test_no_create_entry_never_creates(self, tmp_path: Path, mock_fabric_api):
-        _, create = self._deployer(tmp_path, exists=None, branch_override="dev")
-        assert not create.called
+        def not_found(name: str) -> str:
+            raise ValueError(f"Workspace not found: '{name}'")
 
-    def test_new_workspace_creates_on_the_configured_capacity(
-        self, tmp_path: Path, mock_fabric_api
-    ):
-        capacity = "00000000-0000-0000-0000-0000000000c1"
-        (tmp_path / "fabdep.yml").write_text(
-            f'workspace_base_name: "newws"\ncapacity_id: {capacity}\n'
-        )
-        create = MagicMock(return_value=self.CREATED)
-        with patch("fabric_deploy.workspace.create_workspace", create):
-            d = WorkspaceDeployer(tmp_path, branch_override="dev", new_workspace=True)
-
-        create.assert_called_once_with(workspace_name="newws [DEV]", capacity_id=capacity)
-        assert d.workspace_id == self.CREATED
+        monkeypatch.setattr("fabric_deploy.workspace.get_workspace_id_by_name", not_found)
+        with pytest.raises(ValueError, match=r"Workspace not found: 'Base \[DEV\]'"):
+            WorkspaceDeployer(tmp_path, branch_override="dev")
 
     def test_new_workspace_refuses_an_existing_one(self, tmp_path: Path, mock_fabric_api):
         (tmp_path / "fabdep.yml").write_text(BASE)

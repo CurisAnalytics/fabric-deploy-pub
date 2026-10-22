@@ -46,8 +46,9 @@ addopts = [
     "-m",
     "not integration",
 ]
+filterwarnings = ["error"]
 markers = [
-    "integration: requires live Fabric API + az login (run with `pytest -m integration`)",
+    "integration: deploys to a live workspace; needs FABDEP_INTEGRATION_REPO (see tests/conftest.py)",
 ]
 
 [build-system]

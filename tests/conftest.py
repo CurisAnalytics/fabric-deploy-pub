@@ -8,8 +8,8 @@ import os
 import shutil
 import socket
 import time
+from collections.abc import Mapping
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from azure.core.credentials import AccessToken
@@ -20,12 +20,11 @@ FAKE_CAPACITY_ID = "00000000-0000-0000-0000-0000000000c0"
 
 @pytest.fixture
 def mock_fabric_api(monkeypatch):
-    """Patch the Fabric REST API surface used during deployer construction.
+    """Stand in for the Fabric API calls a WorkspaceDeployer makes while it is built.
 
-    Patches both `fabric_deploy.client.*` (the source) and
-    `fabric_deploy.workspace.*` (the call site, since `workspace.py` imports
-    these names directly). Returns a small handle so tests can override the
-    workspace ID per test if needed.
+    The target workspace resolves to `workspace_id` (also what a created one
+    gets), the default capacity is `capacity_id`, and no other workspace is
+    visible. The returned handle lets a test change either.
     """
 
     class Handle:
@@ -33,44 +32,51 @@ def mock_fabric_api(monkeypatch):
         capacity_id: str = FAKE_CAPACITY_ID
 
     handle = Handle()
+    for name, fake in {
+        "get_workspace_id_by_name": lambda _name: handle.workspace_id,
+        "get_default_capacity_id": lambda: handle.capacity_id,
+        "create_workspace": lambda workspace_name, capacity_id: handle.workspace_id,
+        "list_workspaces": lambda: [],
+        "patch_fabric_cicd_logger": lambda: None,
+    }.items():
+        monkeypatch.setattr(f"fabric_deploy.workspace.{name}", fake)
+    return handle
 
-    def _get_workspace_id_by_name(_name: str) -> str:
-        return handle.workspace_id
 
-    def _get_default_capacity_id() -> str:
-        return handle.capacity_id
+def make_item(
+    repo: Path,
+    name: str,
+    item_type: str,
+    *,
+    folder: str | None = None,
+    logical_id: str | None = None,
+    files: Mapping[str, str | dict[str, object]] | None = None,
+) -> Path:
+    """Create a repo item: a directory with a `.platform` declaring `name` and `item_type`.
 
-    def _create_workspace(workspace_name: str, capacity_id: str) -> str:
-        return handle.workspace_id
+    Args:
+        repo: Workspace repo directory.
+        name: The item's displayName.
+        item_type: The item's type.
+        folder: Item directory relative to `repo`; default `<name>.<item_type>`.
+        logical_id: The `.platform` config.logicalId, if any.
+        files: Files to write in the item, by path within it; a dict is written as JSON.
 
-    # Patch the call sites in workspace.py (imported by name)
-    monkeypatch.setattr(
-        "fabric_deploy.workspace.get_workspace_id_by_name",
-        _get_workspace_id_by_name,
-    )
-    monkeypatch.setattr(
-        "fabric_deploy.workspace.get_default_capacity_id",
-        _get_default_capacity_id,
-    )
-    monkeypatch.setattr(
-        "fabric_deploy.workspace.create_workspace",
-        _create_workspace,
-    )
-    monkeypatch.setattr("fabric_deploy.workspace.list_workspaces", lambda: [])
-
-    # Also patch the source in api.py for tests that import from there directly
-    monkeypatch.setattr(
-        "fabric_deploy.client.get_workspace_id_by_name",
-        _get_workspace_id_by_name,
-    )
-    monkeypatch.setattr(
-        "fabric_deploy.client.get_default_capacity_id",
-        _get_default_capacity_id,
-    )
-
-    # Suppress fabric-cicd module-level logging side effects during construction
-    with patch("fabric_deploy.workspace.patch_fabric_cicd_logger"):
-        yield handle
+    Returns:
+        The item directory.
+    """
+    item = repo / (folder or f"{name}.{item_type}")
+    item.mkdir(parents=True, exist_ok=True)
+    platform: dict[str, object] = {"metadata": {"type": item_type, "displayName": name}}
+    if logical_id:
+        platform["config"] = {"version": "2.0", "logicalId": logical_id}
+    (item / ".platform").write_text(json.dumps(platform), encoding="utf-8")
+    for path, content in (files or {}).items():
+        target = item / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        text = content if isinstance(content, str) else json.dumps(content)
+        target.write_text(text, encoding="utf-8")
+    return item
 
 
 SAMPLE_WORKSPACE = Path(__file__).parent / "fixtures" / "sample-workspace"
@@ -79,11 +85,37 @@ SAMPLE_DEV_WORKSPACE_ID = "00000000-0000-0000-0000-0000000000de"
 SAMPLE_LAKEHOUSE_ID = "00000000-0000-0000-0000-0000000000a1"
 
 
+# The live tests (marked `integration`) deploy to a real workspace, so they run
+# only when FABDEP_INTEGRATION_REPO names a workspace repo of your own: a git
+# checkout with a fabdep.yml whose workspaces for the MAIN branch and for the
+# checked-out branch are throwaway ones (the deploys unpublish every item the
+# repo doesn't have). Sign in first, then:
+#   FABDEP_INTEGRATION_REPO=/path/to/repo pytest -m integration
+INTEGRATION_REPO_ENV = "FABDEP_INTEGRATION_REPO"
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    if os.environ.get(INTEGRATION_REPO_ENV):
+        return
+    skip = pytest.mark.skip(reason=f"live deploy test; set {INTEGRATION_REPO_ENV} to run it")
+    for item in items:
+        if item.get_closest_marker("integration"):
+            item.add_marker(skip)
+
+
+def _is_live(request: pytest.FixtureRequest) -> bool:
+    return request.node.get_closest_marker("integration") is not None
+
+
 @pytest.fixture
-def sample_ws(tmp_path) -> Path:
-    """A private copy of the sample workspace repo (tests may write into it)."""
+def sample_ws(request: pytest.FixtureRequest, tmp_path: Path) -> Path:
+    """A private copy of the sample workspace repo (tests may write into it).
+
+    A live test gets a copy of the FABDEP_INTEGRATION_REPO repo instead.
+    """
+    source = Path(os.environ[INTEGRATION_REPO_ENV]) if _is_live(request) else SAMPLE_WORKSPACE
     dest = tmp_path / "sample-workspace"
-    shutil.copytree(SAMPLE_WORKSPACE, dest)
+    shutil.copytree(source, dest, symlinks=True)
     return dest
 
 
@@ -135,21 +167,28 @@ def credential(monkeypatch) -> FakeCredential:
 
 
 @pytest.fixture(autouse=True)
-def _isolate_azure_identity(monkeypatch, tmp_path):
+def _isolate_azure_identity(request: pytest.FixtureRequest, monkeypatch, tmp_path):
     """Keep every test off the network, the developer's sign-in and auth settings.
 
-    identity keeps the adopted fabdep.yml auth settings, the --auth override and the shared
-    credential in module globals; resetting them here restores them at teardown.
-    A test that needs tokens uses the `credential` fixture.
+    identity keeps the adopted fabdep.yml auth settings, the --auth override and
+    the shared credential in module globals; resetting them here restores them at
+    teardown. A test that needs tokens uses the `credential` fixture. Live
+    (`integration`) tests keep the network and the developer's sign-in.
     """
     from fabric_deploy import identity
 
-    for var in ("FABRIC_BEARER_TOKEN", "POWERBI_BEARER_TOKEN", "FABDEP_AUTH"):
-        monkeypatch.delenv(var, raising=False)
     # Under a git hook or `rebase --exec`, GIT_DIR & co. would aim the tests' scratch
     # repos at the enclosing repository.
     for var in [v for v in os.environ if v.startswith("GIT_")]:
         monkeypatch.delenv(var)
+    monkeypatch.setattr(identity, "_settings", None)
+    monkeypatch.setattr(identity, "_mode_flag", None)
+    monkeypatch.setattr(identity, "_credential", None)
+    if _is_live(request):
+        return
+
+    for var in ("FABRIC_BEARER_TOKEN", "POWERBI_BEARER_TOKEN", "FABDEP_AUTH"):
+        monkeypatch.delenv(var, raising=False)
     # An unset AZURE_CONFIG_DIR means ~/.azure: point az at an empty one instead.
     (tmp_path / "azure-config").mkdir()
     monkeypatch.setenv("AZURE_CONFIG_DIR", str(tmp_path / "azure-config"))
@@ -163,9 +202,6 @@ def _isolate_azure_identity(monkeypatch, tmp_path):
         connect(sock, address)
 
     monkeypatch.setattr(socket.socket, "connect", _loopback_only)
-    monkeypatch.setattr(identity, "_settings", None)
-    monkeypatch.setattr(identity, "_mode_flag", None)
-    monkeypatch.setattr(identity, "_credential", None)
 
     def _no_real_credential(mode: str, tenant_id: str | None) -> None:
         raise AssertionError(f"test tried to sign in for real ({mode} credential)")

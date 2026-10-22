@@ -1,298 +1,194 @@
-"""Unit tests for WorkspaceDeployer that mock fabric-cicd internals.
+"""WorkspaceDeployer with the Fabric API and fabric-cicd mocked.
 
-These tests exercise the deployment call site with the Fabric API and
-fabric-cicd mocked, so they need no sign-in.
-
-The key contract pinned here is the fabric-cicd 1.0 API: `FabricWorkspace`
-must be constructed with a keyword-only `token_credential` argument.
+What a deploy hands fabric-cicd, when it cleans up orphans, the guards that
+stop it before anything is published, the parameter file, and the sibling
+workspaces it anchors.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 import yaml
 from azure.core.credentials import TokenCredential
 
-from fabric_deploy.params import ParameterFile
-from fabric_deploy.scope import validate_include_items
 from fabric_deploy.workspace import WorkspaceDeployer
 
-from .conftest import SAMPLE_DEV_WORKSPACE_ID, SAMPLE_LAKEHOUSE_ID
+from .conftest import FAKE_WORKSPACE_ID, SAMPLE_DEV_WORKSPACE_ID, SAMPLE_LAKEHOUSE_ID, make_item
 
-FAKE_WORKSPACE_ID = "00000000-0000-0000-0000-000000000001"
+NOTEBOOK = "Fill Lakehouse.Notebook"  # the sample workspace's notebook
 
 
 @pytest.fixture
-def deployer(sample_ws):
-    """Build a WorkspaceDeployer pointed at the sample workspace fixture
-    without making any network calls (all I/O is patched)."""
-    with (
-        patch(
-            "fabric_deploy.workspace.get_workspace_id_by_name",
-            return_value=FAKE_WORKSPACE_ID,
-        ),
-        patch("fabric_deploy.workspace.list_workspaces", return_value=[]),
-        # Suppress fabric-cicd module-level logging side effects
-        patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
-    ):
-        d = WorkspaceDeployer(sample_ws, branch_override="MAIN")
-        return d
+def deployer(sample_ws, mock_fabric_api, monkeypatch) -> WorkspaceDeployer:
+    """A deployer for the sample workspace's MAIN branch.
+
+    The sample's semantic model is not in the target yet, so the RLS guard passes.
+    """
+    monkeypatch.setattr("fabric_deploy.rls._remote_roles", lambda _ws, _name: None)
+    return WorkspaceDeployer(sample_ws, branch_override="MAIN")
 
 
-class TestFabricWorkspaceConstruction:
-    """Pin the fabric-cicd 1.0 call contract."""
+@pytest.fixture
+def fabric_cicd(monkeypatch) -> SimpleNamespace:
+    """fabric-cicd's deploy entry points, mocked. `workspace` is the FabricWorkspace class."""
+    fake = SimpleNamespace(
+        workspace=MagicMock(name="FabricWorkspace"),
+        publish=MagicMock(name="publish_all_items"),
+        unpublish=MagicMock(name="unpublish_all_orphan_items"),
+        flags=[],
+    )
+    monkeypatch.setattr("fabric_deploy.workspace.FabricWorkspace", fake.workspace)
+    monkeypatch.setattr("fabric_deploy.workspace.publish_all_items", fake.publish)
+    monkeypatch.setattr("fabric_deploy.workspace.unpublish_all_orphan_items", fake.unpublish)
+    monkeypatch.setattr("fabric_deploy.workspace.append_feature_flag", fake.flags.append)
+    return fake
 
-    def test_deploy_passes_token_credential_to_fabric_workspace(self, deployer):
-        """FabricWorkspace must be constructed with a keyword `token_credential`."""
-        with (
-            patch("fabric_deploy.workspace.FabricWorkspace") as fake_fw,
-            patch("fabric_deploy.workspace.publish_all_items"),
-            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
-            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
-        ):
-            deployer.deploy(item_types=["Notebook"])
 
-        assert fake_fw.called, "FabricWorkspace was never constructed"
-        # All args must be keyword (1.0 signature is keyword-only)
-        positional, kwargs = fake_fw.call_args
-        assert positional == (), (
-            f"FabricWorkspace was called with positional args {positional}; "
-            "fabric-cicd 1.0 requires keyword-only arguments."
-        )
-        assert "token_credential" in kwargs, (
-            "FabricWorkspace must be called with a `token_credential` keyword "
-            "argument under fabric-cicd 1.0. Got: " + ", ".join(kwargs.keys())
-        )
-        cred = kwargs["token_credential"]
-        assert isinstance(cred, TokenCredential), (
-            f"`token_credential` must be a TokenCredential instance, got {type(cred).__name__}"
-        )
-        # The resolved workspace id / repo dir are passed straight through.
-        assert kwargs.get("workspace_id") == FAKE_WORKSPACE_ID
-        assert kwargs.get("repository_directory") == str(deployer._repo_dir_resolved)
-        # The target branch is the fabric-cicd environment (Variable Library
-        # value sets, environment-keyed parameter.yml entries).
-        assert kwargs.get("environment") == "MAIN"
+def test_deploy_hands_fabric_cicd_the_target_and_the_checked_credential(deployer, fabric_cicd):
+    deployer.deploy(item_types=["Notebook"])
 
-    def test_publish_called_with_returned_workspace(self, deployer):
-        """publish_all_items must receive the FabricWorkspace instance, not a kwarg."""
-        with (
-            patch("fabric_deploy.workspace.FabricWorkspace") as fake_fw,
-            patch("fabric_deploy.workspace.publish_all_items") as fake_publish,
-            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
-            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
-        ):
-            instance = MagicMock(name="FabricWorkspaceInstance")
-            fake_fw.return_value = instance
-            deployer.deploy(item_types=["Notebook"])
+    assert fabric_cicd.workspace.call_args.args == ()  # its arguments are keyword-only
+    kwargs = fabric_cicd.workspace.call_args.kwargs
+    assert isinstance(kwargs["token_credential"], TokenCredential)
+    assert kwargs["workspace_id"] == FAKE_WORKSPACE_ID
+    assert kwargs["repository_directory"] == str(deployer._repo_dir_resolved)
+    # The target branch is the fabric-cicd environment.
+    assert kwargs["environment"] == "MAIN"
+    assert kwargs["item_type_in_scope"] == ["Notebook"]
+    fabric_cicd.publish.assert_called_once_with(
+        fabric_cicd.workspace.return_value, items_to_include=None
+    )
 
-        assert fake_publish.called
-        assert fake_publish.call_args.args[0] is instance
+
+def test_appended_feature_flags_exist_upstream():
+    """Catch an upstream rename of the flags --include-items needs at test time."""
+    from fabric_cicd import get_supported_feature_flags
+
+    supported = set(get_supported_feature_flags())
+    assert {"enable_experimental_features", "enable_items_to_include"} <= supported
 
 
 class TestOrphanCleanup:
-    def _deploy(self, deployer, **kwargs) -> MagicMock:
-        with (
-            patch("fabric_deploy.workspace.FabricWorkspace") as fake_fw,
-            patch("fabric_deploy.workspace.publish_all_items"),
-            patch("fabric_deploy.workspace.unpublish_all_orphan_items") as unpublish,
-            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
-        ):
-            deployer.deploy(**kwargs)
-        assert not unpublish.called or unpublish.call_args.args == (fake_fw.return_value,)
-        return unpublish
-
-    def test_repo_without_a_lakehouse_deploys(self, tmp_path: Path, mock_fabric_api):
-        (tmp_path / "fabdep.yml").write_text('workspace_base_name: "Base"\n')
-        nb = tmp_path / "nb.Notebook"
-        nb.mkdir()
-        (nb / ".platform").write_text('{"metadata": {"displayName": "nb", "type": "Notebook"}}')
-
-        unpublish = self._deploy(WorkspaceDeployer(tmp_path, branch_override="dev"))
-
-        assert unpublish.called
-
-    def test_no_item_is_kept_by_name(self, deployer):
-        """Every item missing from the repo is an orphan, whatever its name."""
-        unpublish = self._deploy(deployer, item_types=["Notebook"])
-        assert unpublish.call_args.kwargs == {}
-
-    def test_skipped_for_include_items(self, deployer):
-        unpublish = self._deploy(deployer, include_items=["Fill Lakehouse.Notebook"])
-        assert not unpublish.called
-
-
-class TestFeatureFlags:
-    def test_appended_flags_are_still_supported_upstream(self):
-        """fabdep appends these flags for --include-items deploys. fabric-cicd
-        1.3 exposes the supported set — catch an upstream rename at test time
-        instead of at deploy time."""
-        from fabric_cicd import get_supported_feature_flags
-
-        supported = set(get_supported_feature_flags())
-        assert "enable_experimental_features" in supported
-        assert "enable_items_to_include" in supported
-
-
-class TestFailOnStale:
-    """Pin the --fail-on-stale contract: deploy raises before publish_all_items
-    is called when a notebook warehouse attachment can't be remapped."""
-
-    UNRESOLVED = [
-        ("foo.Notebook/notebook-content.py", "99999999-9999-9999-9999-999999999999", "Unknown")
-    ]
-
     @pytest.mark.parametrize(
-        ("unresolved", "fail_on_stale", "blocks"),
-        [(UNRESOLVED, True, True), ([], True, False), (UNRESOLVED, False, False)],
+        ("options", "cleans"),
+        [
+            ({}, True),
+            ({"item_types": ["Notebook"]}, True),
+            ({"exclude_types": ["Report"]}, True),
+            ({"no_cleanup": True}, False),
+            ({"include_items": [NOTEBOOK]}, False),
+            ({"pr": "abc1234"}, False),  # --pr deploys the items the PR touched
+        ],
     )
-    def test_blocks_only_unresolved_bindings_with_the_flag(
-        self, deployer, unresolved, fail_on_stale, blocks
+    def test_runs_unless_disabled_or_items_are_named(
+        self, deployer, fabric_cicd, monkeypatch, options, cleans
     ):
-        deployer._detector.unresolved_warehouse_bindings = list(unresolved)
-        with (
-            patch("fabric_deploy.workspace.FabricWorkspace") as fake_fw,
-            patch("fabric_deploy.workspace.publish_all_items") as fake_publish,
-            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
-            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
-        ):
-            if blocks:
-                with pytest.raises(RuntimeError, match="fail-on-stale"):
-                    deployer.deploy(item_types=["Notebook"], fail_on_stale=fail_on_stale)
-            else:
-                deployer.deploy(item_types=["Notebook"], fail_on_stale=fail_on_stale)
-
-        assert fake_fw.called is not blocks
-        assert fake_publish.called is not blocks
-
-
-class TestUdfBindingGuard:
-    """Pin the unbound-UDF guard: a bound button whose function resolves to no
-    repo .UserDataFunction blocks the deploy when its report is in scope,
-    unless --allow-unbound-udf."""
-
-    SKIPPED = [
-        (
-            "Finance Report",
-            "export_summary",
-            "33333333-4444-5555-6666-777777777777",
-            "no .UserDataFunction item in the repo declares 'export_summary'",
+        monkeypatch.setattr(
+            "fabric_deploy.workspace.changed_paths_in",
+            lambda _repo, _commit: [f"{NOTEBOOK}/notebook-content.py"],
         )
-    ]
+        deployer.deploy(**options)
 
-    def _deploy(self, deployer, **kwargs):
-        with (
-            patch("fabric_deploy.workspace.FabricWorkspace"),
-            patch("fabric_deploy.workspace.publish_all_items") as fake_publish,
-            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
-            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
-        ):
-            deployer.deploy(**kwargs)
-        return fake_publish
+        if cleans:
+            # Every item missing from the repo is an orphan, whatever its name.
+            fabric_cicd.unpublish.assert_called_once_with(fabric_cicd.workspace.return_value)
+        else:
+            fabric_cicd.unpublish.assert_not_called()
 
-    def test_blocks_by_default_when_report_in_scope(self, deployer):
-        deployer._detector.udf_skipped = list(self.SKIPPED)
+    def test_repo_without_a_lakehouse_deploys(self, tmp_path: Path, mock_fabric_api, fabric_cicd):
+        (tmp_path / "fabdep.yml").write_text('workspace_base_name: "Base"\n')
+        make_item(tmp_path, "nb", "Notebook")
 
-        with (
-            patch("fabric_deploy.workspace.FabricWorkspace") as fake_fw,
-            patch("fabric_deploy.workspace.publish_all_items") as fake_publish,
-            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
-            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
-        ):
-            with pytest.raises(RuntimeError, match="allow-unbound-udf"):
-                deployer.deploy(item_types=["Report"])
+        WorkspaceDeployer(tmp_path, branch_override="dev").deploy()
 
-        assert not fake_fw.called
-        assert not fake_publish.called
-
-    def test_allow_flag_deploys_anyway(self, deployer):
-        deployer._detector.udf_skipped = list(self.SKIPPED)
-        fake_publish = self._deploy(deployer, item_types=["Report"], allow_unbound_udf=True)
-        assert fake_publish.called
-
-    def test_report_out_of_type_scope_does_not_block(self, deployer):
-        deployer._detector.udf_skipped = list(self.SKIPPED)
-        fake_publish = self._deploy(deployer, item_types=["Notebook"])
-        assert fake_publish.called
-
-    def test_report_not_in_include_items_does_not_block(self, deployer):
-        deployer._detector.udf_skipped = list(self.SKIPPED)
-        fake_publish = self._deploy(deployer, include_items=["Fill Lakehouse.Notebook"])
-        assert fake_publish.called
-
-    def test_no_skipped_buttons_does_not_block(self, deployer):
-        deployer._detector.udf_skipped = []
-        fake_publish = self._deploy(deployer, item_types=["Report"])
-        assert fake_publish.called
+        fabric_cicd.publish.assert_called_once()
+        fabric_cicd.unpublish.assert_called_once()
 
 
-class TestDeployedSummaryLine:
-    """The 'Deployed N item(s)' line must reflect the type scope: an item
-    excluded via -x stays in include_items but was never published."""
+class TestIncludeItems:
+    def test_publishes_the_matched_items_with_the_feature_flags(self, deployer, fabric_cicd):
+        deployer.deploy(include_items=[NOTEBOOK, "Ghost.Notebook"])
 
-    def test_excluded_type_dropped_from_summary(self, deployer, caplog):
-        with (
-            patch("fabric_deploy.workspace.FabricWorkspace"),
-            patch("fabric_deploy.workspace.publish_all_items"),
-            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
-            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
-            caplog.at_level("INFO"),
-        ):
-            deployer.deploy(
-                include_items=["Fill Lakehouse.Notebook", "SQL DB.SemanticModel"],
-                exclude_types=["SemanticModel"],
-            )
+        assert fabric_cicd.publish.call_args.kwargs["items_to_include"] == [NOTEBOOK]
+        assert fabric_cicd.flags == ["enable_experimental_features", "enable_items_to_include"]
 
-        deployed_lines = [r.message for r in caplog.records if r.message.startswith("Deployed ")]
-        assert deployed_lines == ["Deployed 1 item(s): Fill Lakehouse.Notebook"]
-
-
-class TestIncludeItemsValidation:
-    """Pin the --include-items guard: a name that matches nothing must raise
-    instead of silently deploying zero items."""
-
-    def _validate(self, deployer, items):
-        return validate_include_items(items, deployer._repo_dir_resolved, deployer.logger)
-
-    def test_validate_returns_matched_subset(self, deployer):
-        assert self._validate(deployer, ["Fill Lakehouse.Notebook"]) == ["Fill Lakehouse.Notebook"]
-
-    def test_validate_drops_unmatched_but_keeps_matched(self, deployer):
-        assert self._validate(deployer, ["Fill Lakehouse.Notebook", "Ghost.Notebook"]) == [
-            "Fill Lakehouse.Notebook"
-        ]
-
-    def test_validate_raises_when_nothing_matches(self, deployer):
+    def test_no_match_raises_before_publishing(self, deployer, fabric_cicd):
         with pytest.raises(RuntimeError, match="matched no items"):
-            self._validate(deployer, ["Ghost.Notebook"])
+            deployer.deploy(include_items=["Ghost.Notebook"])
+        fabric_cicd.workspace.assert_not_called()
 
-    def test_deploy_raises_before_publish_on_total_mismatch(self, deployer):
-        with (
-            patch("fabric_deploy.workspace.FabricWorkspace") as fake_fw,
-            patch("fabric_deploy.workspace.publish_all_items") as fake_publish,
-            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
-            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
-        ):
-            with pytest.raises(RuntimeError, match="matched no items"):
-                deployer.deploy(include_items=["Ghost.Notebook"])
+    def test_summary_leaves_out_items_of_excluded_types(self, deployer, fabric_cicd, caplog):
+        """An item excluded with -x stays in include_items but is never published."""
+        with caplog.at_level("INFO"):
+            deployer.deploy(
+                include_items=[NOTEBOOK, "SQL DB.SemanticModel"], exclude_types=["SemanticModel"]
+            )
+        summary = [r.message for r in caplog.records if r.message.startswith("Deployed ")]
+        assert summary == [f"Deployed 1 item(s): {NOTEBOOK}"]
 
-        assert not fake_fw.called
-        assert not fake_publish.called
 
-    def test_deploy_passes_only_matched_items_to_publish(self, deployer):
-        with (
-            patch("fabric_deploy.workspace.FabricWorkspace"),
-            patch("fabric_deploy.workspace.publish_all_items") as fake_publish,
-            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
-            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
-        ):
-            deployer.deploy(include_items=["Fill Lakehouse.Notebook", "Ghost.Notebook"])
+STALE = [("nb.Notebook/notebook-content.py", "00000000-0000-0000-0000-0000000000f0", "Unknown")]
+UNBOUND = [
+    (
+        "Finance Report",
+        "export_summary",
+        "00000000-0000-0000-0000-0000000000f1",
+        "no .UserDataFunction item in the repo declares 'export_summary'",
+    )
+]
 
-        assert fake_publish.called
-        assert fake_publish.call_args.kwargs["items_to_include"] == ["Fill Lakehouse.Notebook"]
+
+@pytest.mark.parametrize(
+    ("finding", "found", "options", "error"),
+    [
+        pytest.param(
+            "unresolved_warehouse_bindings",
+            STALE,
+            {"fail_on_stale": True},
+            "fail-on-stale",
+            id="stale-binding-with-fail-on-stale",
+        ),
+        pytest.param("unresolved_warehouse_bindings", STALE, {}, None, id="stale-binding"),
+        pytest.param(
+            "unresolved_warehouse_bindings", [], {"fail_on_stale": True}, None, id="fail-on-stale"
+        ),
+        pytest.param(
+            "udf_skipped", UNBOUND, {"item_types": ["Report"]}, "allow-unbound-udf", id="udf"
+        ),
+        pytest.param(
+            "udf_skipped",
+            UNBOUND,
+            {"item_types": ["Report"], "allow_unbound_udf": True},
+            None,
+            id="udf-allowed",
+        ),
+        pytest.param(
+            "udf_skipped", UNBOUND, {"item_types": ["Notebook"]}, None, id="udf-report-not-in-types"
+        ),
+        pytest.param(
+            "udf_skipped", UNBOUND, {"include_items": [NOTEBOOK]}, None, id="udf-report-not-named"
+        ),
+        pytest.param("udf_skipped", [], {"item_types": ["Report"]}, None, id="no-unbound-udf"),
+    ],
+)
+def test_guards_block_before_anything_is_published(
+    deployer, fabric_cicd, finding, found, options, error
+):
+    """--fail-on-stale blocks a warehouse binding that can't be remapped; an
+    unbound UDF button blocks when its report deploys, unless allowed."""
+    setattr(deployer._detector, finding, list(found))
+
+    if error:
+        with pytest.raises(RuntimeError, match=error):
+            deployer.deploy(**options)
+        fabric_cicd.workspace.assert_not_called()
+    else:
+        deployer.deploy(**options)
+        fabric_cicd.publish.assert_called_once()
 
 
 class TestParameterFile:
@@ -314,36 +210,31 @@ class TestParameterFile:
         '      MAIN: "y"\n'
     )
 
-    def _deploy(self, deployer) -> dict:
-        """Deploy with fabric-cicd mocked; record what FabricWorkspace got and
-        what the repo held at that moment."""
-        seen: dict = {}
+    def _deploy(self, deployer, fabric_cicd) -> dict[str, object]:
+        """Deploy; record what FabricWorkspace got and what the repo held at that moment."""
+        seen: dict[str, object] = {}
         repo = deployer._repo_dir_resolved
 
-        def fake_fabric_workspace(**kwargs):
-            path = kwargs.get("parameter_file_path")
+        def record(**kwargs):
+            path = kwargs["parameter_file_path"]
             seen["path"] = path
-            seen["environment"] = kwargs.get("environment")
+            seen["environment"] = kwargs["environment"]
             seen["document"] = yaml.safe_load(Path(path).read_text()) if path else None
             seen["repo_files"] = sorted(f.name for f in repo.iterdir())
             return MagicMock()
 
-        with (
-            patch("fabric_deploy.workspace.FabricWorkspace", side_effect=fake_fabric_workspace),
-            patch("fabric_deploy.workspace.publish_all_items"),
-            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
-            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
-        ):
-            deployer.deploy(item_types=["Notebook"])
+        fabric_cicd.workspace.side_effect = record
+        deployer.deploy(item_types=["Notebook"])
         return seen
 
-    def test_detected_rules_go_to_a_temporary_file_outside_the_repo(self, deployer):
+    def test_detected_rules_go_to_a_temporary_file_outside_the_repo(self, deployer, fabric_cicd):
         repo_files = sorted(f.name for f in deployer._repo_dir_resolved.iterdir())
-        seen = self._deploy(deployer)
+        seen = self._deploy(deployer, fabric_cicd)
 
-        assert isinstance(seen["path"], str)
-        assert not Path(seen["path"]).is_relative_to(deployer._repo_dir_resolved)
-        assert not Path(seen["path"]).exists(), "removed after the deploy"
+        path = seen["path"]
+        assert isinstance(path, str)
+        assert not Path(path).is_relative_to(deployer._repo_dir_resolved)
+        assert not Path(path).exists(), "removed after the deploy"
         assert seen["repo_files"] == repo_files
         assert seen["document"] == {
             "find_replace": [
@@ -358,12 +249,12 @@ class TestParameterFile:
             ]
         }
 
-    def test_user_file_is_merged_and_wins(self, deployer):
+    def test_user_file_is_merged_and_wins(self, deployer, fabric_cicd):
         user_file = deployer._repo_dir_resolved / "parameter.yml"
         user_file.write_text(self.USER_FILE)
         repo_files = sorted(f.name for f in deployer._repo_dir_resolved.iterdir())
 
-        seen = self._deploy(deployer)
+        seen = self._deploy(deployer, fabric_cicd)
 
         user = yaml.safe_load(self.USER_FILE)
         assert seen["document"] == {
@@ -380,7 +271,7 @@ class TestParameterFile:
         assert seen["repo_files"] == repo_files
         assert user_file.read_text() == self.USER_FILE
 
-    def test_template_paths_resolve_from_the_repo(self, deployer):
+    def test_template_paths_resolve_from_the_repo(self, deployer, fabric_cicd):
         repo = deployer._repo_dir_resolved
         (repo / "params").mkdir()
         (repo / "params" / "ws.yml").write_text(
@@ -389,250 +280,175 @@ class TestParameterFile:
         )
         (repo / "parameter.yml").write_text('extend:\n  - "params/ws.yml"\n')
 
-        seen = self._deploy(deployer)
+        document = self._deploy(deployer, fabric_cicd)["document"]
 
-        assert seen["document"]["extend"] == [str(repo / "params" / "ws.yml")]
-        assert [e["find_value"] for e in seen["document"]["find_replace"]] == [SAMPLE_LAKEHOUSE_ID]
+        assert isinstance(document, dict)
+        assert document["extend"] == [str(repo / "params" / "ws.yml")]
+        assert [e["find_value"] for e in document["find_replace"]] == [SAMPLE_LAKEHOUSE_ID]
 
-    def test_malformed_user_file_fails_the_deploy(self, deployer):
+    def test_malformed_user_file_fails_the_deploy(self, deployer, fabric_cicd):
         (deployer._repo_dir_resolved / "parameter.yml").write_text('extend: "one.yml"\n')
         with pytest.raises(ValueError, match="parameter.yml"):
-            self._deploy(deployer)
+            self._deploy(deployer, fabric_cicd)
 
-    def test_nothing_to_add_leaves_fabric_cicd_on_the_repo_file(self, deployer):
+    def test_nothing_to_add_leaves_fabric_cicd_on_the_repo_file(self, deployer, fabric_cicd):
         deployer._detector.parameters = {}
-        seen = self._deploy(deployer)
+        seen = self._deploy(deployer, fabric_cicd)
         assert seen["path"] is None
         assert seen["environment"] == "MAIN"
 
-    @pytest.mark.parametrize(
-        ("item_types", "expected"), [(set(), None), ({"SemanticModel"}, ["SemanticModel"])]
-    )
-    def test_item_type_only_for_scoped_entries(self, tmp_path, item_types, expected):
-        """Detected entries carry no item_type, so fabric-cicd applies them to
-        every in-scope file; a manual_parameters scope round-trips."""
-        from fabric_deploy.detect import DetectedParameter, ParameterDetector
 
-        detector = ParameterDetector(tmp_path)
-        detector.detect_all()
-        detector.parameters = {
-            "v": DetectedParameter("v", item_types=item_types, dynamic_variable="$workspace.$id")
-        }
-        param_file = ParameterFile(tmp_path)
-        param_file.write(detector, FAKE_WORKSPACE_ID, "MAIN", 0, 0)
-        try:
-            entry = yaml.safe_load(Path(param_file.path).read_text())["find_replace"][0]
-        finally:
-            param_file.cleanup()
+# --- sibling-workspace anchors ------------------------------------------------
 
-        assert entry.get("item_type") == expected
-
-
-# --- sibling-workspace anchor resolution ------------------------------------
-
-# The sample notebook's legacy metadata names this workspace.
+# The sample notebook's lakehouse metadata names this workspace.
 DEV_WORKSPACE_ID = SAMPLE_DEV_WORKSPACE_ID
 QA_WORKSPACE_ID = "00000000-0000-0000-0000-00000000000d"
 SRC_LAKEHOUSE_ID = "00000000-0000-0000-0000-00000000001a"
 
 
-def _anchored_deployer(
-    monkeypatch, repo, *, workspaces, lakehouses=None, list_error=None, **kwargs
-) -> tuple[WorkspaceDeployer, MagicMock, MagicMock]:
-    """Deployer on the sample workspace with the workspace listing under control."""
-    list_ws = MagicMock(return_value=workspaces)
-    if list_error:
-        list_ws.side_effect = RuntimeError(list_error)
-    list_items = MagicMock(return_value=lakehouses or [])
-    monkeypatch.setattr("fabric_deploy.workspace.list_workspaces", list_ws)
+def _returning(value: object) -> MagicMock:
+    """A mock that raises `value` if it is an exception, else returns it."""
+    if isinstance(value, Exception):
+        return MagicMock(side_effect=value)
+    return MagicMock(return_value=value)
+
+
+def _with_listing(monkeypatch, repo: Path, workspaces: object, lakehouses: object = ()):
+    """A deployer whose identity lists `workspaces`, and `lakehouses` in each one
+    (either may be the exception the listing raises)."""
+    list_items = _returning(lakehouses if isinstance(lakehouses, Exception) else list(lakehouses))
+    monkeypatch.setattr("fabric_deploy.workspace.list_workspaces", _returning(workspaces))
     monkeypatch.setattr("fabric_deploy.workspace.list_workspace_items", list_items)
-    with (
-        patch(
-            "fabric_deploy.workspace.get_workspace_id_by_name",
-            return_value=FAKE_WORKSPACE_ID,
-        ),
-        patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
-    ):
-        d = WorkspaceDeployer(repo, branch_override="MAIN", **kwargs)
-    return d, list_ws, list_items
+    return WorkspaceDeployer(repo, branch_override="MAIN"), list_items
 
 
+def _ws(workspace_id: str, name: str) -> dict[str, str]:
+    return {"id": workspace_id, "displayName": name}
+
+
+@pytest.mark.usefixtures("mock_fabric_api")
 class TestSiblingWorkspaceAnchors:
     def test_target_is_anchored_even_without_siblings(self, monkeypatch, sample_ws):
-        d, _, list_items = _anchored_deployer(monkeypatch, sample_ws, workspaces=[])
+        d, list_items = _with_listing(monkeypatch, sample_ws, [])
 
         assert d.source_workspace_ids == {FAKE_WORKSPACE_ID}
         assert d.source_lakehouse_ids == {}
-        assert not list_items.called
+        list_items.assert_not_called()
+        assert d._detector is not None
         assert FAKE_WORKSPACE_ID in d._detector._source_workspace_ids
 
     def test_referenced_sibling_anchors_and_lists_its_lakehouses(self, monkeypatch, sample_ws):
-        """The content names DEV (legacy metadata here; a pipeline workspaceId
-        or an abfss literal in an auto-bound repo), so DEV's lakehouse ids
-        are fetched to map alongside its workspace id."""
-        d, _, list_items = _anchored_deployer(
+        """The content names DEV (in notebook metadata here; a pipeline
+        workspaceId or an abfss literal elsewhere), so DEV's lakehouse ids are
+        fetched to map alongside its workspace id."""
+        d, list_items = _with_listing(
             monkeypatch,
             sample_ws,
-            workspaces=[
-                {"id": FAKE_WORKSPACE_ID, "displayName": "Fabdep Test [MAIN]"},
-                {"id": DEV_WORKSPACE_ID, "displayName": "Fabdep Test [DEV]"},
+            [
+                _ws(FAKE_WORKSPACE_ID, "Fabdep Test [MAIN]"),
+                _ws(DEV_WORKSPACE_ID, "Fabdep Test [DEV]"),
             ],
-            lakehouses=[
-                {"id": SRC_LAKEHOUSE_ID, "displayName": "fabdep_lakehouse", "type": "Lakehouse"}
-            ],
+            [{"id": SRC_LAKEHOUSE_ID, "displayName": "fabdep_lakehouse", "type": "Lakehouse"}],
         )
 
         list_items.assert_called_once_with(DEV_WORKSPACE_ID, "Lakehouse")
         assert d.source_workspace_ids == {FAKE_WORKSPACE_ID, DEV_WORKSPACE_ID}
         assert d.source_lakehouse_ids == {SRC_LAKEHOUSE_ID: "fabdep_lakehouse"}
-        assert DEV_WORKSPACE_ID in d._detector._source_workspace_ids
+        assert d._detector is not None
         assert d._detector.parameters[DEV_WORKSPACE_ID].dynamic_variable == "$workspace.$id"
 
-    def test_unreferenced_sibling_is_anchored_but_not_listed(self, monkeypatch, sample_ws):
-        d, _, list_items = _anchored_deployer(
-            monkeypatch,
-            sample_ws,
-            workspaces=[{"id": QA_WORKSPACE_ID, "displayName": "Fabdep Test [QA]"}],
-        )
+    def test_only_the_repos_workspaces_are_anchored(self, monkeypatch, sample_ws):
+        """Siblings follow workspace_name_template (see test_config); an
+        unreferenced one is anchored without listing its lakehouses."""
+        siblings = [
+            _ws(QA_WORKSPACE_ID, "Fabdep Test [QA]"),
+            _ws(DEV_WORKSPACE_ID, "fabdep test [uat]"),
+        ]
+        others = [
+            _ws("00000000-0000-0000-0000-0000000000e0", name)
+            for name in (
+                "Other [DEV]",
+                "Fabdep Test Extra [DEV]",
+                "Fabdep Test",
+                "Fabdep Test [DEV] [OLD]",
+                "Fabdep Test [ARCHIVE] Copy [DEV]",
+            )
+        ]
+        d, list_items = _with_listing(monkeypatch, sample_ws, siblings + others)
 
-        assert QA_WORKSPACE_ID in d.source_workspace_ids
-        assert not list_items.called
-
-    def test_other_repos_workspaces_are_not_siblings(self, monkeypatch, sample_ws):
-        d, _, _ = _anchored_deployer(
-            monkeypatch,
-            sample_ws,
-            workspaces=[
-                {"id": QA_WORKSPACE_ID, "displayName": "Other [DEV]"},
-                {"id": DEV_WORKSPACE_ID, "displayName": "Fabdep Test Extra [DEV]"},
-                {"id": "00000000-0000-0000-0000-00000000000e", "displayName": "Fabdep Test"},
-            ],
-        )
-
-        assert d.source_workspace_ids == {FAKE_WORKSPACE_ID}
-
-    def test_one_bracketed_suffix_marks_a_sibling(self, monkeypatch, sample_ws):
-        d, _, _ = _anchored_deployer(
-            monkeypatch,
-            sample_ws,
-            workspaces=[
-                {"id": QA_WORKSPACE_ID, "displayName": "Fabdep Test [ARCHIVE] Copy [DEV]"},
-                {"id": DEV_WORKSPACE_ID, "displayName": "Fabdep Test [DEV] [OLD]"},
-            ],
-        )
-
-        assert d.source_workspace_ids == {FAKE_WORKSPACE_ID}
-
-    def test_sibling_match_is_case_insensitive(self, monkeypatch, sample_ws):
-        d, _, _ = _anchored_deployer(
-            monkeypatch,
-            sample_ws,
-            workspaces=[{"id": QA_WORKSPACE_ID, "displayName": "fabdep test [qa]"}],
-        )
-
-        assert QA_WORKSPACE_ID in d.source_workspace_ids
+        assert d.source_workspace_ids == {FAKE_WORKSPACE_ID, QA_WORKSPACE_ID, DEV_WORKSPACE_ID}
+        # Only DEV's id appears in the content.
+        list_items.assert_called_once_with(DEV_WORKSPACE_ID, "Lakehouse")
 
     def test_environments_map_names_the_siblings(self, monkeypatch, sample_ws):
         (sample_ws / "fabdep.yml").write_text(
             'workspace_base_name: "Fabdep Test"\n'
             "environments:\n  MAIN:\n  dev:\n    workspace: Fabdep Dev\n"
         )
-        d, _, _ = _anchored_deployer(
+        d, _ = _with_listing(
             monkeypatch,
             sample_ws,
-            workspaces=[
-                {"id": DEV_WORKSPACE_ID, "displayName": "Fabdep Dev"},
-                {"id": QA_WORKSPACE_ID, "displayName": "Fabdep Test [QA]"},
-            ],
+            [_ws(DEV_WORKSPACE_ID, "Fabdep Dev"), _ws(QA_WORKSPACE_ID, "Fabdep Test [QA]")],
         )
 
         assert d.source_workspace_ids == {FAKE_WORKSPACE_ID, DEV_WORKSPACE_ID}
 
     def test_listing_failure_warns_and_keeps_target_anchor(self, monkeypatch, sample_ws, caplog):
-        d, _, _ = _anchored_deployer(monkeypatch, sample_ws, workspaces=[], list_error="403")
+        d, _ = _with_listing(monkeypatch, sample_ws, RuntimeError("403"))
 
         assert d.source_workspace_ids == {FAKE_WORKSPACE_ID}
         assert "Could not list workspaces (403)" in caplog.text
 
     def test_lakehouse_listing_failure_warns_and_continues(self, monkeypatch, sample_ws, caplog):
-        list_ws = MagicMock(
-            return_value=[{"id": DEV_WORKSPACE_ID, "displayName": "Fabdep Test [DEV]"}]
+        d, _ = _with_listing(
+            monkeypatch,
+            sample_ws,
+            [_ws(DEV_WORKSPACE_ID, "Fabdep Test [DEV]")],
+            RuntimeError("403"),
         )
-        monkeypatch.setattr("fabric_deploy.workspace.list_workspaces", list_ws)
-        monkeypatch.setattr(
-            "fabric_deploy.workspace.list_workspace_items",
-            MagicMock(side_effect=RuntimeError("403")),
-        )
-        with (
-            patch(
-                "fabric_deploy.workspace.get_workspace_id_by_name",
-                return_value=FAKE_WORKSPACE_ID,
-            ),
-            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
-        ):
-            d = WorkspaceDeployer(sample_ws, branch_override="MAIN")
 
         assert DEV_WORKSPACE_ID in d.source_workspace_ids
         assert d.source_lakehouse_ids == {}
         assert "Fabdep Test [DEV]" in caplog.text
 
 
-class TestSkipLakehouseWithAutoBinding:
-    def test_warns_that_auto_bound_notebooks_rebind_anyway(
-        self, tmp_path: Path, monkeypatch, caplog
-    ):
-        """fabric-cicd resolves a lakehouse logicalId to the target's lakehouse
-        before parameters apply, so -L cannot keep an auto-bound notebook on
-        the source lakehouse; say so instead of silently not doing it."""
-        (tmp_path / "fabdep.yml").write_text('workspace_base_name: "Base"\n')
-        lh = tmp_path / "lh.Lakehouse"
-        lh.mkdir()
-        (lh / ".platform").write_text(
-            '{"metadata": {"displayName": "lh", "type": "Lakehouse"}, '
-            '"config": {"logicalId": "66666666-6666-6666-6666-666666666666"}}'
-        )
-        nb = tmp_path / "nb.Notebook"
-        nb.mkdir()
-        (nb / ".platform").write_text('{"metadata": {"displayName": "nb", "type": "Notebook"}}')
-        (nb / "notebook-content.py").write_text(
-            '# META {\n# META   "dependencies": {"lakehouse": {\n'
-            '# META     "default_lakehouse": "66666666-6666-6666-6666-666666666666",\n'
-            '# META     "default_lakehouse_workspace_id": "00000000-0000-0000-0000-000000000000"\n'
-            "# META   }}\n# META }\n"
-        )
-        (nb / "notebook-settings.json").write_text('{"auto-binding": {"lakehouse": "on"}}')
-        monkeypatch.setattr("fabric_deploy.workspace.list_workspaces", lambda: [])
-        with (
-            patch(
-                "fabric_deploy.workspace.get_workspace_id_by_name",
-                return_value=FAKE_WORKSPACE_ID,
+def test_skip_lakehouse_warns_that_auto_bound_notebooks_rebind_anyway(
+    tmp_path: Path, mock_fabric_api, caplog
+):
+    """fabric-cicd resolves a lakehouse logicalId to the target's lakehouse
+    before parameters apply, so -L cannot keep an auto-bound notebook on the
+    source lakehouse; say so instead of silently not doing it."""
+    logical_id = "00000000-0000-0000-0000-0000000000b1"
+    (tmp_path / "fabdep.yml").write_text('workspace_base_name: "Base"\n')
+    make_item(tmp_path, "lh", "Lakehouse", logical_id=logical_id)
+    make_item(
+        tmp_path,
+        "nb",
+        "Notebook",
+        files={
+            "notebook-content.py": (
+                '# META {\n# META   "dependencies": {"lakehouse": {\n'
+                f'# META     "default_lakehouse": "{logical_id}",\n'
+                '# META     "default_lakehouse_workspace_id": "00000000-0000-0000-0000-000000000000"\n'
+                "# META   }}\n# META }\n"
             ),
-            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
-        ):
-            WorkspaceDeployer(tmp_path, branch_override="MAIN", skip_lakehouse=True)
+            "notebook-settings.json": {"auto-binding": {"lakehouse": "on"}},
+        },
+    )
 
-        assert "--skip-lakehouse" in caplog.text
-        assert "nb.Notebook" in caplog.text
+    WorkspaceDeployer(tmp_path, branch_override="MAIN", skip_lakehouse=True)
+
+    assert "--skip-lakehouse" in caplog.text
+    assert "nb.Notebook" in caplog.text
 
 
-class TestRunSummaryLines:
-    def test_deploy_names_source_and_target_without_a_banner(self, deployer, caplog):
-        deployer.source_workspaces = {"00000000-0000-0000-0000-00000000000d": "Fabdep Test [DEV]"}
-        with (
-            patch("fabric_deploy.workspace.FabricWorkspace"),
-            patch("fabric_deploy.workspace.publish_all_items"),
-            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
-            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
-            caplog.at_level("INFO"),
-        ):
-            deployer.deploy(item_types=["Notebook"])
+def test_deploy_names_source_and_target_without_a_banner(deployer, fabric_cicd, caplog):
+    deployer.source_workspaces = {QA_WORKSPACE_ID: "Fabdep Test [QA]"}
+    with caplog.at_level("INFO"):
+        deployer.deploy(item_types=["Notebook"])
 
-        messages = [r.message for r in caplog.records]
-        assert not any("fabdep v" in m for m in messages)
-        assert (
-            "Source Workspace: Fabdep Test [DEV] (00000000-0000-0000-0000-00000000000d)" in messages
-        )
-        assert f"Target Workspace: 'Fabdep Test [MAIN]' ({FAKE_WORKSPACE_ID})" in messages
-        assert not any(
-            m.startswith("Workspace Name") or m.startswith("Parameter file") for m in messages
-        )
+    messages = [r.message for r in caplog.records]
+    assert not any("fabdep v" in m for m in messages)
+    assert f"Source Workspace: Fabdep Test [QA] ({QA_WORKSPACE_ID})" in messages
+    assert f"Target Workspace: 'Fabdep Test [MAIN]' ({FAKE_WORKSPACE_ID})" in messages
+    assert not any(m.startswith(("Workspace Name", "Parameter file")) for m in messages)

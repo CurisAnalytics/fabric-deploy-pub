@@ -16,6 +16,8 @@ import pytest
 from fabric_deploy.git import changed_paths_in, current_branch, latest_pr_commit
 from fabric_deploy.scope import items_for_changed_paths
 
+from .conftest import make_item
+
 # --- helpers ---------------------------------------------------------------
 
 
@@ -47,12 +49,8 @@ def _repo(tmp_path: Path) -> Path:
 
 
 def _item(repo: Path, name: str, item_type: str, subdir: str = "") -> Path:
-    item = repo / subdir / f"{name}.{item_type}" if subdir else repo / f"{name}.{item_type}"
-    item.mkdir(parents=True)
-    (item / ".platform").write_text(
-        json.dumps({"metadata": {"displayName": name, "type": item_type}})
-    )
-    return item
+    folder = f"{subdir}/{name}.{item_type}" if subdir else None
+    return make_item(repo, name, item_type, folder=folder)
 
 
 def _commit(repo: Path, message: str) -> str:
