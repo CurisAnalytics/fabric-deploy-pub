@@ -16,6 +16,7 @@ from fabric_cicd import constants
 
 from fabric_deploy import transport
 from fabric_deploy.transport import (
+    fabric_api_list,
     fabric_api_request,
     fabric_url,
     http_request,
@@ -256,3 +257,29 @@ def test_poll_lro_times_out(monkeypatch, sleeps):
     with pytest.raises(RuntimeError, match="did not finish within 3s"):
         poll_fabric_lro({"location": "https://op/1", "retry-after": "1"}, "sync", timeout_s=3)
     assert sum(sleeps) == 3
+
+
+# --- fabric_api_list -----------------------------------------------------
+
+
+def test_list_follows_continuation_token_and_keeps_the_query(monkeypatch):
+    pages = {
+        fabric_url("/v1/things?type=A"): {"value": [1], "continuationToken": "t/2+"},
+        fabric_url("/v1/things?type=A&continuationToken=t/2%2B"): {
+            "value": [2],
+            "continuationToken": "t3",
+        },
+        fabric_url("/v1/things?type=A&continuationToken=t3"): {"value": [3]},
+    }
+    calls = _fake_http(monkeypatch, lambda url: (200, {}, pages[url]))
+    assert fabric_api_list("/v1/things?type=A", "list things") == [1, 2, 3]
+    assert len(calls) == 3
+
+
+def test_list_without_query_sends_the_token_as_the_first_parameter(monkeypatch):
+    pages = {
+        fabric_url("/v1/things"): {"value": [1], "continuationToken": "t2"},
+        fabric_url("/v1/things?continuationToken=t2"): {"value": []},
+    }
+    _fake_http(monkeypatch, lambda url: (200, {}, pages[url]))
+    assert fabric_api_list("/v1/things", "list things") == [1]

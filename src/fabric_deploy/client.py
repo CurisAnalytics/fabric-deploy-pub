@@ -2,11 +2,11 @@
 
 import base64
 import time
-import urllib.parse
 from typing import TypedDict
 
 from .identity import FABRIC_SCOPE, POWERBI_SCOPE
 from .transport import (
+    fabric_api_list,
     fabric_api_request,
     fabric_url,
     http_request,
@@ -57,8 +57,7 @@ def list_workspaces() -> list[FabricWorkspaceInfo]:
     Raises:
         RuntimeError: If API call fails
     """
-    data = fabric_api_request("/v1/workspaces", error_context="list Fabric workspaces")
-    return data.get("value", [])
+    return fabric_api_list("/v1/workspaces", error_context="list Fabric workspaces")
 
 
 def list_capacities() -> list[dict]:
@@ -76,8 +75,7 @@ def list_capacities() -> list[dict]:
     Raises:
         RuntimeError: If API call fails
     """
-    data = fabric_api_request("/v1/capacities", error_context="list Fabric capacities")
-    return data.get("value", [])
+    return fabric_api_list("/v1/capacities", error_context="list Fabric capacities")
 
 
 def get_default_capacity_id() -> str:
@@ -214,24 +212,10 @@ def list_workspace_items(workspace_id: str, item_type: str | None = None) -> lis
     Returns:
         List of item dicts (each has `id`, `displayName`, `type`).
     """
-    base = f"/v1/workspaces/{workspace_id}/items"
-    params = [f"type={item_type}"] if item_type else []
-    ctx = f"list {item_type or 'workspace'} items"
-
-    items: list[dict] = []
-    token: str | None = None
-    while True:
-        query = list(params)
-        if token:
-            query.append(f"continuationToken={urllib.parse.quote(token)}")
-        endpoint = base + ("?" + "&".join(query) if query else "")
-        data = fabric_api_request(endpoint, error_context=ctx)
-        items.extend(data.get("value", []))
-        # The items API paginates; a model/endpoint on page 2+ would otherwise
-        # be invisible and resolve as "not found".
-        token = data.get("continuationToken")
-        if not token:
-            return items
+    endpoint = f"/v1/workspaces/{workspace_id}/items"
+    if item_type:
+        endpoint += f"?type={item_type}"
+    return fabric_api_list(endpoint, error_context=f"list {item_type or 'workspace'} items")
 
 
 def find_item_by_name(workspace_id: str, item_type: str, name: str | None = None) -> dict:
@@ -290,19 +274,9 @@ def get_sqldatabase_server_host(workspace_id: str, name: str) -> str:
         ValueError: No SQL database matches `name`, or it has no serverFqdn
             yet (still provisioning).
     """
-    endpoint = f"/v1/workspaces/{workspace_id}/sqlDatabases"
-    ctx = "list SQL databases"
-
-    items: list[dict] = []
-    token: str | None = None
-    while True:
-        query = f"?continuationToken={urllib.parse.quote(token)}" if token else ""
-        data = fabric_api_request(endpoint + query, error_context=ctx)
-        items.extend(data.get("value", []))
-        token = data.get("continuationToken")
-        if not token:
-            break
-
+    items = fabric_api_list(
+        f"/v1/workspaces/{workspace_id}/sqlDatabases", error_context="list SQL databases"
+    )
     matches = [i for i in items if i.get("displayName", "").lower() == name.lower()]
     if len(matches) != 1:
         available = sorted(i.get("displayName", "?") for i in items)

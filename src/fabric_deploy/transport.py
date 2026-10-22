@@ -2,8 +2,9 @@
 
 A thin request layer: authenticated calls with a timeout and bounded retries
 on throttling / server errors, status + header exposure for long-running
-operations, and the Fabric LRO poller. No knowledge of specific endpoints
-(that's the `client` module) and no auth logic (that's `identity`).
+operations, the Fabric LRO poller and list pagination. No knowledge of
+specific endpoints (that's the `client` module) and no auth logic (that's
+`identity`).
 """
 
 import email.utils
@@ -11,7 +12,9 @@ import json
 import logging
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+from typing import Any
 
 from fabric_cicd import constants
 
@@ -22,6 +25,7 @@ __all__ = [
     "powerbi_url",
     "http_request",
     "fabric_api_request",
+    "fabric_api_list",
     "poll_fabric_lro",
 ]
 
@@ -197,6 +201,30 @@ def fabric_api_request(
         error_context=error_context,
     )
     return body
+
+
+def fabric_api_list(endpoint: str, error_context: str) -> list[Any]:
+    """GET every page of a Fabric list endpoint and return the merged `value` items.
+
+    Each next page re-sends `endpoint` with the response's `continuationToken`
+    (the same token `continuationUri` embeds), so query filters such as
+    `?type=` and the configured API root carry over.
+
+    Args:
+        endpoint: API path, optionally with a query string (e.g.
+            "/v1/workspaces/{id}/items?type=Lakehouse").
+        error_context: Context string for error messages.
+    """
+    items: list[Any] = []
+    url = fabric_url(endpoint)
+    separator = "&" if "?" in endpoint else "?"
+    while True:
+        _status, _headers, page = http_request(url, error_context=error_context)
+        items.extend(page.get("value", []))
+        token = page.get("continuationToken")
+        if not token:
+            return items
+        url = fabric_url(f"{endpoint}{separator}continuationToken={urllib.parse.quote(token)}")
 
 
 def poll_fabric_lro(

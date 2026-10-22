@@ -1,6 +1,6 @@
 """Unit tests for client.py: item lookup, pagination, refresh polling, API roots.
 
-Network is mocked at the `http_request` / `fabric_api_request` seam and
+Network is mocked at the `http_request` / `fabric_api_list` seams and
 `time.sleep` is stubbed, so these run with no Fabric access and no real waits.
 """
 
@@ -17,7 +17,9 @@ from fabric_deploy.client import (
     find_item_by_name,
     get_semantic_model_definition,
     get_sqldatabase_server_host,
+    list_capacities,
     list_workspace_items,
+    list_workspaces,
     refresh_semantic_model,
     refresh_sql_endpoint_metadata,
 )
@@ -33,30 +35,37 @@ def _jwt(exp_offset: int = 3600) -> str:
     return f"{header.decode()}.{payload.decode()}.sig"
 
 
-# --- list_workspace_items pagination -------------------------------------
+# --- pagination ------------------------------------------------------------
 
 
-def test_list_workspace_items_follows_continuation_token(monkeypatch):
-    pages = [
-        {
-            "value": [{"id": "1", "displayName": "a", "type": "SemanticModel"}],
-            "continuationToken": "tok2",
-        },
-        {"value": [{"id": "2", "displayName": "b", "type": "SemanticModel"}]},
-    ]
+def _two_pages(monkeypatch) -> list[str]:
+    """Serve every list endpoint as two pages; return the requested URLs."""
     seen: list[str] = []
 
-    def fake_request(endpoint, error_context="x"):
-        seen.append(endpoint)
-        return pages[len(seen) - 1]
+    def fake_http(url, method="GET", data=None, scope=None, error_context=""):
+        seen.append(url)
+        if "continuationToken=" in url:
+            return 200, {}, {"value": [{"id": "2", "displayName": "b"}]}
+        return 200, {}, {"value": [{"id": "1", "displayName": "a"}], "continuationToken": "tok2"}
 
-    monkeypatch.setattr("fabric_deploy.client.fabric_api_request", fake_request)
-    items = list_workspace_items("ws", "SemanticModel")
+    monkeypatch.setattr("fabric_deploy.transport.http_request", fake_http)
+    return seen
 
-    assert [i["id"] for i in items] == ["1", "2"]  # both pages merged
-    assert "type=SemanticModel" in seen[0]
+
+@pytest.mark.parametrize(
+    "list_all", [list_workspaces, list_capacities, lambda: list_workspace_items("ws")]
+)
+def test_list_calls_follow_every_page(monkeypatch, list_all):
+    """A workspace or capacity on page 2+ would otherwise resolve as "not found"."""
+    _two_pages(monkeypatch)
+    assert [i["id"] for i in list_all()] == ["1", "2"]
+
+
+def test_list_workspace_items_keeps_the_type_filter_across_pages(monkeypatch):
+    seen = _two_pages(monkeypatch)
+    list_workspace_items("ws", "SemanticModel")
+    assert all("type=SemanticModel" in url for url in seen)
     assert "continuationToken=tok2" in seen[1]
-    assert "type=SemanticModel" in seen[1]  # filter preserved across pages
 
 
 # --- find_item_by_name ---------------------------------------------------
@@ -157,8 +166,7 @@ def test_powerbi_scope_token_resolution(monkeypatch, set_powerbi: bool):
 
 def _sqldbs(monkeypatch, value):
     monkeypatch.setattr(
-        "fabric_deploy.client.fabric_api_request",
-        lambda endpoint, error_context="x": {"value": value},
+        "fabric_deploy.client.fabric_api_list", lambda endpoint, error_context: value
     )
 
 
