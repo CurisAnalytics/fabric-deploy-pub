@@ -298,7 +298,8 @@ class FabdepConfig:
         if not config_file.is_file():
             raise FileNotFoundError(
                 f"No fabdep.yml in {resolved}.\n\n"
-                "fabdep reads the target workspace from it. The smallest one is:\n"
+                "fabdep reads the target workspace from it. Run `fabdep init` there to "
+                "write a starter one, or write it yourself; the smallest one is:\n"
                 '  workspace_base_name: "Contoso Sales"\n\n'
                 "which deploys branch <name> to the workspace 'Contoso Sales [<NAME>]'."
             )

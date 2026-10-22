@@ -31,7 +31,8 @@ from .log import (
 )
 from .refresh import frame_models
 from .rls import pull_rls
-from .scaffold import schema_text
+from .scaffold import schema_text, write_starter
+from .scope import repo_items
 from .workspace import PR_HEAD, WorkspaceDeployer
 
 _SEP = "=" * 100
@@ -207,6 +208,20 @@ def parse_args() -> argparse.Namespace:
     )
     _ = parser.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
     commands = parser.add_subparsers(dest="command", title="commands", metavar="COMMAND")
+
+    init = commands.add_parser(
+        "init",
+        parents=[repo],
+        help="Write a starter fabdep.yml",
+        description="Write a starter fabdep.yml into the workspace directory: "
+        "workspace_base_name, and every other setting as a commented-out example.",
+    )
+    _ = init.add_argument(
+        "--base-name",
+        metavar="NAME",
+        help="workspace_base_name (default: the directory's name)",
+    )
+    _ = init.add_argument("--force", action="store_true", help="Overwrite an existing fabdep.yml")
 
     auth = commands.add_parser("auth", help="Show the identity fabdep signs in with")
     auth_commands = auth.add_subparsers(dest="auth_command", required=True, metavar="ACTION")
@@ -425,6 +440,28 @@ def handle_detect_command(args: argparse.Namespace) -> None:
     print("Using dynamic variables: $workspace.$id, $items.Lakehouse.<name>.$id, etc.\n")
 
 
+def handle_init_command(args: argparse.Namespace) -> None:
+    """`fabdep init`: write a starter fabdep.yml and say what to run next."""
+    log = get_logger("fabric_deploy.cli")
+    try:
+        path = write_starter(args.directory, base_name=args.base_name, force=args.force)
+    except (OSError, ValueError) as e:
+        handle_command_error(e, "init")
+    if not repo_items(args.directory):
+        log.warning(
+            f"No Fabric items (folders with a .platform file) under {args.directory}: "
+            "fabdep.yml belongs in the folder that holds the workspace's item folders."
+        )
+    where = "" if args.directory.resolve() == Path.cwd().resolve() else f", in {args.directory}"
+    print(
+        f"✓ Wrote {path}\n\n"
+        f"Next steps{where}:\n"
+        "  fabdep detect   list the IDs a deploy will rewrite for the target workspace\n"
+        "  fabdep plan     show what a deploy would change, without changing anything\n"
+        "  fabdep          deploy the checked-out branch"
+    )
+
+
 def handle_deploy_command(args: argparse.Namespace) -> None:
     """`fabdep deploy`, optionally followed by framing the published models."""
     log = get_logger("fabric_deploy.cli")
@@ -527,6 +564,7 @@ _HANDLERS: dict[str, Callable[[argparse.Namespace], None]] = {
     "auth": handle_auth_command,
     "deploy": handle_deploy_command,
     "detect": handle_detect_command,
+    "init": handle_init_command,
     "refresh": handle_refresh_command,
     "rls": handle_rls_command,
     "schema": handle_schema_command,

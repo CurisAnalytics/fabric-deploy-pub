@@ -44,7 +44,9 @@ class TestFabdepYml:
             "fabric_deploy.workspace.get_workspace_id_by_name",
             lambda _name: pytest.fail("looked up a workspace without a fabdep.yml"),
         )
-        with pytest.raises(FileNotFoundError, match="(?s)No fabdep.yml in .*workspace_base_name"):
+        with pytest.raises(
+            FileNotFoundError, match="(?s)No fabdep.yml in .*`fabdep init`.*workspace_base_name"
+        ):
             WorkspaceDeployer(tmp_path, branch_override="dev")
 
     def test_yaml_missing_workspace_base_name_raises(self, tmp_path: Path):

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "fabdep.yml",
-  "description": "Configuration of fabdep (fabric-deploy): the Microsoft Fabric workspace each branch of a workspace repo deploys to, and how. Print this schema with `fabdep schema`.",
+  "description": "Configuration of fabdep (fabric-deploy): the Microsoft Fabric workspace each branch of a workspace repo deploys to, and how. Write a starter one with `fabdep init`; print this schema with `fabdep schema`.",
   "type": "object",
   "properties": {
     "workspace_base_name": {
