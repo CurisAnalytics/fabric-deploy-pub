@@ -264,6 +264,48 @@ class TestRemovedCommands:
         assert "removed" in captured.err
         assert "CHANGELOG" in captured.err
 
+    @pytest.mark.parametrize(
+        ("argv", "option"),
+        [
+            (["--max-retries", "3"], "--max-retries"),
+            (["--max-retries=3"], "--max-retries"),
+            (["-r", "3"], "-r"),
+            (["deploy", ".", "-b", "dev", "-r", "3"], "-r"),
+        ],
+    )
+    def test_removed_options_say_so(self, monkeypatch, capsys, argv, option):
+        with pytest.raises(SystemExit) as exc:
+            _parse(monkeypatch, *argv)
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        assert err == f"fabdep: '{option}' was removed; see CHANGELOG.md.\n"
+
+
+class TestUnknownCommand:
+    @pytest.mark.parametrize(
+        ("typo", "command"), [("refesh", "refresh"), ("detct", "detect"), ("pln", "plan")]
+    )
+    def test_a_typo_suggests_the_command(self, monkeypatch, capsys, tmp_path, typo, command):
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(SystemExit) as exc:
+            _parse(monkeypatch, typo, "-b", "dev")
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        assert err == f"fabdep: unknown command '{typo}' (did you mean '{command}'?)\n"
+
+    def test_a_directory_named_like_a_command_is_deployed(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "refesh").mkdir()
+        args = _parse(monkeypatch, "refesh")
+        assert (args.command, args.directory) == ("deploy", Path("refesh"))
+
+    def test_a_missing_directory_unlike_any_command(self, monkeypatch, capsys, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(SystemExit) as exc:
+            _parse(monkeypatch, "contoso-sales")
+        assert exc.value.code == 2
+        assert "no such directory: contoso-sales" in capsys.readouterr().err
+
 
 class TestCommandErrors:
     @pytest.mark.parametrize(

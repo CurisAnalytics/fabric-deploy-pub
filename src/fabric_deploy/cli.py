@@ -1,6 +1,7 @@
 """The `fabdep` command line."""
 
 import argparse
+import difflib
 import io
 import json
 import logging
@@ -59,6 +60,7 @@ _TOP_LEVEL_FLAGS = ("-h", "--help", "-V", "--version")
 _OUTPUTS = ("text", "json")
 # Named in an error instead of being read as deploy arguments (a directory "rename").
 _REMOVED_COMMANDS = ("rename", "auth list", "auth switch", "auth rename", "auth login", "auth bind")
+_REMOVED_OPTIONS = ("--max-retries", "-r")
 
 
 def format_deploy_options(args: argparse.Namespace) -> str:
@@ -430,7 +432,17 @@ def parse_args() -> argparse.Namespace:
     for removed in _REMOVED_COMMANDS:
         if argv[: removed.count(" ") + 1] == removed.split():
             parser.exit(2, f"fabdep: '{removed}' was removed; see CHANGELOG.md.\n")
+    for arg in argv:
+        if (option := arg.split("=", 1)[0]) in _REMOVED_OPTIONS:
+            parser.exit(2, f"fabdep: '{option}' was removed; see CHANGELOG.md.\n")
     if not argv or (argv[0] not in commands.choices and argv[0] not in _TOP_LEVEL_FLAGS):
+        # A word that is no directory but close to a command is a mistyped command,
+        # not the workspace directory deploy would otherwise report missing.
+        first = argv[0] if argv else ""
+        if first and not first.startswith("-") and not Path(first).is_dir():
+            close = difflib.get_close_matches(first, list(commands.choices), n=1)
+            if close:
+                parser.exit(2, f"fabdep: unknown command '{first}' (did you mean '{close[0]}'?)\n")
         argv = ["deploy", *argv]
     args = parser.parse_args(argv)
     if args.command == "deploy" and args.output and not args.dry_run:
