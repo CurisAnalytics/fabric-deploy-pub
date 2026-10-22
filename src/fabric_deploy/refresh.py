@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import logging
-from json import loads
 from pathlib import Path
 
 from .client import (
@@ -27,6 +26,7 @@ from .client import (
 from .config import FabdepConfig
 from .identity import apply_tenant_pin
 from .log import get_logger
+from .scope import _repo_items
 
 __all__ = [
     "extract_refresh_error",
@@ -101,16 +101,9 @@ def extract_refresh_error(detail: dict) -> str | None:
 
 
 def _repo_display_names(repo_dir: Path, item_type: str) -> list[str]:
-    """Display names of every `<name>.<item_type>` item in the repo."""
-    names: list[str] = []
-    for platform_file in repo_dir.rglob(".platform"):
-        if not platform_file.parent.name.endswith(f".{item_type}"):
-            continue
-        try:
-            names.append(loads(platform_file.read_text())["metadata"]["displayName"])
-        except Exception:
-            continue
-    return names
+    """Sorted display names of the repo's items of `item_type`, by `.platform` type."""
+    suffix = f".{item_type}"
+    return sorted(key.removesuffix(suffix) for key in _repo_items(repo_dir) if key.endswith(suffix))
 
 
 def _resolve_sql_endpoint(workspace_id: str, repo_dir: Path, logger: logging.Logger) -> str | None:

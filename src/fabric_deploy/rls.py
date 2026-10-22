@@ -26,7 +26,6 @@ It powers two entry points:
 from __future__ import annotations
 
 import difflib
-import json
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -41,6 +40,7 @@ from .client import (
 from .config import FabdepConfig
 from .identity import apply_tenant_pin
 from .log import get_logger
+from .scope import _platform_meta
 
 __all__ = [
     "MEMBERS_NOTE",
@@ -174,7 +174,7 @@ def read_local_roles(model_dir: Path) -> dict[str, Role]:
         return {}
     roles: dict[str, Role] = {}
     for f in sorted(roles_dir.glob("*.tmdl")):
-        text = f.read_text(encoding="utf-8")
+        text = f.read_text(encoding="utf-8-sig")
         name = _role_name_from_tmdl(text, f.stem)
         roles[name] = Role(name=name, filename=f.name, raw=text)
     return roles
@@ -218,18 +218,13 @@ def _render_diff(diff: RlsDiff, add_label: str, remove_label: str, change_label:
 
 
 def _semantic_model_dirs(repo_dir: Path) -> dict[str, Path]:
-    """Map SemanticModel display name -> its `.SemanticModel` repo directory."""
-    out: dict[str, Path] = {}
+    """Map SemanticModel display name -> its repo directory, by `.platform` type."""
+    dirs: dict[str, Path] = {}
     for platform_file in repo_dir.rglob(".platform"):
-        parent = platform_file.parent
-        if not parent.name.endswith(".SemanticModel"):
-            continue
-        try:
-            meta = json.loads(platform_file.read_text())["metadata"]
-            out[meta["displayName"]] = parent
-        except Exception:
-            continue
-    return out
+        meta = _platform_meta(platform_file)
+        if meta and meta[1] == "SemanticModel":
+            dirs[meta[0]] = platform_file.parent
+    return dirs
 
 
 def _remote_roles(workspace_id: str, model_name: str) -> dict[str, Role] | None:

@@ -186,3 +186,27 @@ def test_frame_models_syncs_sql_endpoint(patch_api, monkeypatch, tmp_path):
     )
     frame_models(tmp_path, models=["My Model"], sync=True)
     assert calls["sync"] == 1
+
+
+def test_frame_models_defaults_to_repo_models_by_platform_type(patch_api, monkeypatch, tmp_path):
+    """Without -i, every SemanticModel the repo's `.platform` files declare is framed."""
+    for folder, name, item_type in [
+        ("B.SemanticModel", "B", "SemanticModel"),
+        ("a-model", "A", "SemanticModel"),
+        ("lh.Lakehouse", "lh", "Lakehouse"),
+    ]:
+        (tmp_path / folder).mkdir()
+        (tmp_path / folder / ".platform").write_text(
+            json.dumps({"metadata": {"displayName": name, "type": item_type}})
+        )
+    refreshed: list[str] = []
+    monkeypatch.setattr(
+        "fabric_deploy.refresh.refresh_semantic_model",
+        lambda ws, ds, timeout_s=900: refreshed.append(ds) or {"status": "Completed"},
+    )
+    monkeypatch.setattr(
+        "fabric_deploy.refresh.find_item_by_name",
+        lambda ws, t, name=None: {"id": name, "displayName": name},
+    )
+    frame_models(tmp_path, sync=False)
+    assert refreshed == ["A", "B"]

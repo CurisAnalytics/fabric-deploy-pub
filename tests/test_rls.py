@@ -75,6 +75,15 @@ def test_read_local_roles_reads_files(tmp_path):
     assert set(roles) == {"RLS", "fs_rls"}
 
 
+def test_read_local_roles_tolerates_utf8_bom(tmp_path):
+    """A BOM written by an editor must not read as a rule change."""
+    d = _make_model(tmp_path, roles={"RLS.tmdl": ""})
+    (d / "definition" / "roles" / "RLS.tmdl").write_bytes(b"\xef\xbb\xbf" + ROLE_RLS.encode())
+    roles = read_local_roles(d)
+    assert set(roles) == {"RLS"}
+    assert not diff_roles(roles, roles_from_parts({"definition/roles/RLS.tmdl": ROLE_RLS})).changed
+
+
 # --- diff ----------------------------------------------------------------
 
 
@@ -337,3 +346,13 @@ def test_pull_skips_absent_model(tmp_path, monkeypatch, patch_pull_env):
 def test_pull_requires_a_model(tmp_path, patch_pull_env):
     with pytest.raises(ValueError, match="No semantic model"):
         pull_rls(tmp_path)
+
+
+def test_models_found_by_platform_type_not_folder_suffix(tmp_path, monkeypatch, patch_pull_env):
+    """Items are what `.platform` says they are, whatever the folder is called."""
+    d = _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS})
+    d.rename(tmp_path / "M")
+    monkeypatch.setattr(
+        "fabric_deploy.rls._remote_roles", lambda ws, name: _role("RLS", ROLE_RLS_EDITED)
+    )
+    assert pull_rls(tmp_path) is True
