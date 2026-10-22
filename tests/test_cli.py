@@ -258,3 +258,28 @@ class TestFrameScope:
     def test_no_frame_without_the_flag(self, monkeypatch, framed):
         _run(monkeypatch, "deploy")
         assert framed == []
+
+
+class TestRemovedCommands:
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["rename"],
+            ["rename", "--dry-run"],
+            ["auth", "list"],
+            ["auth", "switch", "contoso"],
+            ["auth", "rename", "a", "b"],
+            ["auth", "login", "contoso"],
+            ["auth", "bind", "contoso"],
+        ],
+    )
+    def test_say_they_were_removed(self, monkeypatch, capsys, argv):
+        with pytest.raises(SystemExit) as exc:
+            _parse(monkeypatch, *argv)
+        assert exc.value.code == 2
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err.count("\n") == 1
+        assert f"'{' '.join(argv[:2] if argv[0] == 'auth' else argv[:1])}'" in captured.err
+        assert "removed" in captured.err
+        assert "CHANGELOG" in captured.err

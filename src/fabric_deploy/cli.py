@@ -31,6 +31,8 @@ from .refresh import frame_models
 from .workspace import PR_HEAD, WorkspaceDeployer
 
 _TOP_LEVEL_FLAGS = ("-h", "--help", "-V", "--version")
+# Named in an error instead of being read as deploy arguments (a directory "rename").
+_REMOVED_COMMANDS = ("rename", "auth list", "auth switch", "auth rename", "auth login", "auth bind")
 
 
 def format_deploy_options(
@@ -358,6 +360,9 @@ def parse_args() -> argparse.Namespace:
     # argparse has no default subcommand: anything that isn't a command or a
     # top-level flag is the deploy command's arguments.
     argv = sys.argv[1:]
+    for removed in _REMOVED_COMMANDS:
+        if argv[: removed.count(" ") + 1] == removed.split():
+            parser.exit(2, f"fabdep: '{removed}' was removed; see CHANGELOG.md.\n")
     if not argv or (argv[0] not in commands.choices and argv[0] not in _TOP_LEVEL_FLAGS):
         argv = ["deploy", *argv]
     return parser.parse_args(argv)
