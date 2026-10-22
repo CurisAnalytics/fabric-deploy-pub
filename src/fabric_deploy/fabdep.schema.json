@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "fabdep.yml",
+  "description": "Configuration of fabdep (fabric-deploy): the Microsoft Fabric workspace each branch of a workspace repo deploys to, and how. Print this schema with `fabdep schema`.",
+  "type": "object",
+  "properties": {
+    "workspace_base_name": {
+      "description": "{base} in workspace names: by default branch dev deploys to \"<workspace_base_name> [DEV]\". Required whenever a template in use contains {base}.",
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "workspace_name_template": {
+      "description": "The workspace name of a branch whose environments entry names none. {base} is workspace_base_name, {branch} the branch name, {BRANCH} the branch name upper-cased; {{ and }} are literal braces.",
+      "$ref": "#/$defs/template",
+      "default": "{base} [{BRANCH}]"
+    },
+    "environments": {
+      "description": "Settings per branch, keyed by branch name or glob (* matches any characters, ? one). A branch uses the entry of its exact name, else the first glob in file order that matches it, else none.",
+      "type": ["object", "null"],
+      "additionalProperties": { "$ref": "#/$defs/environment" }
+    },
+    "capacity_id": {
+      "description": "The Fabric capacity ID of workspaces fabdep creates. Without it fabdep uses the only active capacity, and fails when several are active.",
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "patternErrorMessage": "A capacity ID: a GUID, not the capacity's name."
+    },
+    "tenant": {
+      "description": "The Microsoft Entra tenant ID every token must come from (`az account show --query tenantId --output tsv`). fabdep refuses a token from any other tenant before calling an API.",
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "patternErrorMessage": "A tenant ID: a GUID, not the tenant's name or domain."
+    },
+    "auth": {
+      "description": "The credential to sign in with: cli (whoever `az login` signed in; the default), env (a service principal from AZURE_* variables), workload (a federated OIDC token file), managed (the host's managed identity) or default (azure-identity's DefaultAzureCredential). --auth and FABDEP_AUTH take precedence.",
+      "enum": ["cli", "env", "workload", "managed", "default", null]
+    },
+    "require_spn": {
+      "description": "Refuse user sign-ins: only an app-only token (a service principal or managed identity) may deploy.",
+      "type": "boolean",
+      "default": false
+    },
+    "manual_parameters": {
+      "description": "Find/replace rules on top of the IDs fabdep detects. A detected find_value gets this replace_value instead; any other find_value becomes a rule of its own if it occurs in an item file.",
+      "type": ["array", "null"],
+      "items": { "$ref": "#/$defs/manual_parameter" }
+    }
+  },
+  "additionalProperties": false,
+  "$comment": "workspace_base_name is required unless no template in use contains {base}: workspace_name_template has none, or every environments entry names its workspace.",
+  "anyOf": [
+    {
+      "required": ["workspace_base_name"],
+      "properties": { "workspace_base_name": { "type": "string" } }
+    },
+    {
+      "required": ["workspace_name_template"],
+      "properties": {
+        "workspace_name_template": { "$ref": "#/$defs/without_base" },
+        "environments": { "$ref": "#/$defs/environments_without_base" }
+      }
+    },
+    {
+      "required": ["environments"],
+      "properties": {
+        "environments": {
+          "$ref": "#/$defs/environments_without_base",
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "object",
+            "required": ["workspace"],
+            "properties": { "workspace": { "type": "string" } }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "text": { "type": "string", "minLength": 1 },
+    "template": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?:[^{}]|\\{\\{|\\}\\}|\\{(?:base|branch|BRANCH)\\})*$",
+      "patternErrorMessage": "Placeholders are {base}, {branch} and {BRANCH}; write {{ and }} for literal braces."
+    },
+    "without_base": {
+      "pattern": "^(?!(?:[\\s\\S]*[^{])?(?:\\{\\{)*\\{base\\})",
+      "patternErrorMessage": "Uses {base}: set workspace_base_name."
+    },
+    "environments_without_base": {
+      "additionalProperties": {
+        "properties": { "workspace": { "$ref": "#/$defs/without_base" } }
+      }
+    },
+    "environment": {
+      "description": "Where and how the branch deploys.",
+      "type": ["object", "null"],
+      "properties": {
+        "workspace": {
+          "description": "The workspace name: a literal name or a template, like workspace_name_template (default: workspace_name_template).",
+          "anyOf": [{ "$ref": "#/$defs/template" }, { "type": "null" }]
+        },
+        "environment": {
+          "description": "The fabric-cicd environment, which selects parameter.yml values and Variable Library value sets (default: the branch name).",
+          "anyOf": [{ "$ref": "#/$defs/text" }, { "type": "null" }]
+        },
+        "create": {
+          "description": "Create the workspace when it doesn't exist.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "manual_parameter": {
+      "type": "object",
+      "properties": {
+        "find_value": {
+          "description": "The text to replace in item files, or a list of texts.",
+          "anyOf": [
+            { "$ref": "#/$defs/text" },
+            { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/text" } }
+          ]
+        },
+        "replace_value": {
+          "description": "The replacement: one value, or a mapping of fabric-cicd environment names (_ALL_ for any other) to values.",
+          "anyOf": [
+            { "$ref": "#/$defs/text" },
+            {
+              "type": "object",
+              "minProperties": 1,
+              "propertyNames": { "minLength": 1 },
+              "additionalProperties": { "$ref": "#/$defs/text" }
+            }
+          ]
+        },
+        "item_type": {
+          "description": "Apply the rule only to items of this type, or of these types (e.g. SemanticModel).",
+          "anyOf": [
+            { "type": ["string", "null"] },
+            { "type": "array", "items": { "$ref": "#/$defs/text" } }
+          ]
+        },
+        "description": {
+          "description": "A label for a rule fabdep adds.",
+          "type": ["string", "null"]
+        }
+      },
+      "required": ["find_value", "replace_value"],
+      "additionalProperties": false
+    }
+  }
+}

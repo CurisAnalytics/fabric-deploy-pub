@@ -31,6 +31,7 @@ from .log import (
 )
 from .refresh import frame_models
 from .rls import pull_rls
+from .scaffold import schema_text
 from .workspace import PR_HEAD, WorkspaceDeployer
 
 _SEP = "=" * 100
@@ -362,6 +363,17 @@ def parse_args() -> argparse.Namespace:
         "(for review + commit); default is diff-only (exit non-zero on drift)",
     )
 
+    schema = commands.add_parser(
+        "schema",
+        help="Print the JSON Schema of fabdep.yml, for editor validation",
+        description="Print the JSON Schema of fabdep.yml. Save it next to fabdep.yml "
+        "(fabdep schema -o fabdep.schema.json) and point the YAML language server at it "
+        "with the comment '# yaml-language-server: $schema=./fabdep.schema.json'.",
+    )
+    _ = schema.add_argument(
+        "-o", "--output", type=Path, metavar="FILE", help="Write it to FILE (UTF-8)"
+    )
+
     parser.epilog = "With no command, fabdep runs deploy:\n\n" + deploy.format_help()
 
     # argparse has no default subcommand: anything that isn't a command or a
@@ -502,12 +514,22 @@ def handle_rls_command(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def handle_schema_command(args: argparse.Namespace) -> None:
+    """`fabdep schema`: print fabdep.yml's JSON Schema, or write it to a file."""
+    if args.output:
+        # Not a shell redirect: Windows PowerShell 5.1 would write UTF-16.
+        _ = args.output.write_text(schema_text(), encoding="utf-8")
+    else:
+        print(schema_text(), end="")
+
+
 _HANDLERS: dict[str, Callable[[argparse.Namespace], None]] = {
     "auth": handle_auth_command,
     "deploy": handle_deploy_command,
     "detect": handle_detect_command,
     "refresh": handle_refresh_command,
     "rls": handle_rls_command,
+    "schema": handle_schema_command,
 }
 
 
