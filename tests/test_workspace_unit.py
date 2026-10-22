@@ -14,13 +14,14 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 from azure.core.credentials import TokenCredential
 
 from fabric_deploy.params import ParameterFile
 from fabric_deploy.scope import _repo_items, validate_include_items
 from fabric_deploy.workspace import WorkspaceDeployer, format_deploy_options
 
-from .conftest import SAMPLE_DEV_WORKSPACE_ID
+from .conftest import SAMPLE_DEV_WORKSPACE_ID, SAMPLE_LAKEHOUSE_ID
 
 FAKE_WORKSPACE_ID = "00000000-0000-0000-0000-000000000001"
 
@@ -308,80 +309,137 @@ class TestIncludeItemsValidation:
         assert fake_publish.call_args.kwargs["items_to_include"] == ["Fill Lakehouse.Notebook"]
 
 
-class TestParameterFileWriter:
-    """Pin _write_parameter_file behavior under the no-auto-scoping model:
-    every detected parameter flows through; only manual_parameters carry
-    item_type filters into the emitted yaml."""
+class TestParameterFile:
+    """The parameter file fabric-cicd gets: the repo's parameter.yml plus the
+    detected rules, written outside the repo. The sample repo's notebook
+    yields two detected rules: its DEV workspace id and its lakehouse id."""
 
-    def test_all_detected_params_flow_through_regardless_of_scope(self, deployer, tmp_path):
-        from fabric_deploy.detect import DetectedParameter
+    USER_FILE = (
+        "find_replace:\n"
+        f'  - find_value: "{SAMPLE_LAKEHOUSE_ID}"\n'
+        "    replace_value:\n"
+        '      MAIN: "user-lakehouse"\n'
+        '  - find_value: "user-only"\n'
+        "    replace_value:\n"
+        '      _ALL_: "x"\n'
+        "key_value_replace:\n"
+        '  - find_key: "$.properties.x"\n'
+        "    replace_value:\n"
+        '      MAIN: "y"\n'
+    )
 
-        wsid = "11111111-1111-1111-1111-111111111111"
-        lhid = "22222222-2222-2222-2222-222222222222"
-        deployer._detector.parameters = {
-            wsid: DetectedParameter(
-                find_value=wsid,
-                description="Workspace ID",
-                dynamic_variable="$workspace.$id",
-            ),
-            lhid: DetectedParameter(
-                find_value=lhid,
-                description="Lakehouse ID",
-                dynamic_variable="$items.Lakehouse.lh.$id",
-            ),
+    def _deploy(self, deployer) -> dict:
+        """Deploy with fabric-cicd mocked; record what FabricWorkspace got and
+        what the repo held at that moment."""
+        seen: dict = {}
+        repo = deployer._repo_dir_resolved
+
+        def fake_fabric_workspace(**kwargs):
+            path = kwargs.get("parameter_file_path")
+            seen["path"] = path
+            seen["environment"] = kwargs.get("environment")
+            seen["document"] = yaml.safe_load(Path(path).read_text()) if path else None
+            seen["repo_files"] = sorted(f.name for f in repo.iterdir())
+            return MagicMock()
+
+        with (
+            patch("fabric_deploy.workspace.FabricWorkspace", side_effect=fake_fabric_workspace),
+            patch("fabric_deploy.workspace.publish_all_items"),
+            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
+            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
+        ):
+            deployer.deploy(item_types=["Notebook"])
+        return seen
+
+    def test_detected_rules_go_to_a_temporary_file_outside_the_repo(self, deployer):
+        repo_files = sorted(f.name for f in deployer._repo_dir_resolved.iterdir())
+        seen = self._deploy(deployer)
+
+        assert isinstance(seen["path"], str)
+        assert not Path(seen["path"]).is_relative_to(deployer._repo_dir_resolved)
+        assert not Path(seen["path"]).exists(), "removed after the deploy"
+        assert seen["repo_files"] == repo_files
+        assert seen["document"] == {
+            "find_replace": [
+                {
+                    "find_value": SAMPLE_LAKEHOUSE_ID,
+                    "replace_value": {"MAIN": "$items.Lakehouse.fabdep_lakehouse.$id"},
+                },
+                {
+                    "find_value": SAMPLE_DEV_WORKSPACE_ID,
+                    "replace_value": {"MAIN": "$workspace.$id"},
+                },
+            ]
         }
-        ParameterFile(tmp_path, deployer.logger).write(
-            deployer._detector, FAKE_WORKSPACE_ID, "MAIN", 0, 0
-        )
 
-        # Both detected entries survive — scope no longer filters auto-detected.
-        assert set(deployer._detector.parameters) == {wsid, lhid}
+    def test_user_file_is_merged_and_wins(self, deployer):
+        user_file = deployer._repo_dir_resolved / "parameter.yml"
+        user_file.write_text(self.USER_FILE)
+        repo_files = sorted(f.name for f in deployer._repo_dir_resolved.iterdir())
 
-    def test_emitted_yaml_omits_item_type_for_unscoped_entries(self, deployer, tmp_path):
-        """Auto-detected entries have empty item_types and must NOT emit an
-        `item_type:` line — fabric-cicd then applies them to all in-scope files."""
-        import yaml
+        seen = self._deploy(deployer)
 
-        from fabric_deploy.detect import DetectedParameter
-
-        deployer._detector.parameters = {
-            "wsid": DetectedParameter(
-                find_value="wsid",
-                description="Workspace ID",
-                dynamic_variable="$workspace.$id",
-            ),
+        user = yaml.safe_load(self.USER_FILE)
+        assert seen["document"] == {
+            # The user's entries first; the detected lakehouse rule they cover dropped.
+            "find_replace": [
+                *user["find_replace"],
+                {
+                    "find_value": SAMPLE_DEV_WORKSPACE_ID,
+                    "replace_value": {"MAIN": "$workspace.$id"},
+                },
+            ],
+            "key_value_replace": user["key_value_replace"],
         }
-        ParameterFile(tmp_path, deployer.logger).write(
-            deployer._detector, FAKE_WORKSPACE_ID, "MAIN", 0, 0
+        assert seen["repo_files"] == repo_files
+        assert user_file.read_text() == self.USER_FILE
+
+    def test_template_paths_resolve_from_the_repo(self, deployer):
+        repo = deployer._repo_dir_resolved
+        (repo / "params").mkdir()
+        (repo / "params" / "ws.yml").write_text(
+            f'find_replace:\n  - find_value: "{SAMPLE_DEV_WORKSPACE_ID}"\n'
+            '    replace_value:\n      _ALL_: "from-template"\n'
         )
+        (repo / "parameter.yml").write_text('extend:\n  - "params/ws.yml"\n')
 
-        param_file = tmp_path / "parameter.yml"
-        assert param_file.exists()
-        data = yaml.safe_load(param_file.read_text())
-        assert "item_type" not in data["find_replace"][0]
-        assert data["find_replace"][0]["replace_value"] == {"MAIN": "$workspace.$id"}
+        seen = self._deploy(deployer)
 
-    def test_emitted_yaml_includes_item_type_for_manually_scoped_entries(self, deployer, tmp_path):
-        """Manual overrides set item_types — those must round-trip into yaml."""
-        import yaml
+        assert seen["document"]["extend"] == [str(repo / "params" / "ws.yml")]
+        assert [e["find_value"] for e in seen["document"]["find_replace"]] == [SAMPLE_LAKEHOUSE_ID]
 
-        from fabric_deploy.detect import DetectedParameter
+    def test_malformed_user_file_fails_the_deploy(self, deployer):
+        (deployer._repo_dir_resolved / "parameter.yml").write_text('extend: "one.yml"\n')
+        with pytest.raises(ValueError, match="parameter.yml"):
+            self._deploy(deployer)
 
-        deployer._detector.parameters = {
-            "wsid": DetectedParameter(
-                find_value="wsid",
-                description="Workspace ID",
-                item_types={"SemanticModel"},  # set by manual override
-                dynamic_variable="$workspace.$id",
-            ),
+    def test_nothing_to_add_leaves_fabric_cicd_on_the_repo_file(self, deployer):
+        deployer._detector.parameters = {}
+        seen = self._deploy(deployer)
+        assert seen["path"] is None
+        assert seen["environment"] == "MAIN"
+
+    @pytest.mark.parametrize(
+        ("item_types", "expected"), [(set(), None), ({"SemanticModel"}, ["SemanticModel"])]
+    )
+    def test_item_type_only_for_scoped_entries(self, tmp_path, item_types, expected):
+        """Detected entries carry no item_type, so fabric-cicd applies them to
+        every in-scope file; a manual_parameters scope round-trips."""
+        from fabric_deploy.detect import DetectedParameter, ParameterDetector
+
+        detector = ParameterDetector(tmp_path)
+        detector.detect_all()
+        detector.parameters = {
+            "v": DetectedParameter("v", item_types=item_types, dynamic_variable="$workspace.$id")
         }
-        ParameterFile(tmp_path, deployer.logger).write(
-            deployer._detector, FAKE_WORKSPACE_ID, "MAIN", 0, 0
-        )
+        param_file = ParameterFile(tmp_path)
+        param_file.write(detector, FAKE_WORKSPACE_ID, "MAIN", 0, 0)
+        try:
+            entry = yaml.safe_load(Path(param_file.path).read_text())["find_replace"][0]
+        finally:
+            param_file.cleanup()
 
-        param_file = tmp_path / "parameter.yml"
-        data = yaml.safe_load(param_file.read_text())
-        assert data["find_replace"][0]["item_type"] == ["SemanticModel"]
+        assert entry.get("item_type") == expected
 
 
 # --- sibling-workspace anchor resolution ------------------------------------

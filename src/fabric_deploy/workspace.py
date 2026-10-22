@@ -130,7 +130,8 @@ class WorkspaceDeployer:
     - Scans workspace files to detect source IDs (stored, not written to disk)
     - Auto-detects lakehouse metadata
 
-    Parameter file (parameter.yml) is written during deploy(), not during init.
+    The parameter file is written to a temporary directory during deploy(),
+    never into the repo.
     """
 
     repo_dir: Path | str
@@ -185,7 +186,7 @@ class WorkspaceDeployer:
         """
         self._repo_dir_resolved = Path(self.repo_dir).resolve()
         self.logger = get_logger(self.logger_name or __name__)
-        self._paramfile = ParameterFile(self._repo_dir_resolved, self.logger)
+        self._paramfile = ParameterFile(self._repo_dir_resolved)
 
         self.config = FabdepConfig.from_path(
             self._repo_dir_resolved, branch_override=self.branch_override
@@ -338,7 +339,7 @@ class WorkspaceDeployer:
         Detect parameters from workspace files and store for later use.
 
         Runs during __post_init__. Detection and storage only — no file I/O.
-        The parameter file is written later in _write_parameter_file() during deploy().
+        The parameter file is written later, during deploy().
         """
         detector = ParameterDetector(
             repo_dir=self._repo_dir_resolved,
@@ -672,8 +673,7 @@ class WorkspaceDeployer:
                 self.logger.info(f"Deployed {len(deployed)} item(s): {', '.join(deployed)}")
             self.logger.info("Deployment complete!")
         finally:
-            if self._paramfile.created:
-                self._paramfile.cleanup()
+            self._paramfile.cleanup()
             print()
 
     def _deploy_items(
@@ -699,6 +699,7 @@ class WorkspaceDeployer:
             environment=self.environment,
             item_type_in_scope=item_types,
             token_credential=fabric_credential(),
+            parameter_file_path=self._paramfile.path,
         )
 
         try:

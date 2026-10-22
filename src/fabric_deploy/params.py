@@ -1,15 +1,19 @@
-"""parameter.yml lifecycle: manual overrides/injections, generation, cleanup.
+"""The parameter file a deploy hands fabric-cicd.
 
-fabric-cicd consumes a parameter.yml for find/replace. This module owns building
-that file from detected parameters (plus manual overrides) and removing the
-generated file afterward.
+Detected parameters, adjusted by fabdep.yml manual_parameters and resolved
+against the target workspace where fabric-cicd has no dynamic variable, are
+merged with the repo's own parameter.yml into a temporary file.
 """
 
 from __future__ import annotations
 
 import logging
+import shutil
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+import yaml
 
 from .detect import DetectedParameter, Kind, find_in_item_files
 
@@ -253,19 +257,34 @@ def resolve_sqldatabase_hostname_params(
     return len(pending)
 
 
-class ParameterFile:
-    """Owns the generated parameter.yml for one deploy: write then clean up.
+def _plural(count: int, noun: str) -> str:
+    return f"{count} {noun}{'s' if count != 1 else ''}"
 
-    `write()` emits the file from detected parameters and records a human
-    summary; `cleanup()` removes it and restores any pre-existing user file.
-    `created` says whether `write()` actually produced a file (it may decide
-    none is needed).
+
+def _load_parameter_file(path: Path) -> dict:
+    with path.open(encoding="utf-8-sig") as f:
+        document = yaml.safe_load(f) or {}
+    if not isinstance(document, dict) or not all(
+        isinstance(document.get(key, []), list) for key in ("find_replace", "extend")
+    ):
+        raise ValueError(f"{path}: expected a mapping whose find_replace and extend are lists")
+    return document
+
+
+class ParameterFile:
+    """The parameter file fabric-cicd reads for one deploy.
+
+    It is the repo's own parameter.yml with the detected rules added, written
+    to a temporary directory: the repo is never modified. The user's entries
+    win. A detected rule whose find_value the user's file (or a template it
+    extends) already lists is dropped, and the user's find_replace entries
+    come first, so they apply first. With nothing to add, `path` stays None
+    and fabric-cicd reads the repo's parameter.yml, if any, itself.
     """
 
-    def __init__(self, repo_dir: Path, logger: logging.Logger) -> None:
+    def __init__(self, repo_dir: Path) -> None:
         self.repo_dir = repo_dir
-        self.logger = logger
-        self.created = False
+        self.path: str | None = None
         self.summary: list[str] = []
 
     def write(
@@ -276,92 +295,58 @@ class ParameterFile:
         manual_count: int,
         skipped_lakehouse_count: int,
     ) -> None:
-        """
-        Write parameter.yml for deployment.
-
-        All detected parameters are emitted; only manual_parameters overrides
-        carry per-type scoping (via the item_type field on the entry). If a
-        parameter isn't used by any in-scope file, fabric-cicd will warn but the
-        deployment still succeeds.
-        """
-        if detector.should_skip_replacement(workspace_id):
-            self.summary = [
-                "Source and target workspace are the same -- deploying directly without replacements",
-            ]
-            return
-
-        dyns = sum(1 for p in detector.parameters.values() if p.dynamic_variable)
-        total = len(detector.parameters)
-
-        if dyns == 0:
-            if skipped_lakehouse_count > 0:
-                self.summary = [
-                    f"Skipped {skipped_lakehouse_count} lakehouse parameter{'s' if skipped_lakehouse_count != 1 else ''} (--skip-lakehouse)",
-                    "Deploying without parameter.yml file",
-                ]
-            else:
-                self.summary = [
-                    "No parameters detected for replacement",
-                    "Deploying without parameter.yml file",
-                ]
-            return
-
-        param_file = self.repo_dir / "parameter.yml"
-        backup_file = self.repo_dir / "parameter.yml.backup"
+        """Build the file for `environment` and record a human summary."""
         summary = []
-
-        if param_file.exists():
-            _ = param_file.rename(backup_file)
-            summary.append(f"Backed up existing parameter.yml to {backup_file.name}")
-
-        detector.save_parameter_yml(output_path=param_file, environment=environment)
-        self.created = True
-
-        external_count = max(total - dyns, 0)
-        external_part = (
-            f" + {external_count} external connection{'s' if external_count != 1 else ''}"
-            if external_count
-            else ""
-        )
-        manual_part = (
-            f" + {manual_count} manual parameter{'s' if manual_count != 1 else ''}"
-            if manual_count
-            else ""
-        )
-        summary.append(
-            f"Found {dyns} dynamic parameter{'s' if dyns != 1 else ''}{external_part}{manual_part}"
-        )
-        if skipped_lakehouse_count > 0:
+        if skipped_lakehouse_count:
             summary.append(
-                f"Skipped {skipped_lakehouse_count} lakehouse parameter{'s' if skipped_lakehouse_count != 1 else ''} (--skip-lakehouse)"
+                f"Skipped {_plural(skipped_lakehouse_count, 'lakehouse parameter')} "
+                "(--skip-lakehouse)"
             )
+        rules = []
+        if detector.should_skip_replacement(workspace_id):
+            summary.append("Source and target workspace are the same -- no detected replacements")
+        elif rules := detector.generate_parameter_yml(environment)["find_replace"]:
+            unchanged = len(detector.parameters) - len(rules)
+            summary.append(
+                f"Found {_plural(len(rules), 'dynamic parameter')}"
+                + (f" + {unchanged} left unchanged" if unchanged else "")
+                + (f" + {_plural(manual_count, 'manual parameter')}" if manual_count else "")
+            )
+        else:
+            summary.append("No parameters detected for replacement")
 
-        unresolved_sem_model = [
-            p
-            for p in detector.parameters.values()
-            if "SemanticModel" in p.item_types
-            and not p.dynamic_variable
-            and p.description != "External connection ID"
-        ]
-        if unresolved_sem_model:
-            self.logger.warning(
-                f"{len(unresolved_sem_model)} SemanticModel parameter(s) could not be auto-resolved and will be skipped:"
+        user_file = self.repo_dir / "parameter.yml"
+        user = _load_parameter_file(user_file) if user_file.is_file() else {}
+        templates = [(user_file.parent / str(t)).resolve() for t in user.get("extend") or []]
+        covered = {
+            entry.get("find_value")
+            for document in [user, *(_load_parameter_file(t) for t in templates if t.is_file())]
+            for entry in document.get("find_replace") or []
+            if isinstance(entry, dict)
+        }
+        added = [rule for rule in rules if rule["find_value"] not in covered]
+        if user_file.is_file():
+            overridden = len(rules) - len(added)
+            summary.append(
+                f"Using the repo's parameter.yml for environment '{environment}'"
+                + (f"; it overrides {_plural(overridden, 'detected rule')}" if overridden else "")
             )
-            for p in unresolved_sem_model:
-                self.logger.warning(f"  {p.description}: {p.find_value[:60]}...")
-            self.logger.warning(
-                "Add a manual_parameters entry in fabdep.yml to supply the replacement value."
-            )
-
         self.summary = summary
+        if not added:
+            return
+
+        document = {**user, "find_replace": [*(user.get("find_replace") or []), *added]}
+        if templates:
+            # fabric-cicd resolves templates relative to the parameter file.
+            document["extend"] = [str(t) for t in templates]
+        path = Path(tempfile.mkdtemp(prefix="fabdep-")) / "parameter.yml"
+        path.write_text(
+            yaml.safe_dump(document, sort_keys=False, allow_unicode=True), encoding="utf-8"
+        )
+        self.path = str(path)
 
     def cleanup(self) -> None:
-        """Remove the auto-generated parameter.yml and restore the user's backup."""
-        param_file = self.repo_dir / "parameter.yml"
-        backup_file = self.repo_dir / "parameter.yml.backup"
-
-        if param_file.exists():
-            param_file.unlink()
-        if backup_file.exists():
-            _ = backup_file.rename(param_file)
-            self.logger.info("Restored original parameter.yml")
+        """Remove the temporary file, if `write()` made one."""
+        if self.path:
+            shutil.rmtree(Path(self.path).parent, ignore_errors=True)
+            self.path = None
