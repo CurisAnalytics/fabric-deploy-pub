@@ -58,6 +58,7 @@ build-backend = "uv_build"
 include = ["src"]
 reportMissingImports = "error"
 reportAny = false
+reportExplicitAny = false
 reportImplicitStringConcatenation = false
 reportMissingTypeStubs = false
 

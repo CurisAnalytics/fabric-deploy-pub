@@ -47,7 +47,7 @@ _SQL_ENDPOINT_ID = re.compile(
 )
 
 
-def failed_table_syncs(statuses: list[dict]) -> list[tuple[str, str]]:
+def failed_table_syncs(statuses: list[dict[str, Any]]) -> list[tuple[str, str]]:
     """Return (tableName, error message) for every non-successful table sync.
 
     `NotRun` is not a failure (the table was simply already current), so only
@@ -62,7 +62,7 @@ def failed_table_syncs(statuses: list[dict]) -> list[tuple[str, str]]:
     return failures
 
 
-def _pick_service_exception(detail: dict) -> str | None:
+def _pick_service_exception(detail: dict[str, Any]) -> str | None:
     """Pick the most detailed serviceExceptionJson from a refresh detail.
 
     The per-attempt `refreshAttempts[].serviceExceptionJson` carries the rich
@@ -75,7 +75,7 @@ def _pick_service_exception(detail: dict) -> str | None:
     return detail.get("serviceExceptionJson")
 
 
-def extract_refresh_error(detail: dict) -> str | None:
+def extract_refresh_error(detail: dict[str, Any]) -> str | None:
     """Pull the first human-readable framing error out of a refresh detail.
 
     Returns None when the refresh succeeded. Prefers the structured
@@ -150,7 +150,7 @@ def frame_models(
     sync: bool = True,
     timeout_s: int = 900,
     logger: logging.Logger | None = None,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Sync the SQL endpoints the models read, then refresh + poll each model.
 
     Args:
@@ -203,7 +203,7 @@ def frame_models(
             if not failures:
                 log.info(f"  SQL endpoint synced ({len(statuses)} table(s)).")
 
-    details: list[dict] = []
+    details: list[dict[str, Any]] = []
     for item in items:
         log.info(f"Refreshing semantic model '{item['displayName']}'...")
         detail = refresh_semantic_model(workspace_id, item["id"], timeout_s=timeout_s)

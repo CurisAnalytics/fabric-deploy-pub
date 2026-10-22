@@ -4,7 +4,7 @@ import base64
 import difflib
 import logging
 import time
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from .identity import FABRIC_SCOPE, POWERBI_SCOPE
 from .transport import (
@@ -15,11 +15,6 @@ from .transport import (
     poll_fabric_lro,
     powerbi_url,
 )
-
-# pyright: reportMissingTypeArgument=false
-# pyright: reportUnknownMemberType=false
-# pyright: reportUnknownParameterType=false
-# pyright: reportUnknownVariableType=false
 
 _logger = logging.getLogger(__name__)
 
@@ -64,7 +59,7 @@ def list_workspaces() -> list[FabricWorkspaceInfo]:
     return fabric_api_list("/v1/workspaces", error_context="list Fabric workspaces")
 
 
-def list_capacities() -> list[dict]:
+def list_capacities() -> list[dict[str, Any]]:
     """
     List all Fabric capacities accessible to the current user.
 
@@ -122,7 +117,7 @@ def get_default_capacity_id() -> str:
     )
 
 
-def _describe_capacity(capacity: dict) -> str:
+def _describe_capacity(capacity: dict[str, Any]) -> str:
     return f"{capacity['displayName']} ({capacity['sku']}, {capacity['state']}): {capacity['id']}"
 
 
@@ -223,7 +218,7 @@ def create_workspace(workspace_name: str, capacity_id: str) -> str:
 # --- Item lookup ---------------------------------------------------------
 
 
-def list_workspace_items(workspace_id: str, item_type: str | None = None) -> list[dict]:
+def list_workspace_items(workspace_id: str, item_type: str | None = None) -> list[dict[str, Any]]:
     """List items in a workspace, optionally filtered by Fabric item type.
 
     Args:
@@ -240,7 +235,7 @@ def list_workspace_items(workspace_id: str, item_type: str | None = None) -> lis
     return fabric_api_list(endpoint, error_context=f"list {item_type or 'workspace'} items")
 
 
-def find_item_by_name(workspace_id: str, item_type: str, name: str | None = None) -> dict:
+def find_item_by_name(workspace_id: str, item_type: str, name: str | None = None) -> dict[str, Any]:
     """Resolve a single workspace item of `item_type` by display name.
 
     With `name=None`, succeeds only when exactly one item of that type exists
@@ -319,7 +314,7 @@ def get_sqldatabase_server_host(workspace_id: str, name: str) -> str:
 
 def refresh_sql_endpoint_metadata(
     workspace_id: str, sql_endpoint_id: str, timeout_s: int = 600
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Sync a SQL analytics endpoint's metadata (table discovery + schema).
 
     Required after any Delta write before a Direct Lake refresh, otherwise the
@@ -347,7 +342,7 @@ def refresh_semantic_model(
     dataset_id: str,
     timeout_s: int = 900,
     poll_s: int = 10,
-) -> dict:
+) -> dict[str, Any]:
     """Trigger an enhanced (framing) refresh of a semantic model and poll it.
 
     Uses the Power BI enhanced-refresh API (POST → 202 + `Location` → poll the
@@ -359,7 +354,7 @@ def refresh_semantic_model(
         The final refresh-detail object, including `status` and — on failure —
         `serviceExceptionJson` / `messages`.
     """
-    body = {"type": "automatic", "commitMode": "transactional", "objects": []}
+    body: dict[str, Any] = {"type": "automatic", "commitMode": "transactional", "objects": []}
     _status, headers, _resp = http_request(
         powerbi_url(f"/v1.0/myorg/groups/{workspace_id}/datasets/{dataset_id}/refreshes"),
         method="POST",

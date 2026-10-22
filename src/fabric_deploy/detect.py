@@ -1,6 +1,5 @@
 """Auto-detection of source IDs from workspace repository for parameter generation."""
 
-# pyright: reportMissingTypeArgument=false
 # pyright: reportUnknownMemberType=false
 # pyright: reportUnknownParameterType=false
 # pyright: reportUnknownArgumentType=false
@@ -14,7 +13,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import TypeGuard
+from typing import Any, TypeGuard
 
 import yaml
 
@@ -98,9 +97,9 @@ class DetectedParameter:
     description: str = ""
     dynamic_variable: str = ""
 
-    def to_dict(self, environment: str = "_ALL_") -> dict:
+    def to_dict(self, environment: str = "_ALL_") -> dict[str, Any]:
         """The fabric-cicd find_replace entry, its replace_value keyed by `environment`."""
-        entry: dict = {"find_value": self.find_value}
+        entry: dict[str, Any] = {"find_value": self.find_value}
         if self.item_types:
             entry["item_type"] = sorted(self.item_types)
         entry["replace_value"] = {environment: self.dynamic_variable}
@@ -428,7 +427,7 @@ class ParameterDetector:
         if self._auto_binding_enabled(file_path.parent):
             self.auto_bound_notebooks.append(str(file_path.parent.relative_to(self.repo_dir)))
 
-    def _extract_lakehouse_attachment(self, source_file: str, lakehouse: dict) -> None:
+    def _extract_lakehouse_attachment(self, source_file: str, lakehouse: dict[str, Any]) -> None:
         """Map a notebook's default lakehouse and the workspace it lives in.
 
         An attachment to one of the repo's lakehouses also anchors its
@@ -448,7 +447,7 @@ class ParameterDetector:
         else:
             _ = self._classify_workspace(ws_id, source_file)
 
-    def _extract_warehouse_attachments(self, source_file: str, warehouse: dict) -> None:
+    def _extract_warehouse_attachments(self, source_file: str, warehouse: dict[str, Any]) -> None:
         """Map a notebook's `dependencies.warehouse` bindings.
 
         T-SQL notebooks attach to a lakehouse SQL analytics endpoint
@@ -521,7 +520,7 @@ class ParameterDetector:
             return
         _ = self._add_parameter(lh_id, source_file, Kind.LAKEHOUSE, name)
 
-    def _extract_from_pipeline(self, file_path: Path, data: dict) -> None:
+    def _extract_from_pipeline(self, file_path: Path, data: dict[str, Any]) -> None:
         """Extract connection IDs from pipeline JSON."""
         source_file = str(file_path.relative_to(self.repo_dir))
         self._extract_connections_recursive(data, source_file)
@@ -637,7 +636,7 @@ class ParameterDetector:
             )
         return False
 
-    def _extract_from_copyjob(self, file_path: Path, data: dict) -> None:
+    def _extract_from_copyjob(self, file_path: Path, data: dict[str, Any]) -> None:
         """Extract workspace and lakehouse IDs from CopyJob JSON."""
         source_file = str(file_path.relative_to(self.repo_dir))
 
@@ -727,7 +726,7 @@ class ParameterDetector:
             for item in obj:
                 yield from self._iter_data_function_links(item)
 
-    def _extract_from_report(self, file_path: Path, data: dict) -> None:
+    def _extract_from_report(self, file_path: Path, data: dict[str, Any]) -> None:
         """Rebind PBIR User Data Function buttons to the target workspace.
 
         Conservative by design — a reference is only parameterized when every
@@ -807,7 +806,7 @@ class ParameterDetector:
         if not self._detected:
             self.detect_all()
 
-    def generate_parameter_yml(self, environment: str = "_ALL_") -> dict:
+    def generate_parameter_yml(self, environment: str = "_ALL_") -> dict[str, Any]:
         """The find_replace document for every parameter with a replacement.
 
         Replacements are keyed by `environment`; the default `_ALL_` applies

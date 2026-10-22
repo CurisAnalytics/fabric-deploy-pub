@@ -29,10 +29,6 @@ __all__ = [
     "poll_fabric_lro",
 ]
 
-# pyright: reportMissingTypeArgument=false
-# pyright: reportUnknownMemberType=false
-# pyright: reportUnknownParameterType=false
-# pyright: reportUnknownVariableType=false
 
 REQUEST_TIMEOUT_S = 60
 # Attempts per request when the service answers 429 or 5xx. Each wait follows
@@ -61,10 +57,10 @@ def powerbi_url(path: str) -> str:
 def http_request(
     url: str,
     method: str = "GET",
-    data: dict | None = None,
+    data: dict[str, Any] | None = None,
     scope: str = FABRIC_SCOPE,
     error_context: str = "API request",
-) -> tuple[int, dict[str, str], dict]:
+) -> tuple[int, dict[str, str], dict[str, Any]]:
     """Make an authenticated HTTP request and return (status, headers, body).
 
     Unlike `fabric_api_request`, this exposes the status code and response
@@ -175,9 +171,9 @@ def _poll_interval(retry_after: str | None, default: float) -> float:
 def fabric_api_request(
     endpoint: str,
     method: str = "GET",
-    data: dict | None = None,
+    data: dict[str, Any] | None = None,
     error_context: str = "API request",
-) -> dict:
+) -> dict[str, Any]:
     """
     Generic Fabric API request handler with error handling.
 
@@ -231,7 +227,7 @@ def poll_fabric_lro(
     headers: dict[str, str],
     error_context: str,
     timeout_s: int = 600,
-) -> dict:
+) -> dict[str, Any]:
     """Follow a Fabric 202 long-running operation to completion.
 
     Polls the `Location` URL on the cadence the service asks for
