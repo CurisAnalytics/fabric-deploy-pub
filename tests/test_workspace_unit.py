@@ -590,6 +590,20 @@ class TestSiblingWorkspaceAnchors:
 
         assert d.source_workspace_ids == {FAKE_WORKSPACE_ID}
         assert "Could not list workspaces (403)" in caplog.text
+        # Without the list, the notebook's repo lakehouse name anchors its workspace.
+        assert d._detector is not None
+        assert d._detector.parameters[DEV_WORKSPACE_ID].dynamic_variable == "$workspace.$id"
+
+    def test_unlisted_workspace_of_a_notebook_lakehouse_deploys_unchanged(
+        self, monkeypatch, sample_ws
+    ):
+        """The listed workspaces are all of the repo's: the notebook's lakehouse is in
+        another one, though named like the repo's lakehouse."""
+        d, _ = _with_listing(monkeypatch, sample_ws, [_ws(QA_WORKSPACE_ID, "Fabdep Test [QA]")])
+
+        assert d._detector is not None
+        assert d._detector.parameters[DEV_WORKSPACE_ID].dynamic_variable == ""
+        assert d._detector.parameters[SAMPLE_LAKEHOUSE_ID].dynamic_variable == ""
 
     def test_lakehouse_listing_failure_warns_and_continues(self, monkeypatch, sample_ws, caplog):
         d, _ = _with_listing(

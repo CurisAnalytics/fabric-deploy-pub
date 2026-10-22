@@ -123,6 +123,8 @@ class WorkspaceDeployer:
     source_workspace_ids: set[str] = field(init=False, default_factory=set, repr=False)
     source_workspaces: dict[str, str] = field(init=False, default_factory=dict, repr=False)
     source_lakehouse_ids: dict[str, str] = field(init=False, default_factory=dict, repr=False)
+    # Whether the workspace list was read, so source_workspace_ids is complete.
+    _sources_complete: bool = field(init=False, default=False, repr=False)
 
     _repo_dir_resolved: Path = field(init=False, repr=False)
     config: FabdepConfig = field(init=False, repr=False)
@@ -231,6 +233,7 @@ class WorkspaceDeployer:
         self.source_workspace_ids = {self.workspace_id} if self.workspace_id else set()
         self.source_workspaces = {}
         self.source_lakehouse_ids = {}
+        self._sources_complete = False
         try:
             workspaces = list_workspaces()
         except Exception as e:
@@ -240,6 +243,7 @@ class WorkspaceDeployer:
                 f"workspace; other workspace ids deploy unchanged."
             )
             return
+        self._sources_complete = True
 
         siblings = {
             ws["id"]: ws["displayName"]
@@ -281,6 +285,7 @@ class WorkspaceDeployer:
             logger_name=self.logger.name,
             source_workspace_ids=self.source_workspace_ids,
             source_lakehouse_ids=self.source_lakehouse_ids,
+            sources_complete=self._sources_complete,
         )
         detector.detect_all()
 

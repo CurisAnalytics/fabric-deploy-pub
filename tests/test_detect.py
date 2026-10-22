@@ -1242,6 +1242,35 @@ class TestItemBinding:
         assert d.parameters[OTHER_WORKSPACE_ID].dynamic_variable == ""
         assert OTHER_WORKSPACE_ID not in d._source_workspace_ids
 
+    @pytest.mark.parametrize(("sources_complete", "rewritten"), [(True, False), (False, True)])
+    def test_lakehouse_named_like_a_repo_one_in_another_workspace(
+        self, tmp_path: Path, sources_complete: bool, rewritten: bool
+    ):
+        """With the repo's workspaces listed, a workspace outside them is another
+        workspace whatever its lakehouse is called, so a pipeline invoking a
+        notebook there keeps pointing there. Offline, the name is all there is."""
+        make_item(tmp_path, "lh", "Lakehouse")
+        _make_notebook(tmp_path, "nb", _lakehouse_meta(OTHER_WORKSPACE_ID, HUB_LAKEHOUSE_ID, "lh"))
+        _make_pipeline(
+            tmp_path,
+            "pl",
+            {
+                "properties": {
+                    "activities": [{"typeProperties": {"workspaceId": OTHER_WORKSPACE_ID}}]
+                }
+            },
+        )
+        d = ParameterDetector(
+            tmp_path, source_workspace_ids=[WORKSPACE_ID], sources_complete=sources_complete
+        )
+        d.detect_all()
+
+        assert bool(d.parameters[OTHER_WORKSPACE_ID].dynamic_variable) == rewritten
+        assert bool(d.parameters[HUB_LAKEHOUSE_ID].dynamic_variable) == rewritten
+        refs = {f for f, ws in d.offtarget_workspace_refs if ws == OTHER_WORKSPACE_ID}
+        expected = {"nb.Notebook/notebook-content.py", "pl.DataPipeline/pipeline-content.json"}
+        assert refs == (set() if rewritten else expected)
+
 
 class TestForeignDirectLakeSource:
     BODY = (

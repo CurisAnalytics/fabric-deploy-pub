@@ -153,6 +153,7 @@ class ParameterDetector:
         logger_name: str | None = None,
         source_workspace_ids: Iterable[str] | None = None,
         source_lakehouse_ids: dict[str, str] | None = None,
+        sources_complete: bool = False,
     ):
         """
         Initialize parameter detector.
@@ -162,8 +163,10 @@ class ParameterDetector:
             logger_name: Optional logger name (defaults to module name)
             source_workspace_ids: Workspaces this repo's content may have been
                 exported from — the deployer passes the target plus every
-                sibling workspace (`{base} [branch]`). They seed the anchor
-                set pipeline/copyjob workspaceIds are classified against.
+                sibling workspace (each visible workspace whose name fabdep.yml
+                could give a branch; see `FabdepConfig.is_repo_workspace`). They
+                seed the anchor set pipeline/copyjob workspaceIds are
+                classified against.
                 Needed once notebooks use Fabric's lakehouse auto-binding in
                 git: their metadata then carries the null UUID instead of a
                 workspace id, so content alone no longer says which workspace
@@ -173,12 +176,19 @@ class ParameterDetector:
                 item file still carries the physical id (an abfss literal in
                 notebook code, say) — the coverage legacy notebook metadata
                 gave for free.
+            sources_complete: `source_workspace_ids` is every one of the
+                repo's workspaces (the deployer could list them). A notebook
+                attached to a lakehouse in any other workspace then refers to
+                that workspace, even when the lakehouse shares a repo
+                lakehouse's name; without the list (offline `detect`), the
+                name decides.
         """
         self.repo_dir = Path(repo_dir).resolve()  # pyright: ignore[reportUnannotatedClassAttribute]
         self.parameters: dict[str, DetectedParameter] = {}
         self._detected = False
         self._seed_workspace_ids: set[str] = set(source_workspace_ids or ())
         self._seed_lakehouse_ids: dict[str, str] = dict(source_lakehouse_ids or {})
+        self._sources_complete: bool = sources_complete
         # The repo's items, shallowest first.
         self._items: list[RepoItem] = []
         # Item type -> display names of the repo's items of that type.
@@ -432,14 +442,19 @@ class ParameterDetector:
 
         An attachment to one of the repo's lakehouses also anchors its
         workspace as the one the repo was exported from. One naming no repo
-        lakehouse (a shared lakehouse in another workspace, say) deploys
-        unchanged. The null-UUID workspace is auto-binding's form: the
-        lakehouse is named by its git logicalId, which fabric-cicd resolves
-        before any parameter applies, so neither id needs a rule.
+        lakehouse (a shared lakehouse in another workspace, say), or one in a
+        workspace outside a complete source list, deploys unchanged. The
+        null-UUID workspace is auto-binding's form: the lakehouse is named by
+        its git logicalId, which fabric-cicd resolves before any parameter
+        applies, so neither id needs a rule.
         """
         ws_id = lakehouse.get("default_lakehouse_workspace_id")
         lh_id = lakehouse.get("default_lakehouse")
         if ws_id == self.NULL_UUID or not self._is_id(lh_id):
+            return
+        if self._sources_complete and self._is_id(ws_id) and ws_id not in self._seed_workspace_ids:
+            _ = self._classify_workspace(ws_id, source_file)
+            _ = self._add_parameter(lh_id, source_file, Kind.CROSS_WORKSPACE)
             return
         name = lakehouse.get("default_lakehouse_name") or self._seed_lakehouse_ids.get(lh_id)
         if self._add_parameter(lh_id, source_file, Kind.LAKEHOUSE, name).dynamic_variable:

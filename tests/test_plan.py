@@ -37,7 +37,11 @@ class FakeFabric:
     """
 
     def __init__(self) -> None:
-        self.workspaces = [{"id": TARGET_ID, "displayName": "Fabdep Test [MAIN]"}]
+        self.workspaces = [
+            {"id": TARGET_ID, "displayName": "Fabdep Test [MAIN]"},
+            # The sample repo's content was exported from it.
+            {"id": SAMPLE_DEV_WORKSPACE_ID, "displayName": "Fabdep Test [DEV]"},
+        ]
         self.items: dict[str, list[dict[str, str]]] = {
             TARGET_ID: [
                 _item("fabdep_lakehouse", "Lakehouse"),

@@ -25,20 +25,26 @@ def mock_fabric_api(monkeypatch):
     """Stand in for the Fabric API calls a WorkspaceDeployer makes while it is built.
 
     The target workspace resolves to `workspace_id` (also what a created one
-    gets), the default capacity is `capacity_id`, and no other workspace is
-    visible. The returned handle lets a test change either.
+    gets), the default capacity is `capacity_id`, and the other visible
+    workspaces are `workspaces`: by default the sample repo's DEV workspace,
+    the one its content was exported from, holding no lakehouses. The
+    returned handle lets a test change any of them.
     """
 
     class Handle:
         workspace_id: str = FAKE_WORKSPACE_ID
         capacity_id: str = FAKE_CAPACITY_ID
+        workspaces: list[dict[str, str]] = [
+            {"id": SAMPLE_DEV_WORKSPACE_ID, "displayName": "Fabdep Test [DEV]"}
+        ]
 
     handle = Handle()
     for name, fake in {
         "get_workspace_id_by_name": lambda _name: handle.workspace_id,
         "get_default_capacity_id": lambda: handle.capacity_id,
         "create_workspace": lambda workspace_name, capacity_id: handle.workspace_id,
-        "list_workspaces": lambda: [],
+        "list_workspaces": lambda: handle.workspaces,
+        "list_workspace_items": lambda _workspace_id, _item_type=None: [],
         "patch_fabric_cicd_logger": lambda: None,
     }.items():
         monkeypatch.setattr(f"fabric_deploy.workspace.{name}", fake)

@@ -45,8 +45,12 @@ def _seed(repo: Path, entries: str, notebook_code: str = "") -> None:
     (repo / "fabdep.yml").write_text('workspace_base_name: "ws"\nmanual_parameters:\n' + entries)
 
 
-@pytest.mark.usefixtures("mock_fabric_api")
 class TestManualParameters:
+    @pytest.fixture(autouse=True)
+    def _exported_from_dev(self, mock_fabric_api):
+        """The content comes from the repo's DEV workspace, DETECTED_UUID."""
+        mock_fabric_api.workspaces = [{"id": DETECTED_UUID, "displayName": "ws [DEV]"}]
+
     def test_override_replaces_the_detected_rule(self, tmp_path: Path):
         _seed(
             tmp_path,
