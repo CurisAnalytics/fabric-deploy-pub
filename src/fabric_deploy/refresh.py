@@ -1,10 +1,11 @@
 """Direct Lake framing: SQL-endpoint sync -> refresh -> poll -> surface error.
 
 After a Delta write or a semantic-model deploy, a Direct Lake model needs to
-be re-framed before it serves correct data — and the SQL analytics endpoint
-must be synced first or the refresh fails with "cannot access the source Delta
-table". This module codifies that sequence (the hand-rolled ~6-step recipe)
-behind `fabdep refresh` and `fabdep deploy --frame`.
+be re-framed before it serves correct data — and a Direct Lake model that reads
+a lakehouse through its SQL analytics endpoint needs that endpoint's metadata
+synced first, or the refresh fails with "cannot access the source Delta table".
+`fabdep refresh` and `fabdep deploy --frame` run that sequence; models without
+Direct Lake tables are refreshed without the sync.
 
 A `Completed` refresh proves the model re-framed; it does NOT prove measures
 evaluate.
@@ -14,10 +15,13 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
+from typing import Any
 
 from .client import (
     find_item_by_name,
+    get_semantic_model_definition,
     get_workspace_id_by_name,
     list_workspace_items,
     refresh_semantic_model,
@@ -33,6 +37,14 @@ __all__ = [
     "failed_table_syncs",
     "frame_models",
 ]
+
+_DIRECT_LAKE_PARTITION = re.compile(r"^\s*mode:\s*directLake\s*$", re.MULTILINE | re.IGNORECASE)
+# Direct Lake on SQL reads a lakehouse via `Sql.Database("<host>", "<SQL endpoint id>")`.
+_SQL_ENDPOINT_ID = re.compile(
+    r'Sql\.Database\(\s*"[^"]*"\s*,\s*'
+    r'"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"\s*\)',
+    re.IGNORECASE,
+)
 
 
 def failed_table_syncs(statuses: list[dict]) -> list[tuple[str, str]]:
@@ -106,34 +118,35 @@ def _repo_display_names(repo_dir: Path, item_type: str) -> list[str]:
     return sorted(key.removesuffix(suffix) for key in _repo_items(repo_dir) if key.endswith(suffix))
 
 
-def _resolve_sql_endpoint(workspace_id: str, repo_dir: Path, logger: logging.Logger) -> str | None:
-    """Best-effort resolve the SQL endpoint to sync.
+def _sql_endpoints_to_sync(
+    workspace_id: str, models: list[dict[str, Any]], logger: logging.Logger
+) -> list[dict[str, Any]]:
+    """The workspace's SQL analytics endpoints that the Direct Lake models read.
 
-    Matches the repo's lakehouse display name first; falls back to the sole
-    endpoint in the workspace. Returns None (with a warning) when it can't be
-    determined unambiguously — sync is skipped rather than failing the whole
-    refresh.
+    Taken from each model's deployed definition, so every lakehouse a model
+    uses is found, under the ids the deploy actually wrote. Models without
+    Direct Lake tables (Import, DirectQuery) contribute nothing.
     """
-    endpoints = list_workspace_items(workspace_id, "SQLEndpoint")
-    if not endpoints:
-        logger.warning("No SQL analytics endpoint found in the workspace; skipping sync.")
-        return None
+    wanted: set[str] = set()
+    for item in models:
+        tmdl = "\n".join(get_semantic_model_definition(workspace_id, item["id"]).values())
+        if _DIRECT_LAKE_PARTITION.search(tmdl):
+            wanted.update(ep.lower() for ep in _SQL_ENDPOINT_ID.findall(tmdl))
+        else:
+            logger.info(
+                f"'{item['displayName']}' has no Direct Lake tables — refreshing it "
+                "without a SQL endpoint sync."
+            )
+    if not wanted:
+        return []
 
-    lakehouses = _repo_display_names(repo_dir, "Lakehouse")
-    for lh in lakehouses:
-        for ep in endpoints:
-            if ep["displayName"].lower() == lh.lower():
-                return ep["id"]
-
-    if len(endpoints) == 1:
-        return endpoints[0]["id"]
-
-    logger.warning(
-        "Could not determine which SQL endpoint to sync "
-        f"({len(endpoints)} present, no name match) — skipping sync. "
-        "Re-run with --no-sync, or sync manually."
-    )
-    return None
+    endpoints = {ep["id"].lower(): ep for ep in list_workspace_items(workspace_id, "SQLEndpoint")}
+    if foreign := sorted(wanted - endpoints.keys()):
+        logger.info(
+            f"Not syncing SQL endpoint(s) outside this workspace: {', '.join(foreign)} "
+            "— sync them in their own workspace if their tables changed."
+        )
+    return [endpoints[ep] for ep in sorted(wanted & endpoints.keys())]
 
 
 def frame_models(
@@ -144,15 +157,16 @@ def frame_models(
     timeout_s: int = 900,
     logger: logging.Logger | None = None,
 ) -> list[dict]:
-    """Sync the SQL endpoint, then refresh + poll each target semantic model.
+    """Sync the SQL endpoints the models read, then refresh + poll each model.
 
     Args:
         repo_dir: Workspace repo directory (for fabdep.yml + item discovery).
         branch_override: Override the git branch for workspace resolution.
         models: Semantic-model display names to frame. Defaults to every
             SemanticModel present in the repo.
-        sync: Sync the SQL analytics endpoint metadata first (the staleness
-            fix). Disable with --no-sync.
+        sync: First sync the metadata of every SQL analytics endpoint the
+            Direct Lake models read (found in their deployed definitions).
+            Disable with --no-sync.
         timeout_s: Per-model refresh poll timeout.
         logger: Logger to use (one is created if omitted).
 
@@ -183,21 +197,20 @@ def frame_models(
             "repo that contains a .SemanticModel item."
         )
 
+    items = [find_item_by_name(workspace_id, "SemanticModel", name) for name in targets]
+
     if sync:
-        endpoint_id = _resolve_sql_endpoint(workspace_id, repo_dir, log)
-        if endpoint_id:
-            log.info("Syncing SQL analytics endpoint metadata...")
-            statuses = refresh_sql_endpoint_metadata(workspace_id, endpoint_id)
+        for endpoint in _sql_endpoints_to_sync(workspace_id, items, log):
+            log.info(f"Syncing SQL analytics endpoint '{endpoint['displayName']}'...")
+            statuses = refresh_sql_endpoint_metadata(workspace_id, endpoint["id"])
             failures = failed_table_syncs(statuses)
-            if failures:
-                for name, msg in failures:
-                    log.warning(f"  table sync failed: {name}: {msg}")
-            else:
+            for table, msg in failures:
+                log.warning(f"  table sync failed: {table}: {msg}")
+            if not failures:
                 log.info(f"  SQL endpoint synced ({len(statuses)} table(s)).")
 
     details: list[dict] = []
-    for name in targets:
-        item = find_item_by_name(workspace_id, "SemanticModel", name)
+    for item in items:
         log.info(f"Refreshing semantic model '{item['displayName']}'...")
         detail = refresh_semantic_model(workspace_id, item["id"], timeout_s=timeout_s)
         details.append(detail)
