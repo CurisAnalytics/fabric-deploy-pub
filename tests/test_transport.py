@@ -213,6 +213,24 @@ def test_poll_lro_runs_then_succeeds_and_fetches_result(monkeypatch, sleeps):
     assert sleeps == [1, 2]  # the service's cadence, updated per poll
 
 
+def test_poll_lro_result_fetch_failure_raises(monkeypatch, sleeps):
+    """A failed result fetch must not pass off the status body as the result."""
+
+    def handler(url):
+        if url.endswith("/result"):
+            raise RuntimeError("Failed to fetch sync result (HTTP 404).")
+        return 200, {}, {"status": "Succeeded"}
+
+    _fake_http(monkeypatch, handler)
+    with pytest.raises(RuntimeError, match="HTTP 404"):
+        poll_fabric_lro({"location": "https://op/1", "x-ms-operation-id": "op1"}, "sync")
+
+
+def test_poll_lro_without_operation_id_has_no_result(monkeypatch, sleeps):
+    _fake_http(monkeypatch, lambda url: (200, {}, {"status": "Succeeded", "percentComplete": 100}))
+    assert poll_fabric_lro({"location": "https://op/1"}, "sync") == {}
+
+
 def test_poll_lro_accepts_http_date_retry_after(monkeypatch, sleeps):
     now = 1_700_000_000
     monkeypatch.setattr("fabric_deploy.transport.time.time", lambda: now)

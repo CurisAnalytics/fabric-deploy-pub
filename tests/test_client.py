@@ -109,6 +109,34 @@ def test_refresh_semantic_model_polls_until_completed(monkeypatch):
     assert gets["n"] == 2
 
 
+# --- get_semantic_model_definition -----------------------------------------
+
+
+def _definition_response(monkeypatch, body):
+    monkeypatch.setattr(
+        "fabric_deploy.client.http_request",
+        lambda url, method="GET", data=None, scope=None, error_context="": (200, {}, body),
+    )
+
+
+def test_semantic_model_definition_decodes_parts(monkeypatch):
+    tmdl = "role Readers\n"
+    payload = base64.b64encode(tmdl.encode()).decode()
+    _definition_response(
+        monkeypatch,
+        {"definition": {"parts": [{"path": "definition/roles/Readers.tmdl", "payload": payload}]}},
+    )
+    assert get_semantic_model_definition("ws", "sm") == {"definition/roles/Readers.tmdl": tmdl}
+
+
+@pytest.mark.parametrize("body", [{}, {"status": "Succeeded"}])
+def test_semantic_model_definition_missing_raises(monkeypatch, body):
+    """No definition is an error, never an empty model (callers would read it as no roles)."""
+    _definition_response(monkeypatch, body)
+    with pytest.raises(RuntimeError, match="no definition"):
+        get_semantic_model_definition("ws", "sm")
+
+
 # --- get_access_token scope fallbacks ------------------------------------
 
 

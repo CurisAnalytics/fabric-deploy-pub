@@ -208,7 +208,8 @@ def poll_fabric_lro(
 
     Polls the `Location` URL on the cadence the service asks for
     (`Retry-After`), then fetches the operation result. Raises on a Failed /
-    Cancelled operation, a 202 with no `Location` to poll, or a timeout.
+    Cancelled operation, a 202 with no `Location` to poll, a result that
+    can't be fetched, or a timeout.
 
     Args:
         headers: The 202 response's headers, as `http_request` returns them.
@@ -235,17 +236,14 @@ def poll_fabric_lro(
         )
         op_status = body.get("status")
         if op_status in ("Succeeded", "Completed"):
-            if op_id:
-                try:
-                    _s, _h, result = http_request(
-                        fabric_url(f"/v1/operations/{op_id}/result"),
-                        scope=FABRIC_SCOPE,
-                        error_context=f"fetch {error_context} result",
-                    )
-                    return result
-                except RuntimeError:
-                    return body  # result endpoint optional for some ops
-            return body
+            if not op_id:
+                return {}
+            _s, _h, result = http_request(
+                fabric_url(f"/v1/operations/{op_id}/result"),
+                scope=FABRIC_SCOPE,
+                error_context=f"fetch {error_context} result",
+            )
+            return result
         if op_status in ("Failed", "Cancelled"):
             raise RuntimeError(f"{error_context} {op_status}: {body.get('error')}")
         retry_after = _poll_interval(hdrs.get("retry-after"), default=retry_after)

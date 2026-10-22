@@ -426,6 +426,9 @@ def get_semantic_model_definition(
     Returns:
         Mapping of definition part path (e.g. "definition/roles/RLS.tmdl") to
         its UTF-8-decoded text.
+
+    Raises:
+        RuntimeError: The call fails or the response carries no definition.
     """
     status, headers, body = http_request(
         fabric_url(
@@ -440,7 +443,12 @@ def get_semantic_model_definition(
             headers, error_context="semantic model getDefinition", timeout_s=timeout_s
         )
 
-    parts = (body or {}).get("definition", {}).get("parts", [])
+    definition = body.get("definition")
+    if definition is None:
+        raise RuntimeError(
+            f"getDefinition for semantic model {item_id} returned no definition: {body}"
+        )
+    parts = definition.get("parts", [])
     result: dict[str, str] = {}
     for part in parts:
         path = part.get("path")
