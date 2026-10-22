@@ -1,11 +1,12 @@
-"""
-fabric-deploy: CLI tool for Microsoft Fabric workspace deployments.
+"""fabric-deploy: deploy Microsoft Fabric workspaces from git.
 
-Primary interface is the CLI (`fabdep` command).
-Minimal programmatic API for Azure DevOps integration and testing.
+The primary interface is the `fabdep` CLI; `WorkspaceDeployer` is the
+programmatic entry point.
 """
+
+from importlib.metadata import version
 
 from .workspace import WorkspaceDeployer
 
-__version__ = "1.11.1"
+__version__ = version("fabric-deploy")
 __all__ = ["WorkspaceDeployer"]

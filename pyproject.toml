@@ -1,18 +1,37 @@
 [project]
 name = "fabric-deploy"
 version = "1.11.1"
-description = "CLI tool for Microsoft Fabric workspace deployments"
+description = "Deploy Microsoft Fabric workspaces from git without hand-writing parameter.yml"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Logan Teder", email = "l.teder@columbia.edu" }]
+keywords = ["microsoft-fabric", "fabric-cicd", "power-bi", "deployment", "ci-cd"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Build Tools",
+]
 dependencies = [
     "azure-identity>=1.25.3",
-    "fabric-cicd>=1.3",
+    # fabdep leans on fabric-cicd internals (parameter handling, logging);
+    # widen the cap only after running the suite against the new minor.
+    "fabric-cicd>=1.4,<1.5",
     "pyyaml",
 ]
 
 [dependency-groups]
 dev = [
+    "basedpyright>=1.31",
     "pytest>=9.1.1",
+    "ruff>=0.17",
 ]
 
 [project.scripts]
@@ -21,8 +40,7 @@ fabdep = "fabric_deploy.cli:main"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = [
-    "-v",
-    "-s",
+    "-ra",
     "--strict-markers",
     "--tb=short",
     "-m",
@@ -33,7 +51,7 @@ markers = [
 ]
 
 [build-system]
-requires = ["uv_build"]
+requires = ["uv_build>=0.11,<0.12"]
 build-backend = "uv_build"
 
 [tool.basedpyright]
@@ -42,3 +60,12 @@ reportMissingImports = "error"
 reportAny = false
 reportImplicitStringConcatenation = false
 reportMissingTypeStubs = false
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["tests/fixtures"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]
