@@ -2,12 +2,13 @@
 
 import argparse
 import io
+import json
 import logging
 import shlex
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from textwrap import dedent
+from textwrap import dedent, indent
 from typing import NoReturn, cast
 
 from .config import AUTH_MODES, load_tenant_pin
@@ -28,7 +29,9 @@ from .log import (
     is_connection_error,
     is_expired_credential_error,
     print_error,
+    use_color,
 )
+from .plan import BLOCKED_EXIT_CODE, JSON_SHAPE, format_plan, plan_deploy, plan_json
 from .refresh import frame_models
 from .rls import pull_rls
 from .scaffold import schema_text, write_starter
@@ -53,6 +56,7 @@ _ECHOED_FLAGS = (
     "allow_unbound_udf",
 )
 _TOP_LEVEL_FLAGS = ("-h", "--help", "-V", "--version")
+_OUTPUTS = ("text", "json")
 # Named in an error instead of being read as deploy arguments (a directory "rename").
 _REMOVED_COMMANDS = ("rename", "auth list", "auth switch", "auth rename", "auth login", "auth bind")
 
@@ -255,29 +259,23 @@ def parse_args() -> argparse.Namespace:
         "sibling workspaces itself)",
     )
 
-    deploy = commands.add_parser(
-        "deploy",
-        parents=[target],
-        help="Deploy the workspace (the default command)",
-        description="Publish the directory's items to the workspace fabdep.yml names for the "
-        "branch, rewriting the source IDs detection finds, then unpublish the workspace's "
-        "items that the repo doesn't contain (see --no-cleanup).",
-    )
-    _ = deploy.add_argument(
+    # The deploy's options, which plan takes too.
+    deploy_options = argparse.ArgumentParser(add_help=False, parents=[target])
+    _ = deploy_options.add_argument(
         "-t",
         "--item-types",
         nargs="+",
         metavar="TYPE",
         help="Only these item types (e.g. Notebook DataPipeline)",
     )
-    _ = deploy.add_argument(
+    _ = deploy_options.add_argument(
         "-x",
         "--exclude-types",
         nargs="+",
         metavar="TYPE",
         help="All item types but these (e.g. Report SemanticModel)",
     )
-    _ = deploy.add_argument(
+    _ = deploy_options.add_argument(
         "--pr",
         nargs="?",
         const=PR_HEAD,
@@ -286,40 +284,34 @@ def parse_args() -> argparse.Namespace:
         "pull-request commit reachable from HEAD (as Azure DevOps, GitHub, GitLab or "
         "Bitbucket word it; a plain merge commit doesn't count), or of COMMIT. Not with -i.",
     )
-    _ = deploy.add_argument(
+    _ = deploy_options.add_argument(
         "-n",
         "--no-cleanup",
         action="store_true",
         help="Don't unpublish workspace items that the repo doesn't contain",
     )
-    _ = deploy.add_argument(
+    _ = deploy_options.add_argument(
         "-N",
         "--new-workspace",
         action="store_true",
         help="Create the target workspace; fails if it already exists (to create it only "
         "when missing, set 'create: true' for the branch under 'environments:' in fabdep.yml)",
     )
-    _ = deploy.add_argument(
+    _ = deploy_options.add_argument(
         "-L",
         "--skip-lakehouse",
         action="store_true",
         help="Leave lakehouse references unchanged (for a feature-branch workspace that "
         "reads the dev workspace's lakehouse)",
     )
-    _ = deploy.add_argument(
+    _ = deploy_options.add_argument(
         "-F",
         "--fail-on-stale",
         action="store_true",
         help="Fail instead of warning when a notebook's warehouse attachment can't be "
         "remapped to the target workspace (for CI, where a warning goes unnoticed)",
     )
-    _ = deploy.add_argument(
-        "--frame",
-        action="store_true",
-        help="After deploying, refresh the semantic models the deploy published, first "
-        "syncing the SQL analytics endpoints their Direct Lake tables read",
-    )
-    _ = deploy.add_argument(
+    _ = deploy_options.add_argument(
         "--allow-rls-change",
         action="store_true",
         help="Deploy even if it changes a semantic model's live row-level security. By "
@@ -328,13 +320,52 @@ def parse_args() -> argparse.Namespace:
         "no roles for the model), or a changed role PBI_Id, which makes the service "
         "recreate the role without its members.",
     )
-    _ = deploy.add_argument(
+    _ = deploy_options.add_argument(
         "--allow-unbound-udf",
         action="store_true",
         help="Deploy report buttons whose User Data Function reference could "
         "not be rebound to the target workspace (missing or ambiguous "
         ".UserDataFunction item). By default such a button blocks the deploy, "
         "because it would ship still calling the SOURCE workspace's function.",
+    )
+
+    deploy = commands.add_parser(
+        "deploy",
+        parents=[deploy_options],
+        help="Deploy the workspace (the default command)",
+        description="Publish the directory's items to the workspace fabdep.yml names for the "
+        "branch, rewriting the source IDs detection finds, then unpublish the workspace's "
+        "items that the repo doesn't contain (see --no-cleanup).",
+    )
+    _ = deploy.add_argument(
+        "--frame",
+        action="store_true",
+        help="After deploying, refresh the semantic models the deploy published, first "
+        "syncing the SQL analytics endpoints their Direct Lake tables read",
+    )
+    _ = deploy.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what the deploy would do instead of deploying (fabdep plan)",
+    )
+    _ = deploy.add_argument(
+        "-o", "--output", choices=_OUTPUTS, help="With --dry-run: the plan's format"
+    )
+
+    plan = commands.add_parser(
+        "plan",
+        parents=[deploy_options],
+        help="Show what a deploy would do, without changing anything",
+        description="Work out what `fabdep deploy` with the same options would do, making\n"
+        "read calls only: the target workspace, the items it would create, update and\n"
+        "unpublish, the find/replace rules it would apply, and each guard's verdict.",
+        epilog=f"JSON output (--output json) is one document on stdout:\n\n"
+        f"{indent(JSON_SHAPE, '  ')}\n\n"
+        "Exit status: 0 the deploy would proceed, 3 a guard would block it, 1 error, 2 usage.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _ = plan.add_argument(
+        "-o", "--output", choices=_OUTPUTS, default="text", help="Format (default: text)"
     )
 
     refresh = commands.add_parser(
@@ -399,7 +430,10 @@ def parse_args() -> argparse.Namespace:
             parser.exit(2, f"fabdep: '{removed}' was removed; see CHANGELOG.md.\n")
     if not argv or (argv[0] not in commands.choices and argv[0] not in _TOP_LEVEL_FLAGS):
         argv = ["deploy", *argv]
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.command == "deploy" and args.output and not args.dry_run:
+        deploy.error("--output applies to --dry-run only")
+    return args
 
 
 def handle_auth_command(args: argparse.Namespace) -> None:
@@ -464,6 +498,9 @@ def handle_init_command(args: argparse.Namespace) -> None:
 
 def handle_deploy_command(args: argparse.Namespace) -> None:
     """`fabdep deploy`, optionally followed by framing the published models."""
+    if args.dry_run:
+        handle_plan_command(args)
+        return
     log = get_logger("fabric_deploy.cli")
     # Header first: constructing the deployer already resolves workspaces and
     # runs detection, and their warnings belong under the banner.
@@ -503,6 +540,33 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
         _ = frame_models(repo_dir=args.directory, branch_override=args.branch, models=models)
     except Exception as e:
         handle_command_error(e, "Framing")
+
+
+def handle_plan_command(args: argparse.Namespace) -> None:
+    """`fabdep plan` and `deploy --dry-run`: print the plan; exit 3 if a guard would block it."""
+    try:
+        plan = plan_deploy(
+            args.directory,
+            branch_override=args.branch,
+            new_workspace=args.new_workspace,
+            skip_lakehouse=args.skip_lakehouse,
+            no_cleanup=args.no_cleanup,
+            item_types=args.item_types,
+            exclude_types=args.exclude_types,
+            include_items=args.include_items,
+            pr=args.pr,
+            fail_on_stale=args.fail_on_stale,
+            allow_rls_change=args.allow_rls_change,
+            allow_unbound_udf=args.allow_unbound_udf,
+        )
+    except Exception as e:
+        handle_command_error(e, "Plan")
+    if args.output == "json":
+        print(json.dumps(plan_json(plan), indent=2))
+    else:
+        print(format_plan(plan, color=use_color(sys.stdout)))
+    if plan.blocked:
+        sys.exit(BLOCKED_EXIT_CODE)
 
 
 def handle_refresh_command(args: argparse.Namespace) -> None:
@@ -548,6 +612,7 @@ _HANDLERS: dict[str, Callable[[argparse.Namespace], None]] = {
     "deploy": handle_deploy_command,
     "detect": handle_detect_command,
     "init": handle_init_command,
+    "plan": handle_plan_command,
     "refresh": handle_refresh_command,
     "rls": handle_rls_command,
     "schema": handle_schema_command,

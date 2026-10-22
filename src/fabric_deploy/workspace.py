@@ -31,6 +31,7 @@ from .identity import apply_auth_settings, fabric_credential
 from .log import get_logger, patch_fabric_cicd_logger
 from .params import (
     ParameterFile,
+    Rule,
     apply_manual_overrides,
     resolve_sqldatabase_hostname_params,
     resolve_warehouse_endpoint_params,
@@ -85,6 +86,8 @@ class WorkspaceDeployer:
             new_workspace: Create the target workspace; fails if it already exists
             skip_lakehouse: Skip lakehouse parameter replacement (for feature branches sharing dev lakehouse)
             environment: fabric-cicd environment name (defaults to fabdep.yml's, else the branch)
+            dry_run: Make read calls only, for `fabdep plan`: work out whether the
+                deploy would create the workspace instead of creating it
 
     IMPORTANT: Initialization has side effects!
     - Reads fabdep.yml from disk
@@ -105,10 +108,14 @@ class WorkspaceDeployer:
     # fabric-cicd environment: selects environment-keyed replace_values and the
     # Variable Library value set. Empty means fabdep.yml's choice for the branch.
     environment: str = ""
+    dry_run: bool = False  # Read calls only (fabdep plan); such a deployer can't deploy
 
     # Configuration fields - auto-loaded in __post_init__
+    # Empty in a dry run whose deploy would create the workspace.
     workspace_id: str = field(init=False, repr=False)
     workspace_name: str = field(init=False, repr=False)  # the target's display name
+    creates_workspace: bool = field(init=False, default=False, repr=False)
+    capacity_id: str = field(init=False, default="", repr=False)  # a created workspace's
     # This repo's workspaces (target + siblings) and the lakehouses of the
     # siblings the content references, by item id — the detector's anchors
     # (see _resolve_source_anchors). `source_workspaces` is the referenced
@@ -159,13 +166,27 @@ class WorkspaceDeployer:
 
     def _resolve_workspace_id(self) -> None:
         """Look up the target workspace, creating it first with `new_workspace`
-        or, when fabdep.yml sets `create: true` for the branch, if it is missing."""
-        if self.new_workspace or (
+        or, when fabdep.yml sets `create: true` for the branch, if it is missing.
+
+        A dry run only works out whether the deploy would create it, and leaves
+        `workspace_id` empty if so.
+
+        Raises:
+            ValueError: With `new_workspace`, if it already exists.
+        """
+        self.creates_workspace = self.new_workspace or (
             self.config.create_workspace and find_workspace_id_by_name(self.workspace_name) is None
-        ):
-            self.workspace_id = self._create_workspace()
-        else:
+        )
+        if not self.creates_workspace:
             self.workspace_id = get_workspace_id_by_name(self.workspace_name)
+            return
+        self.capacity_id = self.config.capacity_id or get_default_capacity_id()
+        if not self.dry_run:
+            self.workspace_id = self._create_workspace()
+        elif self.new_workspace and find_workspace_id_by_name(self.workspace_name) is not None:
+            raise ValueError(self._exists_message())
+        else:
+            self.workspace_id = ""
 
     def _create_workspace(self) -> str:
         """Create the target workspace on fabdep.yml's capacity, else the only active one.
@@ -173,22 +194,24 @@ class WorkspaceDeployer:
         Raises:
             ValueError: If it already exists: `new_workspace` never reuses one.
         """
-        capacity_id = self.config.capacity_id or get_default_capacity_id()
         self.logger.info(f"Creating workspace: {self.workspace_name}")
         try:
             workspace_id = create_workspace(
-                workspace_name=self.workspace_name, capacity_id=capacity_id
+                workspace_name=self.workspace_name, capacity_id=self.capacity_id
             )
         except ValueError as e:
             if "already exists" in str(e):
-                raise ValueError(
-                    f"Workspace '{self.workspace_name}' already exists.\n\n"
-                    "The -N/--new-workspace flag is only for creating new workspaces.\n"
-                    "To deploy to an existing workspace, remove the -N flag."
-                ) from None
+                raise ValueError(self._exists_message()) from None
             raise
         self.logger.info(f"✓ Workspace created: {workspace_id}")
         return workspace_id
+
+    def _exists_message(self) -> str:
+        return (
+            f"Workspace '{self.workspace_name}' already exists.\n\n"
+            "The -N/--new-workspace flag is only for creating new workspaces.\n"
+            "To deploy to an existing workspace, remove the -N flag."
+        )
 
     def _resolve_source_anchors(self) -> None:
         """Anchor the ids of this repo's other workspaces as environment ids.
@@ -205,7 +228,7 @@ class WorkspaceDeployer:
         are listed too, so their ids map where notebook code still carries them
         (abfss paths). A failed lookup is a warning, not an error.
         """
-        self.source_workspace_ids = {self.workspace_id}
+        self.source_workspace_ids = {self.workspace_id} if self.workspace_id else set()
         self.source_workspaces = {}
         self.source_lakehouse_ids = {}
         try:
@@ -284,11 +307,12 @@ class WorkspaceDeployer:
         # workspace (no fabric-cicd dynamic exists). Manual overrides above
         # win; same-workspace deploys skip replacement entirely.
         if not detector.should_skip_replacement(self.workspace_id):
-            _ = resolve_warehouse_endpoint_params(detector, self.workspace_id, self.logger)
+            target = self.workspace_id or None  # None: a dry run's workspace-to-be
+            _ = resolve_warehouse_endpoint_params(detector, target, self.logger)
             # SQL database hostnames also resolve to literals: fabric-cicd's
             # $sqlendpoint dynamic returns serverFqdn with a ",1433" port
             # suffix that must not land in bare-hostname find_values.
-            _ = resolve_sqldatabase_hostname_params(detector, self.workspace_id, self.logger)
+            _ = resolve_sqldatabase_hostname_params(detector, target, self.logger)
 
         self._detector = detector
 
@@ -361,14 +385,28 @@ class WorkspaceDeployer:
     def _rls_verdict(self, scope: DeployScope, allow_rls_change: bool) -> Verdict:
         """Live row-level security the published semantic models would change (see `rls`)."""
         checks = check_deploy_rls(
-            self.workspace_id,
+            self.workspace_id or None,
             self._repo_dir_resolved,
             [item.name for item in scope.items if item.type == "SemanticModel"],
             allow_rls_change,
-            logger=self.logger,
+            # A dry run reports the checks instead of logging them.
+            logger=None if self.dry_run else self.logger,
         )
         status, message = rls_verdict(checks)
         return Verdict(status, message, models=tuple(checks))
+
+    def parameter_rules(self) -> list[Rule]:
+        """The find_replace rules a deploy hands fabric-cicd, in the order it applies them."""
+        if self._detector is None:
+            return []
+        _ = self._paramfile.prepare(
+            self._detector,
+            self.workspace_id,
+            self.environment,
+            self._manual_count,
+            self._skipped_lakehouse_count,
+        )
+        return self._paramfile.rules
 
     def _items_from_pr(self, pr: str) -> list[str]:
         """Resolve `--pr` to the item list the pull request actually touched.
@@ -510,6 +548,8 @@ class WorkspaceDeployer:
             RuntimeError: If the scope can't be resolved (see `resolve_scope`)
                 or a guard blocks the deploy.
         """
+        if self.dry_run:
+            raise RuntimeError("This deployer is for a dry run: it can't deploy.")
 
         for ws_id, name in sorted(self.source_workspaces.items(), key=lambda kv: kv[1]):
             self.logger.info(f"Source Workspace: {name} ({ws_id})")

@@ -11,6 +11,7 @@ import logging
 import shutil
 import tempfile
 from collections.abc import Sequence
+from dataclasses import dataclass
 from difflib import get_close_matches
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
 __all__ = [
     "MANUAL_PARAMETER_KEYS",
     "ParameterFile",
+    "Rule",
     "apply_manual_overrides",
     "resolve_sqldatabase_hostname_params",
     "resolve_warehouse_endpoint_params",
@@ -173,7 +175,7 @@ def apply_manual_overrides(
 
 
 def resolve_warehouse_endpoint_params(
-    detector: ParameterDetector, workspace_id: str, logger: logging.Logger
+    detector: ParameterDetector, workspace_id: str | None, logger: logging.Logger
 ) -> int:
     """Resolve MountedWarehouse notebook bindings to literal target GUIDs.
 
@@ -183,6 +185,7 @@ def resolve_warehouse_endpoint_params(
     dynamic variable — instead look up the target workspace's SQLEndpoint by
     the repo's SQL database display name and emit the GUID as a literal
     replace_value. Manual overrides win (already-resolved params are skipped).
+    A `workspace_id` of None (the workspace doesn't exist yet) resolves nothing.
 
     Returns the number of parameters resolved.
     """
@@ -204,6 +207,8 @@ def resolve_warehouse_endpoint_params(
         # The binding names no database, so only a repo with one can answer.
         if len(db_names) > 1:
             raise ValueError(f"the repo has several SQL databases ({', '.join(db_names)})")
+        if workspace_id is None:
+            raise ValueError(_NO_WORKSPACE)
         endpoint = find_item_by_name(workspace_id, "SQLEndpoint", db_names[0])
     except (ValueError, RuntimeError) as e:
         logger.warning(
@@ -227,7 +232,7 @@ def resolve_warehouse_endpoint_params(
 
 
 def resolve_sqldatabase_hostname_params(
-    detector: ParameterDetector, workspace_id: str, logger: logging.Logger
+    detector: ParameterDetector, workspace_id: str | None, logger: logging.Logger
 ) -> int:
     """Resolve SQL database hostnames to literal bare hosts from the target.
 
@@ -239,7 +244,8 @@ def resolve_sqldatabase_hostname_params(
     (`Sql.Database("host,1433", …)` connects fine) but fatal in notebook JDBC
     URLs composed as `f"{hostname}:{port}"`. Resolve the host ourselves and
     emit the literal instead. Manual overrides win (their dynamic_variable no
-    longer matches the `$items.` pattern).
+    longer matches the `$items.` pattern). A `workspace_id` of None (the
+    workspace doesn't exist yet) resolves nothing.
 
     Returns the number of parameters resolved.
     """
@@ -261,6 +267,8 @@ def resolve_sqldatabase_hostname_params(
     try:
         # A host is the workspace's SQL server, so any of the repo's databases
         # resolves it (detect.ITEM_RULES).
+        if workspace_id is None:
+            raise ValueError(_NO_WORKSPACE)
         host = get_sqldatabase_server_host(workspace_id, db_names[0])
     except (ValueError, RuntimeError) as e:
         logger.warning(
@@ -278,6 +286,11 @@ def resolve_sqldatabase_hostname_params(
     return len(pending)
 
 
+# Why a dry run that would create the workspace resolves nothing against it:
+# the deploy itself would find the new workspace empty.
+_NO_WORKSPACE = "the target workspace does not exist yet"
+
+
 def _plural(count: int, noun: str) -> str:
     return f"{count} {noun}{'s' if count != 1 else ''}"
 
@@ -290,6 +303,20 @@ def _load_parameter_file(path: Path) -> dict[str, Any]:
     ):
         raise ValueError(f"{path}: expected a mapping whose find_replace and extend are lists")
     return document
+
+
+@dataclass(frozen=True)
+class Rule:
+    """A find_replace entry fabric-cicd gets, and where it came from.
+
+    `origin` is "parameter.yml", the repo-relative path of a template it
+    extends, "fabdep.yml" (a manual_parameters entry) or "detected"; `kind` is
+    what detection took the find_value to be.
+    """
+
+    entry: dict[str, Any]
+    origin: str
+    kind: str = ""
 
 
 class ParameterFile:
@@ -307,23 +334,31 @@ class ParameterFile:
         self.repo_dir = repo_dir
         self.path: str | None = None
         self.summary: list[str] = []
+        # Every find_replace entry fabric-cicd gets, in the order it applies them.
+        self.rules: list[Rule] = []
 
-    def write(
+    def prepare(
         self,
         detector: ParameterDetector,
         workspace_id: str,
         environment: str,
         manual_count: int,
         skipped_lakehouse_count: int,
-    ) -> None:
-        """Build the file for `environment` and record a human summary."""
+    ) -> dict[str, Any] | None:
+        """Work out the parameter document for `environment`, its rules and a
+        human summary, writing nothing.
+
+        Returns:
+            The document to hand fabric-cicd, or None when it should read the
+            repo's parameter.yml (if any) as it is.
+        """
         summary = []
         if skipped_lakehouse_count:
             summary.append(
                 f"Skipped {_plural(skipped_lakehouse_count, 'lakehouse parameter')} "
                 "(--skip-lakehouse)"
             )
-        rules = []
+        rules: list[dict[str, Any]] = []
         if detector.should_skip_replacement(workspace_id):
             summary.append("Source and target workspace are the same -- no detected replacements")
         elif rules := detector.generate_parameter_yml(environment)["find_replace"]:
@@ -337,11 +372,14 @@ class ParameterFile:
             summary.append("No parameters detected for replacement")
 
         user_file = self.repo_dir / "parameter.yml"
-        user = _load_parameter_file(user_file) if user_file.is_file() else {}
+        user: dict[str, Any] = _load_parameter_file(user_file) if user_file.is_file() else {}
         templates = [(user_file.parent / str(t)).resolve() for t in user.get("extend") or []]
+        extended: list[tuple[Path, dict[str, Any]]] = [
+            (t, _load_parameter_file(t)) for t in templates if t.is_file()
+        ]
         covered = {
             entry.get("find_value")
-            for document in [user, *(_load_parameter_file(t) for t in templates if t.is_file())]
+            for document in [user, *(d for _, d in extended)]
             for entry in document.get("find_replace") or []
             if isinstance(entry, dict)
         }
@@ -353,13 +391,43 @@ class ParameterFile:
                 + (f"; it overrides {_plural(overridden, 'detected rule')}" if overridden else "")
             )
         self.summary = summary
-        if not added:
-            return
 
-        document = {**user, "find_replace": [*(user.get("find_replace") or []), *added]}
+        def detected(entry: dict[str, Any]) -> Rule:
+            param = detector.parameters[entry["find_value"]]
+            origin = "fabdep.yml" if "fabdep.yml" in param.source_files else "detected"
+            return Rule(entry, origin, str(param.description))
+
+        # fabric-cicd appends a template's entries to the file's own.
+        self.rules = [
+            *(Rule(e, "parameter.yml") for e in _entries(user)),
+            *(detected(entry) for entry in added),
+            *(Rule(e, self._relative(t)) for t, d in extended for e in _entries(d)),
+        ]
+        if not added:
+            return None
+        document: dict[str, Any] = {
+            **user,
+            "find_replace": [*(user.get("find_replace") or []), *added],
+        }
         if templates:
             # fabric-cicd resolves templates relative to the parameter file.
             document["extend"] = [str(t) for t in templates]
+        return document
+
+    def write(
+        self,
+        detector: ParameterDetector,
+        workspace_id: str,
+        environment: str,
+        manual_count: int,
+        skipped_lakehouse_count: int,
+    ) -> None:
+        """Prepare the file (see `prepare`) and write it to a temporary directory."""
+        document = self.prepare(
+            detector, workspace_id, environment, manual_count, skipped_lakehouse_count
+        )
+        if document is None:
+            return
         path = Path(tempfile.mkdtemp(prefix="fabdep-")) / "parameter.yml"
         path.write_text(
             yaml.safe_dump(document, sort_keys=False, allow_unicode=True), encoding="utf-8"
@@ -371,3 +439,15 @@ class ParameterFile:
         if self.path:
             shutil.rmtree(Path(self.path).parent, ignore_errors=True)
             self.path = None
+
+    def _relative(self, path: Path) -> str:
+        return (
+            str(path.relative_to(self.repo_dir))
+            if path.is_relative_to(self.repo_dir)
+            else str(path)
+        )
+
+
+def _entries(document: dict[str, Any]) -> list[dict[str, Any]]:
+    entries: list[object] = document.get("find_replace") or []
+    return [cast(dict[str, Any], e) for e in entries if isinstance(e, dict)]
