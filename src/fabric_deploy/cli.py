@@ -1,11 +1,14 @@
-"""CLI interface for fabric-deploy package."""
+"""The `fabdep` command line."""
 
 import argparse
 import io
 import logging
+import shlex
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from textwrap import dedent
+from typing import NoReturn, cast
 
 from .config import AUTH_MODES, load_tenant_pin
 from .detect import ParameterDetector
@@ -27,56 +30,48 @@ from .log import (
     print_error,
 )
 from .refresh import frame_models
+from .rls import pull_rls
 from .workspace import PR_HEAD, WorkspaceDeployer
 
-SEP = "=" * 100
+_SEP = "=" * 100
+# Deploy flags echoed under the banner, in this order.
+_ECHOED_FLAGS = (
+    "auth",
+    "branch",
+    "new_workspace",
+    "skip_lakehouse",
+    "no_cleanup",
+    "item_types",
+    "exclude_types",
+    "include_items",
+    "pr",
+    "fail_on_stale",
+    "frame",
+    "allow_rls_change",
+    "allow_unbound_udf",
+)
 _TOP_LEVEL_FLAGS = ("-h", "--help", "-V", "--version")
 # Named in an error instead of being read as deploy arguments (a directory "rename").
 _REMOVED_COMMANDS = ("rename", "auth list", "auth switch", "auth rename", "auth login", "auth bind")
 
 
-def format_deploy_options(
-    branch_override: str | None = None,
-    new_workspace: bool = False,
-    skip_lakehouse: bool = False,
-    no_cleanup: bool = False,
-    item_types: list[str] | None = None,
-    exclude_types: list[str] | None = None,
-    include_items: list[str] | None = None,
-    fail_on_stale: bool = False,
-    allow_rls_change: bool = False,
-    allow_unbound_udf: bool = False,
-    pr: str | None = None,
-) -> str:
-    """One-line record of every non-default deploy option, in CLI-flag form.
+def format_deploy_options(args: argparse.Namespace) -> str:
+    """The deploy's non-default flags as one `Options:` line, in command-line form.
 
     Printed under the version banner so a run's scrollback says which flags
     were in effect without reconstructing the command line.
     """
     opts: list[str] = []
-    if branch_override:
-        opts.append(f"--branch {branch_override}")
-    if new_workspace:
-        opts.append("--new-workspace")
-    if skip_lakehouse:
-        opts.append("--skip-lakehouse")
-    if no_cleanup:
-        opts.append("--no-cleanup")
-    if item_types:
-        opts.append(f"--item-types {' '.join(item_types)}")
-    if exclude_types:
-        opts.append(f"--exclude-types {' '.join(exclude_types)}")
-    if include_items:
-        opts.append(f"--include-items {' '.join(repr(i) for i in include_items)}")
-    if pr:
-        opts.append("--pr" if pr == PR_HEAD else f"--pr {pr}")
-    if fail_on_stale:
-        opts.append("--fail-on-stale")
-    if allow_rls_change:
-        opts.append("--allow-rls-change")
-    if allow_unbound_udf:
-        opts.append("--allow-unbound-udf")
-    return f"Options: {' '.join(opts) if opts else '(defaults)'}"
+    for dest in _ECHOED_FLAGS:
+        value = getattr(args, dest)
+        flag = "--" + dest.replace("_", "-")
+        if value is True or (dest == "pr" and value == PR_HEAD):
+            opts.append(flag)
+        elif isinstance(value, list):
+            opts.append(shlex.join([flag, *cast(list[str], value)]))
+        elif value:
+            opts.append(shlex.join([flag, value]))
+    return f"Options: {' '.join(opts) or '(defaults)'}"
 
 
 def log_banner(logger: logging.Logger, options_line: str) -> None:
@@ -96,12 +91,12 @@ def log_banner(logger: logging.Logger, options_line: str) -> None:
     logger.info(options_line)
 
 
-def handle_command_error(error: Exception, context: str) -> None:
-    """Handle command errors with specific troubleshooting for different error types.
+def handle_command_error(error: Exception, context: str) -> NoReturn:
+    """Print why a command failed, with troubleshooting for known errors, and exit 1.
 
     Args:
-        error: The exception that was raised
-        context: Context string describing what failed (e.g., "Workspace operation", "Deployment")
+        error: The exception that was raised.
+        context: What failed, e.g. "Deployment".
     """
     error_msg = str(error)
     print_error(f"\n{context} failed: {error_msg}\n")
@@ -112,15 +107,15 @@ def handle_command_error(error: Exception, context: str) -> None:
     # keywords with them.
     hint = error_hint(error_msg)
     if hint:
-        print_error(f"{SEP}\nLikely cause\n{SEP}\n\n{hint}\n\n{SEP}\n")
+        print_error(f"{_SEP}\nLikely cause\n{_SEP}\n\n{hint}\n\n{_SEP}\n")
 
     # Connection errors first — their messages often contain auth keywords too.
     if is_connection_error(error_msg):
         connection_help = dedent(
             f"""
-            {SEP}
+            {_SEP}
             Connection Reference Error Detected
-            {SEP}
+            {_SEP}
 
             This error occurs when a DataPipeline (or other item) references a connection
             that is unavailable in the target tenant:
@@ -136,7 +131,7 @@ def handle_command_error(error: Exception, context: str) -> None:
             \t• Connections must exist in the target tenant for a DataPipeline to be deployed
             \t• Use 'fabdep detect' to find connection GUIDs in your current repo
 
-            {SEP}
+            {_SEP}
             """
         )
         print_error(connection_help)
@@ -148,14 +143,14 @@ def handle_command_error(error: Exception, context: str) -> None:
     elif is_auth_error(error) and not isinstance(error, AuthError):
         # AuthError already says how to sign in; this covers the API refusing the identity.
         print_error(
-            f"{SEP}\nAuthentication or permissions\n{SEP}\n\n"
+            f"{_SEP}\nAuthentication or permissions\n{_SEP}\n\n"
             f"Credential: {credential_in_use()}\n"
             "\t• Run `fabdep auth status` to see which identity and tenant that is.\n"
             f"\t• {auth_hint()}\n"
             "\t• The identity needs a Contributor (or higher) role on the workspace; a service\n"
             "\t  principal also needs the Fabric admin setting that lets service principals use\n"
             "\t  Fabric APIs.\n\n"
-            f"{SEP}\n"
+            f"{_SEP}\n"
         )
 
     sys.exit(1)
@@ -381,104 +376,83 @@ def parse_args() -> argparse.Namespace:
 
 
 def handle_auth_command(args: argparse.Namespace) -> None:
-    """Handle auth subcommand execution."""
+    """`fabdep auth status`: the identity, tenant and credential fabdep signs in with."""
     try:
         apply_tenant_pin(load_tenant_pin(args.directory), get_logger("fabric_deploy.cli"))
         identity = describe_identity()
     except Exception as e:
         handle_command_error(e, "auth status")
-    for label, value in identity.items():  # pyright: ignore[reportPossiblyUnboundVariable]
+    for label, value in identity.items():
         print(f"{label + ':':<12} {value}")
 
 
 def handle_detect_command(args: argparse.Namespace) -> None:
-    """Handle detect subcommand execution."""
+    """`fabdep detect`: list the detected source IDs, optionally saving them."""
+    output_file = args.directory / "parameter.yml.detected"
     try:
         detector = ParameterDetector(
-            repo_dir=args.directory,
-            source_workspace_ids=args.source_workspace_ids,
+            repo_dir=args.directory, source_workspace_ids=args.source_workspace_ids
         )
         detector.detect_all()
         detector.print_detection_summary()
-
         if args.save:
-            output_file = Path(args.directory) / "parameter.yml.detected"
             detector.save_parameter_yml(output_path=output_file)
-
-            with_dynamic = sum(1 for p in detector.parameters.values() if p.dynamic_variable)
-            total = len(detector.parameters)
-
-            print(f"✓ Saved {with_dynamic} parameter(s) to: {output_file}\n")
-            if with_dynamic < total:
-                print(
-                    f"Note: {total - with_dynamic} parameter(s) without dynamic variables were skipped\n"
-                    "(External connections require manual setup and typically don't change between deployments)\n"
-                )
-            print("Using dynamic variables: $workspace.$id, $items.Lakehouse.<name>.$id, etc.\n")
-
     except Exception as e:
         handle_command_error(e, "Detection")
+    if not args.save:
+        return
+
+    with_dynamic = sum(1 for p in detector.parameters.values() if p.dynamic_variable)
+    skipped = len(detector.parameters) - with_dynamic
+    print(f"✓ Saved {with_dynamic} parameter(s) to: {output_file}\n")
+    if skipped:
+        print(
+            f"Note: {skipped} parameter(s) without dynamic variables were skipped\n"
+            "(external connections need manual setup and rarely change between deployments)\n"
+        )
+    print("Using dynamic variables: $workspace.$id, $items.Lakehouse.<name>.$id, etc.\n")
 
 
 def handle_deploy_command(args: argparse.Namespace) -> None:
-    """Handle deploy subcommand execution."""
-
+    """`fabdep deploy`, optionally followed by framing the published models."""
+    log = get_logger("fabric_deploy.cli")
     # Header first: constructing the deployer already resolves workspaces and
     # runs detection, and their warnings belong under the banner.
-    log_banner(
-        get_logger("fabric_deploy.cli"),
-        format_deploy_options(
-            branch_override=args.branch,
-            new_workspace=bool(args.new_workspace),
-            skip_lakehouse=bool(args.skip_lakehouse),
-            no_cleanup=args.no_cleanup,
-            item_types=args.item_types,
-            exclude_types=args.exclude_types,
-            include_items=args.include_items,
-            fail_on_stale=args.fail_on_stale,
-            allow_rls_change=bool(args.allow_rls_change),
-            allow_unbound_udf=bool(args.allow_unbound_udf),
-            pr=args.pr,
-        ),
-    )
-
+    log_banner(log, format_deploy_options(args))
     try:
         deployer = WorkspaceDeployer(
             repo_dir=args.directory,
             logger_name="fabric_deploy.cli",
             branch_override=args.branch,
-            new_workspace=bool(args.new_workspace),
-            skip_lakehouse=bool(args.skip_lakehouse),
+            new_workspace=args.new_workspace,
+            skip_lakehouse=args.skip_lakehouse,
         )
     except Exception as e:
-        handle_command_error(e, "Workspace initialization")  # exits
-
+        handle_command_error(e, "Workspace initialization")
     try:
-        deployer.deploy(  # pyright: ignore[reportPossiblyUnboundVariable]
+        deployer.deploy(
             no_cleanup=args.no_cleanup,
             item_types=args.item_types,
             exclude_types=args.exclude_types,
             include_items=args.include_items,
             fail_on_stale=args.fail_on_stale,
-            allow_rls_change=bool(args.allow_rls_change),
-            allow_unbound_udf=bool(args.allow_unbound_udf),
+            allow_rls_change=args.allow_rls_change,
+            allow_unbound_udf=args.allow_unbound_udf,
             pr=args.pr,
         )
     except Exception as e:
         handle_command_error(e, "Deployment")
-    print()
+    if not args.frame:
+        return
 
-    if args.frame:
-        models = _published_models(args, deployer.deployed_items)  # pyright: ignore[reportPossiblyUnboundVariable]
-        if models == []:
-            get_logger("fabric_deploy.cli").info(
-                "--frame: the deploy published no semantic model, so there is nothing to frame."
-            )
-            return
-        try:
-            _ = frame_models(repo_dir=args.directory, branch_override=args.branch, models=models)
-        except Exception as e:
-            handle_command_error(e, "Framing")
+    models = _published_models(args, deployer.deployed_items)
+    if models == []:
+        log.info("--frame: the deploy published no semantic model, so there is nothing to frame.")
+        return
+    try:
+        _ = frame_models(repo_dir=args.directory, branch_override=args.branch, models=models)
+    except Exception as e:
+        handle_command_error(e, "Framing")
 
 
 def _published_models(args: argparse.Namespace, deployed_items: list[str]) -> list[str] | None:
@@ -500,43 +474,45 @@ def _published_models(args: argparse.Namespace, deployed_items: list[str]) -> li
 
 
 def handle_refresh_command(args: argparse.Namespace) -> None:
-    """Handle refresh subcommand execution (Direct Lake framing)."""
+    """`fabdep refresh`: frame the semantic models."""
     try:
-        frame_models(
+        _ = frame_models(
             repo_dir=args.directory,
             branch_override=args.branch,
             models=args.include_items,
             sync=not args.no_sync,
-            timeout_s=int(args.timeout),
+            timeout_s=args.timeout,
         )
     except Exception as e:
         handle_command_error(e, "Framing")
 
 
 def handle_rls_command(args: argparse.Namespace) -> None:
-    """Handle rls subcommand execution (RLS definition round-trip)."""
-    from .rls import pull_rls
-
-    if args.rls_command == "pull":
-        try:
-            changed = pull_rls(
-                repo_dir=args.directory,
-                branch_override=args.branch,
-                models=args.include_items,
-                write=bool(args.write),
-            )
-        except Exception as e:
-            handle_command_error(e, "RLS pull")
-        # Diff-only run that found drift exits non-zero so CI can gate on it.
-        if changed and not args.write:  # pyright: ignore[reportPossiblyUnboundVariable]
-            sys.exit(1)
-    else:
-        print_error(f"Unknown rls command: {args.rls_command}")
+    """`fabdep rls pull`. A diff-only run that finds drift exits 1, so CI can gate on it."""
+    try:
+        changed = pull_rls(
+            repo_dir=args.directory,
+            branch_override=args.branch,
+            models=args.include_items,
+            write=args.write,
+        )
+    except Exception as e:
+        handle_command_error(e, "RLS pull")
+    if changed and not args.write:
         sys.exit(1)
 
 
+_HANDLERS: dict[str, Callable[[argparse.Namespace], None]] = {
+    "auth": handle_auth_command,
+    "deploy": handle_deploy_command,
+    "detect": handle_detect_command,
+    "refresh": handle_refresh_command,
+    "rls": handle_rls_command,
+}
+
+
 def main() -> None:
-    """CLI entry point - routes to appropriate command handler."""
+    """CLI entry point: run the command the arguments name (deploy by default)."""
     # A console that can't encode a character (✓ on a Windows cp1252 console)
     # prints '?' for it instead of failing the command.
     for stream in (sys.stdout, sys.stderr):
@@ -544,17 +520,4 @@ def main() -> None:
             stream.reconfigure(errors="replace")
     args = parse_args()
     set_auth_mode(getattr(args, "auth", None))
-
-    if args.command == "auth":
-        handle_auth_command(args)
-    elif args.command == "detect":
-        handle_detect_command(args)
-    elif args.command == "refresh":
-        handle_refresh_command(args)
-    elif args.command == "rls":
-        handle_rls_command(args)
-    elif args.command == "deploy":
-        handle_deploy_command(args)
-    else:
-        print_error(f"Unknown command: {args.command}")
-        sys.exit(1)
+    _HANDLERS[args.command](args)

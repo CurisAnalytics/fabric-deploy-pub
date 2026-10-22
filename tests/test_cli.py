@@ -10,7 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from fabric_deploy.cli import format_deploy_options, log_banner
+from fabric_deploy.cli import (
+    format_deploy_options,
+    handle_command_error,
+    log_banner,
+    main,
+    parse_args,
+)
 from fabric_deploy.scope import repo_item_types
 from fabric_deploy.workspace import WorkspaceDeployer
 
@@ -24,6 +30,16 @@ _REQUIRES_FABDEP = pytest.mark.skipif(
     not _FABDEP_AVAILABLE,
     reason="fabdep binary not installed on PATH or in sys.executable's bin dir",
 )
+
+
+def _parse(monkeypatch, *argv: str):
+    monkeypatch.setattr(sys, "argv", ["fabdep", *argv])
+    return parse_args()
+
+
+def _run(monkeypatch, *argv: str) -> None:
+    monkeypatch.setattr(sys, "argv", ["fabdep", *argv])
+    main()
 
 
 class TestCLI:
@@ -104,14 +120,7 @@ class TestDetectSourceWorkspaceFlag:
     """`fabdep detect --source-workspace-id` parses (repeatable) and runs."""
 
     def test_detect_parser_accepts_source_workspace_id(self, monkeypatch):
-        from fabric_deploy.cli import parse_args
-
-        monkeypatch.setattr(
-            sys,
-            "argv",
-            ["fabdep", "detect", "--source-workspace-id", SAMPLE_DEV_WORKSPACE_ID],
-        )
-        args = parse_args()
+        args = _parse(monkeypatch, "detect", "--source-workspace-id", SAMPLE_DEV_WORKSPACE_ID)
         assert args.source_workspace_ids == [SAMPLE_DEV_WORKSPACE_ID]
 
     @_REQUIRES_FABDEP
@@ -132,27 +141,26 @@ class TestDetectSourceWorkspaceFlag:
 
 
 class TestBanner:
-    def test_defaults(self):
-        assert format_deploy_options() == "Options: (defaults)"
+    @staticmethod
+    def _options(monkeypatch, *argv: str) -> str:
+        return format_deploy_options(_parse(monkeypatch, "deploy", *argv))
 
-    def test_scoped_cross_branch_deploy(self):
-        line = format_deploy_options(branch_override="prod", item_types=["SemanticModel"])
+    def test_defaults(self, monkeypatch):
+        assert self._options(monkeypatch) == "Options: (defaults)"
+
+    def test_scoped_cross_branch_deploy(self, monkeypatch):
+        line = self._options(monkeypatch, "-b", "prod", "-t", "SemanticModel")
         assert line == "Options: --branch prod --item-types SemanticModel"
 
-    def test_all_flags(self):
-        line = format_deploy_options(
-            branch_override="prod",
-            new_workspace=True,
-            skip_lakehouse=True,
-            no_cleanup=True,
-            item_types=["Notebook", "DataPipeline"],
-            exclude_types=["Report"],
-            include_items=["My Model.SemanticModel"],
-            fail_on_stale=True,
-            allow_rls_change=True,
-            allow_unbound_udf=True,
+    def test_all_flags(self, monkeypatch):
+        line = self._options(
+            monkeypatch,
+            *("--auth", "env", "-b", "prod", "-N", "-L", "-n", "-F", "--frame"),
+            *("-t", "Notebook", "DataPipeline", "-x", "Report", "-i", "My Model.SemanticModel"),
+            *("--allow-rls-change", "--allow-unbound-udf"),
         )
         for needle in (
+            "--auth env",
             "--branch prod",
             "--new-workspace",
             "--skip-lakehouse",
@@ -161,14 +169,15 @@ class TestBanner:
             "--exclude-types Report",
             "--include-items 'My Model.SemanticModel'",
             "--fail-on-stale",
+            "--frame",
             "--allow-rls-change",
             "--allow-unbound-udf",
         ):
             assert needle in line
 
-    def test_pr(self):
-        assert format_deploy_options(pr="HEAD") == "Options: --pr"
-        assert format_deploy_options(pr="abc1234") == "Options: --pr abc1234"
+    def test_pr(self, monkeypatch):
+        assert self._options(monkeypatch, "--pr") == "Options: --pr"
+        assert self._options(monkeypatch, "--pr", "abc1234") == "Options: --pr abc1234"
 
     def test_banner_names_fabdep(self, caplog):
         from fabric_deploy import __version__
@@ -177,13 +186,6 @@ class TestBanner:
             log_banner(logging.getLogger("fabric_deploy.test"), "Options: (defaults)")
         assert any(f"fabdep v{__version__}" in r.message for r in caplog.records)
         assert caplog.records[-1].message == "Options: (defaults)"
-
-
-def _parse(monkeypatch, *argv: str):
-    from fabric_deploy.cli import parse_args
-
-    monkeypatch.setattr(sys, "argv", ["fabdep", *argv])
-    return parse_args()
 
 
 class TestHelp:
@@ -202,13 +204,6 @@ class TestHelp:
         args = _parse(monkeypatch, *command, "-b", "prod", "-i", "M.SemanticModel", "--auth", "env")
         assert (args.branch, args.include_items, args.auth) == ("prod", ["M.SemanticModel"], "env")
         assert args.directory == Path(".")
-
-
-def _run(monkeypatch, *argv: str) -> None:
-    from fabric_deploy.cli import main
-
-    monkeypatch.setattr(sys, "argv", ["fabdep", *argv])
-    main()
 
 
 class TestFrameScope:
@@ -321,8 +316,6 @@ class TestCommandErrors:
         assert "no such directory" in capsys.readouterr().err
 
     def test_errors_go_to_stderr(self, capsys):
-        from fabric_deploy.cli import handle_command_error
-
         with pytest.raises(SystemExit):
             handle_command_error(
                 RuntimeError("Failed to list workspaces (HTTP 403)."), "Deployment"
