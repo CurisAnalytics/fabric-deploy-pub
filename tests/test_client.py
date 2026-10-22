@@ -17,6 +17,7 @@ from fabric_deploy.client import (
     find_item_by_name,
     get_semantic_model_definition,
     get_sqldatabase_server_host,
+    get_workspace_id_by_name,
     list_capacities,
     list_workspace_items,
     list_workspaces,
@@ -66,6 +67,57 @@ def test_list_workspace_items_keeps_the_type_filter_across_pages(monkeypatch):
     list_workspace_items("ws", "SemanticModel")
     assert all("type=SemanticModel" in url for url in seen)
     assert "continuationToken=tok2" in seen[1]
+
+
+# --- get_workspace_id_by_name ----------------------------------------------
+
+
+def _workspaces(monkeypatch, names: list[str]) -> list[int]:
+    """Serve `names` as the visible workspaces; return a one-element call counter."""
+    calls = [0]
+
+    def fake_list():
+        calls[0] += 1
+        return [{"id": f"id-{n}", "displayName": n} for n in names]
+
+    monkeypatch.setattr("fabric_deploy.client.list_workspaces", fake_list)
+    return calls
+
+
+def test_workspace_lookup_is_case_insensitive(monkeypatch):
+    _workspaces(monkeypatch, ["Contoso [DEV]", "Fabrikam [DEV]"])
+    assert get_workspace_id_by_name("contoso [dev]") == "id-Contoso [DEV]"
+
+
+def test_workspace_not_found_suggests_close_matches_from_one_listing(monkeypatch):
+    calls = _workspaces(monkeypatch, ["Contoso [DEV]", "Contoso [PROD]", "Northwind [DEV]"])
+    with pytest.raises(ValueError) as err:
+        get_workspace_id_by_name("Contoso [TEST]")
+    message = str(err.value)
+    assert "Did you mean" in message
+    assert "Contoso [DEV]" in message and "Contoso [PROD]" in message
+    assert "Northwind" not in message
+    assert calls == [1]
+
+
+def test_workspace_not_found_suggests_at_most_five(monkeypatch):
+    _workspaces(monkeypatch, [f"Contoso {i}" for i in range(9)])
+    with pytest.raises(ValueError) as err:
+        get_workspace_id_by_name("Contoso")
+    assert str(err.value).count("  - Contoso") == 5
+
+
+def test_workspace_not_found_without_close_matches_lists_nothing(monkeypatch):
+    _workspaces(monkeypatch, ["Woodgrove Analytics", "Northwind Finance"])
+    with pytest.raises(ValueError, match="No similarly named workspace") as err:
+        get_workspace_id_by_name("Contoso [DEV]")
+    assert "Woodgrove" not in str(err.value)
+
+
+def test_workspace_duplicate_names_raise(monkeypatch):
+    _workspaces(monkeypatch, ["Contoso", "contoso"])
+    with pytest.raises(ValueError, match="Multiple workspaces"):
+        get_workspace_id_by_name("Contoso")
 
 
 # --- find_item_by_name ---------------------------------------------------

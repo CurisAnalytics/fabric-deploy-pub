@@ -1,6 +1,7 @@
 """Fabric / Power BI REST domain client — endpoint calls over the transport layer."""
 
 import base64
+import difflib
 import time
 from typing import TypedDict
 
@@ -124,8 +125,11 @@ def find_workspace_id_by_name(workspace_name: str) -> str | None:
         ValueError: If multiple workspaces match the same name
         RuntimeError: If API call fails
     """
-    workspaces = list_workspaces()
+    return _match_workspace(list_workspaces(), workspace_name)
 
+
+def _match_workspace(workspaces: list[FabricWorkspaceInfo], workspace_name: str) -> str | None:
+    """The ID of the one workspace named `workspace_name` (case-insensitive), or None."""
     matches = [ws for ws in workspaces if ws["displayName"].lower() == workspace_name.lower()]
 
     if len(matches) == 0:
@@ -152,18 +156,21 @@ def get_workspace_id_by_name(workspace_name: str) -> str:
         ValueError: If workspace not found or multiple matches found
         RuntimeError: If API call fails
     """
-    found = find_workspace_id_by_name(workspace_name)
+    workspaces = list_workspaces()
+    found = _match_workspace(workspaces, workspace_name)
     if found is not None:
         return found
 
-    # Listing again to render a helpful error message — cheap relative to the
-    # cost of a failed deployment, and only happens on the unhappy path.
-    available = [ws["displayName"] for ws in list_workspaces()]
-    raise ValueError(
-        f"Workspace not found: '{workspace_name}'\n\n"
-        f"Available workspaces ({len(available)}):\n"
-        + "\n".join(f"  - {name}" for name in sorted(available))
-    )
+    by_lower = {ws["displayName"].lower(): ws["displayName"] for ws in workspaces}
+    close = difflib.get_close_matches(workspace_name.lower(), list(by_lower), n=5)
+    if close:
+        hint = "Did you mean:\n" + "\n".join(f"  - {by_lower[name]}" for name in close)
+    else:
+        hint = (
+            f"No similarly named workspace among the {len(workspaces)} this identity can "
+            "see. Check the name and that the identity has access to the workspace."
+        )
+    raise ValueError(f"Workspace not found: '{workspace_name}'\n\n{hint}")
 
 
 def create_workspace(workspace_name: str, capacity_id: str) -> str:
