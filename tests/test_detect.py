@@ -942,8 +942,9 @@ class TestUserDataFunctionRebind:
         assert UDF_ITEM_ID not in d.parameters
         assert any("no usable" in r.message for r in caplog.records)
 
-    def test_reports_ignored_when_repo_has_no_udf(self, tmp_path: Path):
-        """No UserDataFunction item -> report definitions aren't walked at all."""
+    def test_button_in_a_repo_without_udf_items_is_not_rebound(self, tmp_path: Path):
+        """With no UserDataFunction item the button still calls another workspace's
+        function: it is recorded for the unbound-UDF guard, not passed over."""
         make_item(tmp_path, "lh", "Lakehouse")
         _make_report_visual(tmp_path, "R", _data_function_visual(UDF_ITEM_ID, WORKSPACE_ID, "f"))
         d = ParameterDetector(tmp_path)
@@ -951,6 +952,7 @@ class TestUserDataFunctionRebind:
 
         assert UDF_ITEM_ID not in d.parameters
         assert d.udf_bindings == []
+        assert [(r, fn) for r, fn, _, _ in d.udf_skipped] == [("R", "f")]
 
 
 # --- lakehouse auto-binding / source-workspace anchors ----------------------

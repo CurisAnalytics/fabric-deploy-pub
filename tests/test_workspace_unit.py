@@ -250,6 +250,39 @@ def test_guards_block_before_anything_is_published(
         fabric_cicd.publish.assert_called_once()
 
 
+def test_udf_button_blocks_in_a_repo_without_udf_items(
+    tmp_path: Path, mock_fabric_api, fabric_cicd
+):
+    """A report button bound to a function elsewhere is guarded even when the repo
+    has no User Data Function to rebind it to."""
+    (tmp_path / "fabdep.yml").write_text('workspace_base_name: "Base"\n')
+    by_reference = {
+        key: {"expr": {"Literal": {"Value": f"'{value}'"}}}
+        for key, value in (
+            ("itemId", "00000000-0000-0000-0000-0000000000f1"),
+            ("workspaceId", "00000000-0000-0000-0000-0000000000f2"),
+        )
+    }
+    button = {
+        "visual": {
+            "dataFunction": {
+                "byReference": by_reference,
+                "metadata": {"dataFunction": {"name": "recalculate"}},
+            }
+        }
+    }
+    make_item(
+        tmp_path, "Finance Report", "Report", files={"definition/pages/p1/visual.json": button}
+    )
+    deployer = WorkspaceDeployer(tmp_path, branch_override="main")
+
+    with pytest.raises(RuntimeError, match="'recalculate' in 'Finance Report'"):
+        deployer.deploy()
+    fabric_cicd.workspace.assert_not_called()
+    deployer.deploy(allow_unbound_udf=True)
+    fabric_cicd.publish.assert_called_once()
+
+
 def test_a_blocking_guard_stops_the_deploy_before_the_rls_read(deployer, fabric_cicd, monkeypatch):
     deployer._detector.unresolved_warehouse_bindings = list(STALE)
     monkeypatch.setattr("fabric_deploy.rls._remote_roles", lambda *_: pytest.fail("read RLS"))

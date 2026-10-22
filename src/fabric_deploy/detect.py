@@ -270,14 +270,11 @@ class ParameterDetector:
             self._item_files("SemanticModel", "definition/**/*.tmdl"),
             self._extract_from_semantic_model,
         )
-        # Only worth walking report definitions when the repo actually ships a
-        # User Data Function to rebind the buttons to.
-        if self._names["UserDataFunction"]:
-            self._process_files(
-                self._item_files("Report", "definition/**/*.json"),
-                self._extract_from_report,
-                parse_json=True,
-            )
+        # Even without a User Data Function to rebind them to: a button calling a
+        # function elsewhere is what the unbound-UDF guard stops.
+        self._process_files(
+            self._item_files("Report", "definition/**/*.json"), self._extract_from_report
+        )
         self._process_files(
             self._item_files("DataPipeline", "pipeline-content.json"),
             self._extract_from_pipeline,
@@ -744,7 +741,7 @@ class ParameterDetector:
             for item in obj:
                 yield from self._iter_data_function_links(item)
 
-    def _extract_from_report(self, file_path: Path, data: dict[str, Any]) -> None:
+    def _extract_from_report(self, file_path: Path, content: str) -> None:
         """Rebind PBIR User Data Function buttons to the target workspace.
 
         Conservative by design — a reference is only parameterized when every
@@ -754,10 +751,12 @@ class ParameterDetector:
         and left verbatim, because a wrong rebind points a live button at the
         wrong workspace's function.
         """
+        if "dataFunction" not in content:
+            return  # most report files; spares parsing every visual
         source_file = str(file_path.relative_to(self.repo_dir))
         report_name = self._item_name(file_path)
 
-        for block in self._iter_data_function_links(data):
+        for block in self._iter_data_function_links(json.loads(content)):
             by_reference = block["byReference"]
             item_id = self._pbir_literal(by_reference.get("itemId"))
             workspace_id = self._pbir_literal(by_reference.get("workspaceId"))
