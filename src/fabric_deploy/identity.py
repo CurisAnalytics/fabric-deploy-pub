@@ -47,7 +47,6 @@ __all__ = [
     "POWERBI_SCOPE",
     "AuthError",
     "apply_auth_settings",
-    "apply_tenant_pin",
     "auth_hint",
     "auth_mode",
     "credential_in_use",
@@ -109,9 +108,6 @@ def apply_auth_settings(settings: AuthSettings | None, logger: logging.Logger) -
     global _settings, _credential
     _settings = settings
     _credential = _GuardedCredential(*auth_mode(), settings=settings, logger=logger)
-
-
-apply_tenant_pin = apply_auth_settings  # the name cli.py imports
 
 
 def auth_mode() -> tuple[str, str]:

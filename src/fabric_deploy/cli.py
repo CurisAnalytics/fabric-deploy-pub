@@ -11,11 +11,11 @@ from pathlib import Path
 from textwrap import dedent, indent
 from typing import NoReturn, cast
 
-from .config import AUTH_MODES, load_tenant_pin
+from .config import AUTH_MODES, load_auth_settings
 from .detect import ParameterDetector
 from .identity import (
     AuthError,
-    apply_tenant_pin,
+    apply_auth_settings,
     auth_hint,
     credential_in_use,
     describe_identity,
@@ -439,7 +439,7 @@ def parse_args() -> argparse.Namespace:
 def handle_auth_command(args: argparse.Namespace) -> None:
     """`fabdep auth status`: the identity, tenant and credential fabdep signs in with."""
     try:
-        apply_tenant_pin(load_tenant_pin(args.directory), get_logger("fabric_deploy.cli"))
+        apply_auth_settings(load_auth_settings(args.directory), get_logger("fabric_deploy.cli"))
         identity = describe_identity()
     except Exception as e:
         handle_command_error(e, "auth status")

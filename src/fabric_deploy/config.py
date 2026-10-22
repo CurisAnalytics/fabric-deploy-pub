@@ -46,7 +46,7 @@ import yaml
 
 from .git import current_branch
 
-__all__ = ["AUTH_MODES", "AuthSettings", "FabdepConfig", "load_auth_settings", "load_tenant_pin"]
+__all__ = ["AUTH_MODES", "AuthSettings", "FabdepConfig", "load_auth_settings"]
 
 # Credential modes for `auth:`, --auth and FABDEP_AUTH (see `identity`).
 AUTH_MODES = ("cli", "env", "workload", "managed", "default")
@@ -116,9 +116,6 @@ def load_auth_settings(repo_dir: Path | str) -> AuthSettings | None:
     if not path.exists():
         return None
     return AuthSettings.from_config(_read_yaml(path))
-
-
-load_tenant_pin = load_auth_settings  # the name cli.py imports
 
 
 def _read_yaml(path: Path) -> dict[str, object]:
