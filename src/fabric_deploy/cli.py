@@ -410,7 +410,7 @@ def parse_args() -> argparse.Namespace:
         "--write",
         action="store_true",
         help="Overwrite the working tree's roles to match the target "
-        "(for review + commit); default is diff-only (exit non-zero on drift)",
+        "(for review + commit); default is diff-only (exit 3 on drift)",
     )
 
     schema = commands.add_parser(
@@ -597,7 +597,11 @@ def handle_refresh_command(args: argparse.Namespace) -> None:
 
 
 def handle_rls_command(args: argparse.Namespace) -> None:
-    """`fabdep rls pull`. A diff-only run that finds drift exits 1, so CI can gate on it."""
+    """`fabdep rls pull`. A diff-only run that finds drift exits 3, so CI can gate on it.
+
+    3 is plan's "a guard would block" status: the deploy's RLS guard would block
+    on the same drift. Errors exit 1.
+    """
     try:
         changed = pull_rls(
             repo_dir=args.directory,
@@ -608,7 +612,7 @@ def handle_rls_command(args: argparse.Namespace) -> None:
     except Exception as e:
         handle_command_error(e, "RLS pull")
     if changed and not args.write:
-        sys.exit(1)
+        sys.exit(BLOCKED_EXIT_CODE)
 
 
 def handle_schema_command(args: argparse.Namespace) -> None:

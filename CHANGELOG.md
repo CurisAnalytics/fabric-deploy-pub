@@ -28,6 +28,8 @@ Releases before the first public one are summarized in a few lines each.
 - Bare `--pr` counts only commits worded as merged pull requests, not plain merges, and
   warns when HEAD is past that commit (rebase merges, direct pushes).
 - An unknown `-t`/`-x` item type is an error naming the closest type.
+- `fabdep rls pull` without `--write` exits 3 when the roles differ (was 1), like `plan` when
+  a guard would block; 1 means an error.
 - Errors go to stderr; colour only on a terminal without `NO_COLOR`. A directory argument
   that doesn't exist is a usage error (exit 2).
 - Python API: `WorkspaceDeployer` drops `max_retries`, `repo_item_types` and

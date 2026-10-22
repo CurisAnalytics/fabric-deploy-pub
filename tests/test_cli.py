@@ -249,6 +249,35 @@ class TestFrameScope:
         assert framed == []
 
 
+class TestRlsPullExitStatus:
+    """Drift exits 3, as `plan` does when a guard would block; errors exit 1."""
+
+    @pytest.mark.parametrize(
+        ("changed", "argv", "code"),
+        [
+            (True, [], 3),
+            (False, [], 0),
+            (True, ["--write"], 0),
+            (False, ["--write"], 0),
+        ],
+    )
+    def test_exit_status(self, monkeypatch, tmp_path, changed, argv, code):
+        monkeypatch.setattr("fabric_deploy.cli.pull_rls", lambda **_: changed)
+        with pytest.raises(SystemExit) as exc:
+            _run(monkeypatch, "rls", "pull", str(tmp_path), *argv)
+            raise SystemExit(0)
+        assert exc.value.code == code
+
+    def test_an_error_exits_1(self, monkeypatch, tmp_path):
+        def fail(**_: object) -> bool:
+            raise ValueError("No semantic model to check.")
+
+        monkeypatch.setattr("fabric_deploy.cli.pull_rls", fail)
+        with pytest.raises(SystemExit) as exc:
+            _run(monkeypatch, "rls", "pull", str(tmp_path))
+        assert exc.value.code == 1
+
+
 class TestRemovedCommands:
     @pytest.mark.parametrize(
         "argv",

@@ -212,7 +212,7 @@ proceed, **3** a guard would block it, **1** error, **2** usage.
 | --- | --- |
 | `fabdep detect [-s] [--source-workspace-id GUID]` | Lists the IDs in the item files and each one's replacement. Offline: no sign-in, and fabdep.yml isn't read. Deploy and plan also list the repo's other workspaces to recognise their IDs; give those here with `--source-workspace-id` (repeatable). `-s` writes them to `parameter.yml.detected`, a fabric-cicd parameter file. |
 | `fabdep refresh [-i MODEL ...] [--no-sync] [--timeout S]` | Direct Lake framing: syncs the SQL analytics endpoints the models' Direct Lake tables read, refreshes each model (default: every one in the repo), waits up to 900 s each and fails on the first error. Other models refresh without a sync. A completed refresh doesn't prove the measures evaluate. |
-| `fabdep rls pull [-i MODEL ...] [--write]` | Diffs the target's row-level security role definitions against the repo; without `--write`, exits 1 when they differ. `--write` rewrites the repo's role files (and `ref role` lines) to match the target, for review and commit. |
+| `fabdep rls pull [-i MODEL ...] [--write]` | Diffs the target's row-level security role definitions against the repo; without `--write`, exits 3 when they differ (a deploy's RLS guard would block). `--write` rewrites the repo's role files (and `ref role` lines) to match the target, for review and commit. |
 | `fabdep auth status` | Signs in and prints the credential, identity, token type (user or app-only), tenant and token expiry. |
 | `fabdep init [--base-name NAME] [--force]` | Writes a starter fabdep.yml, with every other key as a commented-out example. |
 | `fabdep schema [-o FILE]` | Prints the JSON Schema of fabdep.yml, or writes it to `FILE`. |
@@ -303,9 +303,12 @@ remove items deleted from the repo.
 ## Output and troubleshooting
 
 Log lines, warnings and errors go to stderr; results (`plan`, `detect`, `auth status`,
-`schema`) go to stdout, so `fabdep plan -o json > plan.json` stays clean. Colour is used
-only on a terminal, and never when `NO_COLOR` is set. Known cryptic Fabric errors get a
-plain-language hint next to the raw message.
+`schema`) go to stdout, so `fabdep plan -o json > plan.json` stays clean; `rls pull`
+reports in log lines and its exit status. Exit status: **0** success, **1** error, **2**
+usage, and **3** when `plan` finds a guard would block the deploy or `rls pull` finds the
+target's roles differ from the repo's. Colour is used only on a terminal, and never when
+`NO_COLOR` is set. Known cryptic Fabric errors get a plain-language hint next to the raw
+message.
 
 | Symptom | What to do |
 | --- | --- |
