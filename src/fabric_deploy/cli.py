@@ -604,7 +604,10 @@ def handle_schema_command(args: argparse.Namespace) -> None:
     """`fabdep schema`: print fabdep.yml's JSON Schema, or write it to a file."""
     if args.output:
         # Not a shell redirect: Windows PowerShell 5.1 would write UTF-16.
-        _ = args.output.write_text(schema_text(), encoding="utf-8")
+        try:
+            _ = args.output.write_text(schema_text(), encoding="utf-8")
+        except OSError as e:
+            handle_command_error(e, "schema")
     else:
         print(schema_text(), end="")
 

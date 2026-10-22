@@ -299,6 +299,15 @@ class TestCommandErrors:
         assert exc.value.code == 2
         assert "no such directory" in capsys.readouterr().err
 
+    def test_schema_that_cannot_be_written_is_a_clean_error(self, monkeypatch, capsys, tmp_path):
+        with pytest.raises(SystemExit) as exc:
+            _run(monkeypatch, "schema", "-o", str(tmp_path / "missing" / "fabdep.schema.json"))
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "schema failed:" in captured.err
+        assert "No such file or directory" in captured.err
+
     def test_errors_go_to_stderr(self, capsys):
         with pytest.raises(SystemExit):
             handle_command_error(
