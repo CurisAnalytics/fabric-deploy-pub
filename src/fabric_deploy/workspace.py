@@ -627,8 +627,8 @@ class WorkspaceDeployer:
             if include_items:
                 self.logger.info(f"Including items: {', '.join(include_items)}")
 
-            # fabric-cicd configures its own logger at import time; swap in our
-            # formatter that omits timestamps on header lines.
+            # fabric-cicd colours its console lines unconditionally; hold them to
+            # fabdep's colour rule (none off a terminal or with NO_COLOR).
             patch_fabric_cicd_logger()
 
             self._deploy_items(scope)
