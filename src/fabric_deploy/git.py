@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
 __all__ = ["current_branch", "changed_paths_in", "latest_pr_commit"]
 
-# How the two hosts we use write a pull-request commit subject. ADO writes
+# How Azure DevOps and GitHub write a pull-request commit subject. ADO writes
 # "Merged PR 123: ...", GitHub writes "Merge pull request #12 from ..." for a
 # merge commit and "... (#12)" for a squash. A squash-merged PR leaves no merge
 # commit at all, so the subject is the only signal.
@@ -25,13 +26,20 @@ _PR_SEARCH_DEPTH = 50
 
 
 def _git(repo_dir: Path | str, *args: str) -> str:
-    """Run a git command in `repo_dir` and return stdout, or raise RuntimeError."""
+    """Run a git command in `repo_dir` and return its UTF-8 stdout, or raise RuntimeError."""
+    git = shutil.which("git")
+    if git is None:
+        raise RuntimeError(
+            "git was not found on PATH. fabdep runs it to read the current branch (pass "
+            "--branch instead) and to find what --pr deploys."
+        )
     try:
         result = subprocess.run(
-            ["git", *args],
+            [git, *args],
             cwd=str(repo_dir),
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             check=True,
         )
     except subprocess.CalledProcessError as e:
@@ -66,11 +74,13 @@ def latest_pr_commit(repo_dir: Path | str) -> tuple[str, str] | None:
 
 
 def changed_paths_in(repo_dir: Path | str, commit: str) -> list[str]:
-    """Repo-relative paths a commit introduced, relative to its first parent.
+    """Paths under `repo_dir` that a commit changed relative to its first parent.
 
     For a merge commit that is everything the merged branch brought in; for a
     squash-merged PR (a single commit) it is that commit's own diff. Both are
     "what this PR changed" from the perspective of the branch being deployed.
+    Paths are relative to `repo_dir`, which may be a subfolder of the git
+    repository; changes outside it are left out.
 
     Args:
         repo_dir: Path to a directory inside a git repository.
@@ -79,10 +89,12 @@ def changed_paths_in(repo_dir: Path | str, commit: str) -> list[str]:
     parents = _git(repo_dir, "rev-list", "--parents", "-n1", commit).split()
     # rev-list prints "<sha> <parent>..." — no parent means a root commit.
     if len(parents) < 2:
-        out = _git(repo_dir, "show", "--name-only", "--format=", commit)
+        diff = ("diff-tree", "-r", "--root", "--no-commit-id", commit)
     else:
-        out = _git(repo_dir, "diff", "--name-only", f"{commit}^1", commit)
-    return [line.strip() for line in out.splitlines() if line.strip()]
+        diff = ("diff", f"{commit}^1", commit)
+    # -z: paths unquoted and unescaped, whatever characters they hold.
+    out = _git(repo_dir, *diff, "--name-only", "-z", "--relative")
+    return [path for path in out.split("\0") if path]
 
 
 def current_branch(repo_dir: Path | str) -> str:
@@ -98,22 +110,10 @@ def current_branch(repo_dir: Path | str) -> str:
         RuntimeError: If git is unavailable, the directory is not a repo,
             or HEAD is detached.
     """
-    try:
-        result = subprocess.run(
-            ["git", "branch", "--show-current"],
-            cwd=str(repo_dir),
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    except subprocess.CalledProcessError as e:
-        error_msg = e.stderr.strip() if e.stderr else "Unknown error"
-        raise RuntimeError(
-            f"Failed to get git branch.\n{error_msg}\n\n"
-            "Make sure you're in a git repository and git is installed."
-        ) from e
-
-    branch = result.stdout.strip()
+    branch = _git(repo_dir, "branch", "--show-current").strip()
     if not branch:
-        raise RuntimeError("Not on a git branch (detached HEAD state)")
+        raise RuntimeError(
+            "HEAD is detached, so there is no branch to choose the workspace by. "
+            "Pass the branch name with --branch."
+        )
     return branch

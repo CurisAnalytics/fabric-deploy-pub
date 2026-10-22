@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from fabric_deploy.git import changed_paths_in, latest_pr_commit
+from fabric_deploy.git import changed_paths_in, current_branch, latest_pr_commit
 from fabric_deploy.scope import items_for_changed_paths
 
 # --- helpers ---------------------------------------------------------------
@@ -131,6 +131,46 @@ class TestChangedPaths:
         _git(repo, "merge", "--no-ff", "-m", "Merged PR 9: feature", "feature")
         sha = _git(repo, "rev-parse", "HEAD").strip()
         assert sorted(changed_paths_in(repo, sha)) == ["a.txt", "b.txt"]
+
+    def test_paths_are_relative_to_a_workspace_in_a_subfolder(self, tmp_path: Path):
+        repo = _repo(tmp_path)
+        (repo / "ws" / "N.Notebook").mkdir(parents=True)
+        (repo / "ws" / "N.Notebook" / "notebook-content.py").write_text("x")
+        (repo / "docs").mkdir()
+        (repo / "docs" / "notes.md").write_text("x")
+        sha = _commit(repo, "Merged PR 2: notebook")
+        assert changed_paths_in(repo / "ws", sha) == ["N.Notebook/notebook-content.py"]
+
+    def test_unusual_file_names_come_back_verbatim(self, tmp_path: Path):
+        repo = _repo(tmp_path)
+        item = repo / 'Ventes "été".Notebook'
+        item.mkdir()
+        (item / "notebook-content.py").write_text("x")
+        sha = _commit(repo, "Merged PR 3: ventes")
+        assert changed_paths_in(repo, sha) == ['Ventes "été".Notebook/notebook-content.py']
+
+    def test_root_commit_in_a_subfolder(self, tmp_path: Path):
+        _git(tmp_path, "init", "-b", "main")
+        (tmp_path / "ws").mkdir()
+        (tmp_path / "ws" / "a.txt").write_text("a")
+        (tmp_path / "b.txt").write_text("b")
+        sha = _commit(tmp_path, "initial")
+        assert changed_paths_in(tmp_path / "ws", sha) == ["a.txt"]
+
+
+class TestGitErrors:
+    def test_missing_git_is_a_runtime_error(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+        with pytest.raises(RuntimeError, match="git"):
+            latest_pr_commit(tmp_path)
+        with pytest.raises(RuntimeError, match="git"):
+            current_branch(tmp_path)
+
+    def test_detached_head_suggests_branch(self, tmp_path: Path):
+        repo = _repo(tmp_path)
+        _git(repo, "checkout", "--detach")
+        with pytest.raises(RuntimeError, match="--branch"):
+            current_branch(repo)
 
 
 # --- path -> item mapping --------------------------------------------------
@@ -259,6 +299,24 @@ class TestItemsFromPr:
         )
         with pytest.raises(RuntimeError, match="changed no deployable item"):
             deployer._items_from_pr("HEAD")
+
+
+def test_workspace_in_a_subfolder_of_the_git_repo(tmp_path: Path, mock_fabric_api):
+    from fabric_deploy.workspace import WorkspaceDeployer
+
+    repo = _repo(tmp_path)
+    ws = repo / "workspace"
+    ws.mkdir()
+    (ws / "fabdep.yml").write_text('workspace_base_name: "ws"\n')
+    item = _item(ws, "Load GL", "Notebook")
+    _commit(repo, "chore: add workspace")
+    (item / "notebook-content.py").write_text("x")
+    (repo / "README.md").write_text("y")
+    _commit(repo, "Merged PR 5: gl fix")
+
+    deployer = WorkspaceDeployer(ws, branch_override="dev")
+
+    assert deployer._items_from_pr("HEAD") == ["Load GL.Notebook"]
 
 
 def test_pr_and_include_items_conflict(deployer):
