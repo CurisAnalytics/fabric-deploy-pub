@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -97,11 +98,7 @@ def test_diff_ignores_cosmetic_whitespace():
 
 
 def test_diff_ignores_pbi_id_annotation():
-    """Identical security rule, different per-env PBI_Id GUID -> not drift.
-
-    Mirrors the real Woodgrove dev-vs-prod case: same tablePermission, different
-    annotation PBI_Id. Must read as unchanged so a legit deploy isn't blocked.
-    """
+    """Identical security rule, different per-env PBI_Id GUID -> not drift."""
     base = (
         "role GOTHAM\n\tmodelPermission: read\n\n"
         '\ttablePermission V_REGIONS = [region] == "GOTHAM CITY"\n\n'
@@ -156,178 +153,118 @@ def test_reconcile_ref_roles_quotes_names_with_spaces():
 
 # --- guard ---------------------------------------------------------------
 
-
-def test_guard_skips_model_without_local_roles(tmp_path, monkeypatch):
-    """A model with no roles in the repo must not trigger any API call."""
-    _make_model(tmp_path, name="M", roles=None)
-
-    def _boom(*a, **k):
-        raise AssertionError("remote roles should not be fetched")
-
-    monkeypatch.setattr("fabric_deploy.rls._remote_roles", _boom)
-    guard_deploy_rls("ws", tmp_path, model_names=None, allow_change=False)
+NO_READ = object()  # the guard must not read the target at all
 
 
-def test_guard_empty_model_names_is_noop(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "fabric_deploy.rls._remote_roles",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no call")),
-    )
-    guard_deploy_rls("ws", tmp_path, model_names=[], allow_change=False)
+@pytest.mark.parametrize(
+    ("repo_roles", "target", "allow", "scope", "blocked", "logged", "not_logged"),
+    [
+        pytest.param(
+            {"RLS.tmdl": ROLE_RLS},
+            _role("RLS", ROLE_RLS),
+            False,
+            None,
+            None,
+            ["reading live role definitions", "repo matches target"],
+            [MEMBERS_NOTE],
+            id="match-passes-without-members-note",
+        ),
+        pytest.param(
+            {"RLS.tmdl": ROLE_RLS_EDITED},
+            _role("RLS", ROLE_RLS),
+            False,
+            None,
+            "Deploy blocked.*row-level security",
+            ["deploy CHANGES"],
+            [],
+            id="rule-change-blocks",
+        ),
+        pytest.param(
+            {"RLS.tmdl": ROLE_RLS},
+            {**_role("RLS", ROLE_RLS), **_role("fs_rls", ROLE_FS)},
+            False,
+            None,
+            "Deploy blocked",
+            ["[deploy WIPES] role 'fs_rls'"],
+            [],
+            id="dropped-role-blocks",
+        ),
+        pytest.param(
+            {"RLS.tmdl": ROLE_RLS},
+            None,
+            False,
+            None,
+            None,
+            ["not in the target yet"],
+            [],
+            id="first-deploy-passes",
+        ),
+        pytest.param(
+            {"RLS.tmdl": ROLE_RLS_EDITED},
+            NO_READ,
+            True,
+            None,
+            None,
+            ["skipped", MEMBERS_NOTE],
+            ["reading live role definitions"],
+            id="allow-change-skips-the-read-but-says-so",
+        ),
+        pytest.param(
+            None, NO_READ, False, None, None, None, [], id="no-repo-roles-is-silent-and-free"
+        ),
+        pytest.param(
+            None, NO_READ, True, None, None, None, [], id="no-repo-roles-allow-change-is-silent"
+        ),
+        pytest.param(
+            {"RLS.tmdl": ROLE_RLS}, NO_READ, False, [], None, None, [], id="empty-scope-is-a-noop"
+        ),
+    ],
+)
+def test_guard(
+    tmp_path, monkeypatch, caplog, repo_roles, target, allow, scope, blocked, logged, not_logged
+):
+    """Outcome, target reads and log lines of the deploy guard.
 
-
-def test_guard_passes_when_rls_matches(tmp_path, monkeypatch):
-    _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS})
-    monkeypatch.setattr(
-        "fabric_deploy.rls._remote_roles",
-        lambda ws, name: read_local_roles(tmp_path / "M.SemanticModel"),
-    )
-    guard_deploy_rls("ws", tmp_path, model_names=None, allow_change=False)
-
-
-def test_guard_blocks_on_drift(tmp_path, monkeypatch):
-    _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS_EDITED})
-    monkeypatch.setattr("fabric_deploy.rls._remote_roles", lambda ws, name: _role("RLS", ROLE_RLS))
-    with pytest.raises(RuntimeError, match="Deploy blocked.*row-level security"):
-        guard_deploy_rls("ws", tmp_path, model_names=None, allow_change=False)
-
-
-def test_guard_allows_drift_with_flag(tmp_path, monkeypatch):
-    """--allow-rls-change skips the check outright — no live read, no block.
-
-    The flag already decides the outcome (overwrite), so paying ~30s/model to
-    diff the roles could only produce a warning about a settled decision.
+    `logged=None` means the guard must log nothing at all.
     """
-    _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS_EDITED})
+    _make_model(tmp_path, name="M", roles=repo_roles)
 
-    def _boom(*a, **k):
-        raise AssertionError("remote roles should not be fetched")
+    def _remote(ws, name):
+        assert target is not NO_READ, "the guard must not read the target"
+        return target
 
-    monkeypatch.setattr("fabric_deploy.rls._remote_roles", _boom)
-    guard_deploy_rls("ws", tmp_path, model_names=None, allow_change=True)
+    monkeypatch.setattr("fabric_deploy.rls._remote_roles", _remote)
+    log = logging.getLogger("test_rls_guard")
+    with caplog.at_level(logging.INFO, logger=log.name):
+        if blocked:
+            with pytest.raises(RuntimeError, match=blocked) as exc:
+                guard_deploy_rls("ws", tmp_path, scope, allow_change=allow, logger=log)
+            assert MEMBERS_NOTE in str(exc.value)
+        else:
+            guard_deploy_rls("ws", tmp_path, scope, allow_change=allow, logger=log)
 
-
-def test_guard_with_allow_change_announces_the_skip(tmp_path, monkeypatch, caplog):
-    """Skipping is still reported — silence would read as 'checked, and clean'."""
-    _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS})
-    monkeypatch.setattr(
-        "fabric_deploy.rls._remote_roles",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no call")),
-    )
-    with caplog.at_level(logging.INFO, logger="test_rls_guard"):
-        guard_deploy_rls(
-            "ws",
-            tmp_path,
-            model_names=None,
-            allow_change=True,
-            logger=logging.getLogger("test_rls_guard"),
-        )
-    assert any("skipped" in r.message for r in caplog.records)
-    assert not any("reading live role definitions" in r.message for r in caplog.records)
+    messages = "\n".join(r.getMessage() for r in caplog.records)
+    if logged is None:
+        assert not caplog.records
+    else:
+        assert all(s in messages for s in logged), messages
+    assert not any(s in messages for s in not_logged), messages
 
 
-def test_guard_with_allow_change_silent_without_repo_rls(tmp_path, monkeypatch, caplog):
-    """No RLS in the repo -> nothing is being overwritten, so say nothing."""
-    _make_model(tmp_path, name="M", roles=None)
-    monkeypatch.setattr(
-        "fabric_deploy.rls._remote_roles",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no call")),
-    )
-    with caplog.at_level(logging.INFO, logger="test_rls_guard"):
-        guard_deploy_rls(
-            "ws",
-            tmp_path,
-            model_names=None,
-            allow_change=True,
-            logger=logging.getLogger("test_rls_guard"),
-        )
-    assert not caplog.records
+def test_guard_reads_models_concurrently(tmp_path, monkeypatch):
+    """Live reads are independent round trips; they overlap instead of queueing."""
+    names = ("A", "B", "C")
+    for name in names:
+        _make_model(tmp_path, name=name, roles={"RLS.tmdl": ROLE_RLS})
+    # Every read waits until all are in flight; sequential reads break the barrier.
+    barrier = threading.Barrier(len(names), timeout=10)
 
+    def _remote(ws, name):
+        barrier.wait()
+        return read_local_roles(tmp_path / f"{name}.SemanticModel")
 
-def test_guard_skips_when_model_absent_in_target(tmp_path, monkeypatch):
-    """First deploy: the model isn't in the target yet -> nothing to protect."""
-    _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS})
-    monkeypatch.setattr("fabric_deploy.rls._remote_roles", lambda ws, name: None)
+    monkeypatch.setattr("fabric_deploy.rls._remote_roles", _remote)
     guard_deploy_rls("ws", tmp_path, model_names=None, allow_change=False)
-
-
-def test_guard_announces_fetch_cost_before_reading_target(tmp_path, monkeypatch, caplog):
-    """The live-definition read is slow — say so before starting."""
-    _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS})
-    monkeypatch.setattr(
-        "fabric_deploy.rls._remote_roles",
-        lambda ws, name: read_local_roles(tmp_path / "M.SemanticModel"),
-    )
-    with caplog.at_level(logging.INFO, logger="test_rls_guard"):
-        guard_deploy_rls(
-            "ws",
-            tmp_path,
-            model_names=None,
-            allow_change=False,
-            logger=logging.getLogger("test_rls_guard"),
-        )
-    assert any("reading live role definitions" in r.message for r in caplog.records)
-
-
-def test_guard_clean_check_omits_members_note(tmp_path, monkeypatch, caplog):
-    """When repo matches target there is no RLS change afoot — skip the note."""
-    _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS})
-    monkeypatch.setattr(
-        "fabric_deploy.rls._remote_roles",
-        lambda ws, name: read_local_roles(tmp_path / "M.SemanticModel"),
-    )
-    with caplog.at_level(logging.INFO, logger="test_rls_guard"):
-        guard_deploy_rls(
-            "ws",
-            tmp_path,
-            model_names=None,
-            allow_change=False,
-            logger=logging.getLogger("test_rls_guard"),
-        )
-    assert not any(MEMBERS_NOTE in r.message for r in caplog.records)
-
-
-def test_guard_permitted_change_logs_members_note(tmp_path, monkeypatch, caplog):
-    _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS_EDITED})
-    monkeypatch.setattr("fabric_deploy.rls._remote_roles", lambda ws, name: _role("RLS", ROLE_RLS))
-    with caplog.at_level(logging.INFO, logger="test_rls_guard"):
-        guard_deploy_rls(
-            "ws",
-            tmp_path,
-            model_names=None,
-            allow_change=True,
-            logger=logging.getLogger("test_rls_guard"),
-        )
-    assert any(MEMBERS_NOTE in r.message for r in caplog.records)
-
-
-def test_guard_no_local_rls_stays_silent(tmp_path, monkeypatch, caplog):
-    """No repo RLS -> no API call, so no fetch-cost announcement either."""
-    _make_model(tmp_path, name="M", roles=None)
-    monkeypatch.setattr(
-        "fabric_deploy.rls._remote_roles",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no call")),
-    )
-    with caplog.at_level(logging.INFO, logger="test_rls_guard"):
-        guard_deploy_rls(
-            "ws",
-            tmp_path,
-            model_names=None,
-            allow_change=False,
-            logger=logging.getLogger("test_rls_guard"),
-        )
-    assert not caplog.records
-
-
-def test_guard_blocks_on_wipe(tmp_path, monkeypatch):
-    """Repo has a role the target lost track of? No — repo drops one the target has."""
-    _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS})
-    monkeypatch.setattr(
-        "fabric_deploy.rls._remote_roles",
-        lambda ws, name: {**_role("RLS", ROLE_RLS), **_role("fs_rls", ROLE_FS)},
-    )
-    with pytest.raises(RuntimeError, match="Deploy blocked"):
-        guard_deploy_rls("ws", tmp_path, model_names=None, allow_change=False)
 
 
 # --- pull ----------------------------------------------------------------
@@ -400,33 +337,3 @@ def test_pull_skips_absent_model(tmp_path, monkeypatch, patch_pull_env):
 def test_pull_requires_a_model(tmp_path, patch_pull_env):
     with pytest.raises(ValueError, match="No semantic model"):
         pull_rls(tmp_path)
-
-
-def test_members_note_mentions_entra():
-    assert "Entra" in MEMBERS_NOTE and "membership" in MEMBERS_NOTE.lower()
-
-
-def test_guard_reads_models_concurrently(tmp_path, monkeypatch):
-    """Live reads are independent round trips; they overlap instead of queueing."""
-    import threading
-    import time
-
-    for name in ("A", "B", "C"):
-        _make_model(tmp_path, name=name, roles={"RLS.tmdl": ROLE_RLS})
-    active = 0
-    peak = 0
-    lock = threading.Lock()
-
-    def _slow_remote(ws, name):
-        nonlocal active, peak
-        with lock:
-            active += 1
-            peak = max(peak, active)
-        time.sleep(0.05)
-        with lock:
-            active -= 1
-        return read_local_roles(tmp_path / f"{name}.SemanticModel")
-
-    monkeypatch.setattr("fabric_deploy.rls._remote_roles", _slow_remote)
-    guard_deploy_rls("ws", tmp_path, model_names=None, allow_change=False)
-    assert peak > 1

@@ -42,86 +42,64 @@ def test_failed_table_syncs(statuses, expected):
 # --- extract_refresh_error -----------------------------------------------
 
 
-def test_extract_none_on_completed():
-    assert extract_refresh_error({"status": "Completed"}) is None
+def _exc(**fields):
+    return json.dumps(fields)
 
 
-def test_extract_none_on_missing_status():
-    assert extract_refresh_error({}) is None
-
-
-def test_extract_parses_service_exception_json():
-    detail = {
-        "status": "Failed",
-        "serviceExceptionJson": json.dumps(
-            {"errorCode": "DMTS_X", "errorDescription": "column missing"}
+@pytest.mark.parametrize(
+    ("detail", "expected"),
+    [
+        pytest.param({"status": "Completed"}, None, id="completed"),
+        pytest.param({}, None, id="no-status"),
+        pytest.param(
+            {"status": "Failed", "serviceExceptionJson": _exc(errorCode="X", errorDescription="d")},
+            "X: d",
+            id="service-exception-json",
         ),
-    }
-    out = extract_refresh_error(detail)
-    assert "DMTS_X" in out
-    assert "column missing" in out
-
-
-def test_extract_falls_back_to_messages():
-    detail = {
-        "status": "Failed",
-        "messages": [{"code": "0xC11C0020", "message": "evicted"}],
-    }
-    out = extract_refresh_error(detail)
-    assert "0xC11C0020" in out and "evicted" in out
-
-
-def test_extract_prefers_refresh_attempt_over_thin_top_level():
-    """Real PBI failures put the rich error in refreshAttempts[]; the top-level
-    serviceExceptionJson is often just {"errorCode": ...}."""
-    detail = {
-        "status": "Failed",
-        "serviceExceptionJson": json.dumps(
-            {"errorCode": "ModelRefresh_ShortMessage_ProcessingError"}
-        ),
-        "refreshAttempts": [
+        # The top-level serviceExceptionJson is often just {"errorCode": ...};
+        # the per-attempt one carries the description.
+        pytest.param(
             {
-                "serviceExceptionJson": json.dumps(
-                    {"errorCode": "0xC112", "errorDescription": "real cause here"}
-                )
-            }
-        ],
-    }
-    out = extract_refresh_error(detail)
-    assert "real cause here" in out
-    assert "0xC112" in out
-
-
-def test_extract_errorcode_only_does_not_echo_twice():
-    """errorCode-only top-level must not return 'CODE: {json blob}'."""
-    detail = {
-        "status": "Failed",
-        "serviceExceptionJson": json.dumps({"errorCode": "ProcessingError"}),
-    }
-    out = extract_refresh_error(detail)
-    assert out == "ProcessingError"
-
-
-def test_extract_messages_skips_warnings():
-    detail = {
-        "status": "Failed",
-        "messages": [
-            {"code": "W1", "message": "just a warning", "type": "Warning"},
-            {"code": "E1", "message": "the real error", "type": "Error"},
-        ],
-    }
-    out = extract_refresh_error(detail)
-    assert "the real error" in out
-    assert "just a warning" not in out
-
-
-def test_extract_falls_back_to_status():
-    assert "Failed" in extract_refresh_error({"status": "Failed"})
-
-
-def test_extract_handles_malformed_service_exception_json():
-    detail = {"status": "Failed", "serviceExceptionJson": "not json {"}
-    assert extract_refresh_error(detail) == "not json {"
+                "status": "Failed",
+                "serviceExceptionJson": _exc(errorCode="ProcessingError"),
+                "refreshAttempts": [
+                    {"serviceExceptionJson": _exc(errorCode="0xC112", errorDescription="cause")}
+                ],
+            },
+            "0xC112: cause",
+            id="refresh-attempt-beats-thin-top-level",
+        ),
+        pytest.param(
+            {"status": "Failed", "serviceExceptionJson": _exc(errorCode="ProcessingError")},
+            "ProcessingError",
+            id="error-code-only-not-echoed-twice",
+        ),
+        pytest.param(
+            {"status": "Failed", "serviceExceptionJson": "not json {"},
+            "not json {",
+            id="malformed-service-exception-json",
+        ),
+        pytest.param(
+            {"status": "Failed", "messages": [{"code": "0xC11C0020", "message": "evicted"}]},
+            "0xC11C0020 evicted",
+            id="messages",
+        ),
+        pytest.param(
+            {
+                "status": "Failed",
+                "messages": [
+                    {"code": "W1", "message": "a warning", "type": "Warning"},
+                    {"code": "E1", "message": "the error", "type": "Error"},
+                ],
+            },
+            "E1 the error",
+            id="messages-skip-warnings",
+        ),
+        pytest.param({"status": "Failed"}, "Refresh status: Failed", id="bare-status"),
+    ],
+)
+def test_extract_refresh_error(detail, expected):
+    assert extract_refresh_error(detail) == expected
 
 
 # --- frame_models (mocked) -----------------------------------------------
