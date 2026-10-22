@@ -6,11 +6,15 @@ recorded instead of slept, so nothing touches the network or waits.
 
 from __future__ import annotations
 
+import email.utils
 import http.client
+import io
+import urllib.error
 
 import pytest
 from fabric_cicd import constants
 
+from fabric_deploy import transport
 from fabric_deploy.transport import (
     fabric_api_request,
     fabric_url,
@@ -41,6 +45,12 @@ class _Response:
 
     def __exit__(self, *_exc: object) -> None:
         return None
+
+
+def _http_error(code: int, headers: dict[str, str] | None = None) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        "https://api.example/x", code, "error", _headers(headers or {}), io.BytesIO(b"{}")
+    )
 
 
 @pytest.fixture
@@ -112,6 +122,63 @@ def test_non_json_success_body_is_a_clear_error(urlopen):
         http_request("https://api.example/x", error_context="list things")
 
 
+def test_request_sets_a_timeout(urlopen):
+    urlopen.queue = [_Response(body="{}")]
+    http_request("https://api.example/x")
+    assert urlopen.calls == [("https://api.example/x", transport.REQUEST_TIMEOUT_S)]
+
+
+def test_read_timeout_is_a_runtime_error(urlopen):
+    urlopen.queue = [TimeoutError("timed out")]
+    with pytest.raises(RuntimeError, match="list things: no response within"):
+        http_request("https://api.example/x", error_context="list things")
+
+
+@pytest.mark.parametrize("code", [429, 500, 503])
+def test_retries_throttling_and_server_errors_honouring_retry_after(urlopen, sleeps, code):
+    urlopen.queue = [_http_error(code, {"Retry-After": "7"}), _Response(body='{"ok": true}')]
+    assert http_request("https://api.example/x", method="POST")[2] == {"ok": True}
+    assert sleeps == [7]
+    assert len(urlopen.calls) == 2
+
+
+def test_retry_after_http_date(urlopen, sleeps, monkeypatch):
+    now = 1_700_000_000
+    monkeypatch.setattr("fabric_deploy.transport.time.time", lambda: now)
+    when = email.utils.formatdate(now + 12, usegmt=True)
+    urlopen.queue = [_http_error(429, {"Retry-After": when}), _Response(body="{}")]
+    http_request("https://api.example/x")
+    assert sleeps == [12]
+
+
+def test_backs_off_exponentially_without_retry_after(urlopen, sleeps):
+    urlopen.queue = [_http_error(503), _http_error(503), _Response(body="{}")]
+    http_request("https://api.example/x")
+    assert len(sleeps) == 2 and sleeps[1] > sleeps[0] > 0
+
+
+def test_retry_wait_is_capped(urlopen, sleeps):
+    urlopen.queue = [_http_error(429, {"Retry-After": "86400"}), _Response(body="{}")]
+    http_request("https://api.example/x")
+    assert sleeps == [transport.MAX_RETRY_WAIT_S]
+
+
+def test_gives_up_after_bounded_attempts(urlopen, sleeps):
+    urlopen.queue = [_http_error(429, {"Retry-After": "1"}) for _ in range(transport.MAX_ATTEMPTS)]
+    with pytest.raises(RuntimeError, match=r"list things \(HTTP 429\)"):
+        http_request("https://api.example/x", error_context="list things")
+    assert len(urlopen.calls) == transport.MAX_ATTEMPTS
+    assert len(sleeps) == transport.MAX_ATTEMPTS - 1
+
+
+def test_client_errors_are_not_retried(urlopen, sleeps):
+    urlopen.queue = [_http_error(404)]
+    with pytest.raises(RuntimeError, match=r"HTTP 404"):
+        http_request("https://api.example/x")
+    assert len(urlopen.calls) == 1
+    assert sleeps == []
+
+
 # --- API roots -----------------------------------------------------------
 
 
@@ -144,6 +211,15 @@ def test_poll_lro_runs_then_succeeds_and_fetches_result(monkeypatch, sleeps):
     assert result["value"][0]["tableName"] == "t"
     assert calls == ["https://op/1", "https://op/1", fabric_url("/v1/operations/op1/result")]
     assert sleeps == [1, 2]  # the service's cadence, updated per poll
+
+
+def test_poll_lro_accepts_http_date_retry_after(monkeypatch, sleeps):
+    now = 1_700_000_000
+    monkeypatch.setattr("fabric_deploy.transport.time.time", lambda: now)
+    _fake_http(monkeypatch, lambda url: (200, {}, {"status": "Succeeded"}))
+    when = email.utils.formatdate(now + 4, usegmt=True)
+    poll_fabric_lro({"location": "https://op/1", "retry-after": when}, "sync")
+    assert sleeps == [4]
 
 
 def test_poll_lro_raises_on_failed(monkeypatch, sleeps):

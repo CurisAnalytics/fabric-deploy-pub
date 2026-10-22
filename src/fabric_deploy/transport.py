@@ -1,11 +1,14 @@
 """HTTP transport for the Fabric / Power BI REST APIs.
 
-A thin request layer: authenticated calls, status + header exposure for
-long-running operations, and the Fabric LRO poller. No knowledge of specific
-endpoints (that's the `client` module) and no auth logic (that's `identity`).
+A thin request layer: authenticated calls with a timeout and bounded retries
+on throttling / server errors, status + header exposure for long-running
+operations, and the Fabric LRO poller. No knowledge of specific endpoints
+(that's the `client` module) and no auth logic (that's `identity`).
 """
 
+import email.utils
 import json
+import logging
 import time
 import urllib.error
 import urllib.request
@@ -26,6 +29,16 @@ __all__ = [
 # pyright: reportUnknownMemberType=false
 # pyright: reportUnknownParameterType=false
 # pyright: reportUnknownVariableType=false
+
+REQUEST_TIMEOUT_S = 60
+# Attempts per request when the service answers 429 or 5xx. Each wait follows
+# the response's Retry-After, else doubles from BACKOFF_BASE_S, and is capped
+# at MAX_RETRY_WAIT_S so a long throttling window fails instead of hanging.
+MAX_ATTEMPTS = 5
+BACKOFF_BASE_S = 2
+MAX_RETRY_WAIT_S = 60
+
+_logger = logging.getLogger(__name__)
 
 
 # fabric-cicd's API roots, read per call: its `FABRIC_API_ROOT_URL` and
@@ -53,7 +66,9 @@ def http_request(
     Unlike `fabric_api_request`, this exposes the status code and response
     headers — needed to follow long-running operations (202 + `Location` /
     `Retry-After`). Header names are lower-cased (HTTP header names are
-    case-insensitive). An empty response body parses to `{}`.
+    case-insensitive). An empty response body parses to `{}`. Throttled
+    (429) and server-error (5xx) responses are retried up to `MAX_ATTEMPTS`
+    times.
 
     Args:
         url: Absolute request URL.
@@ -80,23 +95,8 @@ def http_request(
     else:
         request_data = None
 
-    try:
-        req = urllib.request.Request(url, data=request_data, headers=headers, method=method)
-        with urllib.request.urlopen(req) as response:
-            status = response.status
-            resp_headers = {name.lower(): value for name, value in response.headers.items()}
-            body = response.read().decode()
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode() if e.fp else ""
-        raise RuntimeError(
-            f"Failed to {error_context} (HTTP {e.code}).\n{error_body}\n\n"
-            "Check your permissions and network connectivity."
-        ) from e
-    except urllib.error.URLError as e:
-        raise RuntimeError(
-            f"Failed to connect to the API.\n{e.reason}\n\nCheck your network connectivity."
-        ) from e
-
+    req = urllib.request.Request(url, data=request_data, headers=headers, method=method)
+    status, resp_headers, body = _send(req, error_context)
     if not body.strip():
         return status, resp_headers, {}
     try:
@@ -105,6 +105,67 @@ def http_request(
         raise RuntimeError(
             f"Failed to {error_context}: the response (HTTP {status}) is not JSON:\n{body[:500]}"
         ) from e
+
+
+def _send(req: urllib.request.Request, error_context: str) -> tuple[int, dict[str, str], str]:
+    """Open `req` and return (status, lower-cased headers, body text), retrying 429/5xx."""
+    attempt = 1
+    while True:
+        try:
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_S) as response:
+                headers = {name.lower(): value for name, value in response.headers.items()}
+                return response.status, headers, response.read().decode()
+        except urllib.error.HTTPError as e:
+            retryable = e.code == 429 or e.code >= 500
+            if retryable and attempt < MAX_ATTEMPTS:
+                delay = _retry_after_s(e.headers.get("Retry-After"))
+                if delay is None:
+                    delay = BACKOFF_BASE_S * 2 ** (attempt - 1)
+                delay = min(delay, MAX_RETRY_WAIT_S)
+                attempt += 1
+                _logger.warning(
+                    f"{error_context}: HTTP {e.code}, retrying in {delay:.0f}s "
+                    f"(attempt {attempt} of {MAX_ATTEMPTS})"
+                )
+                time.sleep(delay)
+                continue
+            error_body = e.read().decode() if e.fp else ""
+            hint = (
+                f"Still failing after {attempt} attempts."
+                if retryable
+                else "Check your permissions and network connectivity."
+            )
+            raise RuntimeError(
+                f"Failed to {error_context} (HTTP {e.code}).\n{error_body}\n\n{hint}"
+            ) from e
+        except urllib.error.URLError as e:
+            raise RuntimeError(
+                f"Failed to connect to the API.\n{e.reason}\n\nCheck your network connectivity."
+            ) from e
+        except TimeoutError as e:
+            raise RuntimeError(
+                f"Failed to {error_context}: no response within {REQUEST_TIMEOUT_S}s."
+            ) from e
+
+
+def _retry_after_s(value: str | None) -> float | None:
+    """Seconds a `Retry-After` header asks for (delay-seconds or HTTP-date), or None."""
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        return max(0.0, email.utils.parsedate_to_datetime(value).timestamp() - time.time())
+    except (TypeError, ValueError):
+        return None
+
+
+def _poll_interval(retry_after: str | None, default: float) -> float:
+    """Seconds until the next LRO poll; at least 1 so a zero never spins."""
+    seconds = _retry_after_s(retry_after)
+    return max(1.0, default if seconds is None else seconds)
 
 
 def fabric_api_request(
@@ -159,8 +220,7 @@ def poll_fabric_lro(
     """
     location = headers.get("location")
     op_id = headers.get("x-ms-operation-id")
-    # Clamp to >= 1: a Retry-After of 0 would never advance `waited` -> spin.
-    retry_after = max(1, int(headers.get("retry-after") or 5))
+    retry_after = _poll_interval(headers.get("retry-after"), default=5)
     if not location:
         # 202 with nothing to poll — don't report a no-op as success.
         raise RuntimeError(f"{error_context}: 202 Accepted but no Location header to poll.")
@@ -188,7 +248,7 @@ def poll_fabric_lro(
             return body
         if op_status in ("Failed", "Cancelled"):
             raise RuntimeError(f"{error_context} {op_status}: {body.get('error')}")
-        retry_after = max(1, int(hdrs.get("retry-after") or retry_after))
+        retry_after = _poll_interval(hdrs.get("retry-after"), default=retry_after)
         if waited >= timeout_s:
             raise RuntimeError(
                 f"{error_context} did not finish within {timeout_s}s (last status: {op_status})."
