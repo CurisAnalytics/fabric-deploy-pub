@@ -214,8 +214,8 @@ class ParameterDetector:
         # that has no replacement mapping — the source-workspace GUID would
         # deploy verbatim. Deploy with --fail-on-stale promotes it to an error.
         self.unresolved_warehouse_bindings: list[tuple[str, str, str]] = []
-        # Workspace ids this repo's own items were exported from (legacy
-        # notebook attachments, semantic-model OneLake URLs, bound UDF buttons,
+        # Workspace ids this repo's own items were exported from (attachments
+        # to repo lakehouses, Direct Lake sources on them, bound UDF buttons,
         # or the repo's sibling workspaces the deployer listed). Pipeline/
         # CopyJob workspaceIds are only remapped to the target when they match
         # one of these — anything else is a deliberate cross-workspace
@@ -520,12 +520,7 @@ class ParameterDetector:
         source_file = str(file_path.relative_to(self.repo_dir))
 
         for workspace_id, lakehouse_id in self.ONELAKE_DFS_PATTERN.findall(content):
-            # A Direct Lake model's OneLake URL points at its own workspace —
-            # a source-workspace anchor.
-            self._anchor_workspace(workspace_id, source_file)
-            if self._is_id(lakehouse_id):
-                name = self._seed_lakehouse_ids.get(lakehouse_id)
-                _ = self._add_parameter(lakehouse_id, source_file, Kind.LAKEHOUSE, name)
+            self._extract_onelake_source(source_file, workspace_id, lakehouse_id)
 
         for host, domain_type, database in self.SQL_HOST_PATTERN.findall(content):
             is_sql_database = domain_type.lower() == "database"
@@ -535,6 +530,26 @@ class ParameterDetector:
             if item := self.DB_ITEM_PATTERN.fullmatch(database):
                 kind = Kind.SQLDB_ID if is_sql_database else Kind.SQL_ENDPOINT_ID
                 _ = self._add_parameter(item[2], source_file, kind, name=item[1])
+
+    def _extract_onelake_source(self, source_file: str, ws_id: str, lh_id: str) -> None:
+        """Map a Direct Lake model's OneLake source, `<workspace>/<lakehouse>`.
+
+        The source is this repo's own when the lakehouse is known to be a repo
+        lakehouse (a notebook attaches it, or a sibling workspace lists it by
+        a repo lakehouse's name) or the workspace is a known source workspace.
+        Anything else is another workspace's lakehouse, a shared one say, and
+        deploys unchanged.
+        """
+        name = self._seed_lakehouse_ids.get(lh_id)
+        known = self.parameters.get(lh_id)
+        if name in self._names["Lakehouse"] or (
+            known is not None and known.description == Kind.LAKEHOUSE and known.dynamic_variable
+        ):
+            self._anchor_workspace(ws_id, source_file)
+        elif not self._classify_workspace(ws_id, source_file):
+            _ = self._add_parameter(lh_id, source_file, Kind.CROSS_WORKSPACE)
+            return
+        _ = self._add_parameter(lh_id, source_file, Kind.LAKEHOUSE, name)
 
     def _extract_from_pipeline(self, file_path: Path, data: dict) -> None:
         """Extract connection IDs from pipeline JSON."""
@@ -562,8 +577,9 @@ class ParameterDetector:
     def _anchor_workspace(self, ws_id: str, source_file: str | None = None) -> None:
         """Record `ws_id` as a workspace this repo's content was exported from.
 
-        Anchors come from legacy notebook attachments, Direct Lake OneLake
-        URLs, bound UDF buttons and the deployer-listed sibling workspaces.
+        Anchors come from notebook attachments to repo lakehouses, Direct
+        Lake sources on them, bound UDF buttons and the deployer-listed
+        sibling workspaces.
         With `source_file` the id also becomes a `$workspace.$id` rule; a
         seed without one stays an anchor only and gets a rule when
         `_register_source_ids` finds it in an item file. The order anchors

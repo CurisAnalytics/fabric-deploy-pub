@@ -1292,3 +1292,45 @@ class TestItemBinding:
         assert d.parameters[HUB_LAKEHOUSE_ID].dynamic_variable == ""
         assert d.parameters[OTHER_WORKSPACE_ID].dynamic_variable == ""
         assert OTHER_WORKSPACE_ID not in d._source_workspace_ids
+
+
+class TestForeignDirectLakeSource:
+    BODY = (
+        'Source = AzureStorage.DataLake("https://onelake.dfs.fabric.microsoft.com/'
+        f'{OTHER_WORKSPACE_ID}/{HUB_LAKEHOUSE_ID}")'
+    )
+
+    def test_foreign_workspace_deploys_unchanged(self, tmp_path: Path):
+        """A Direct Lake model over another workspace's lakehouse keeps both
+        ids: neither is one of this repo's workspaces or lakehouses."""
+        _make_lakehouse(tmp_path, "lh")
+        _make_semantic_model(tmp_path, "sm", self.BODY)
+        d = ParameterDetector(tmp_path, source_workspace_ids=[WORKSPACE_ID])
+        d.detect_all()
+
+        assert d.parameters[OTHER_WORKSPACE_ID].dynamic_variable == ""
+        assert d.parameters[HUB_LAKEHOUSE_ID].dynamic_variable == ""
+        assert d.generate_parameter_yml()["find_replace"] == []
+        assert d.offtarget_workspace_refs == [
+            ("sm.SemanticModel/definition/expressions.tmdl", OTHER_WORKSPACE_ID)
+        ]
+
+    def test_sibling_workspace_is_rewired(self, tmp_path: Path):
+        _make_lakehouse(tmp_path, "lh")
+        _make_semantic_model(tmp_path, "sm", self.BODY)
+        d = ParameterDetector(tmp_path, source_workspace_ids=[OTHER_WORKSPACE_ID])
+        d.detect_all()
+
+        assert d.parameters[OTHER_WORKSPACE_ID].dynamic_variable == "$workspace.$id"
+        assert d.parameters[HUB_LAKEHOUSE_ID].dynamic_variable == "$items.Lakehouse.lh.$id"
+
+    def test_known_lakehouse_anchors_its_workspace(self, tmp_path: Path):
+        """A seed lakehouse id (listed from a sibling) identifies the source
+        even when its workspace was not seeded."""
+        _make_lakehouse(tmp_path, "lh")
+        _make_semantic_model(tmp_path, "sm", self.BODY)
+        d = ParameterDetector(tmp_path, source_lakehouse_ids={HUB_LAKEHOUSE_ID: "lh"})
+        d.detect_all()
+
+        assert d.parameters[OTHER_WORKSPACE_ID].dynamic_variable == "$workspace.$id"
+        assert d.parameters[HUB_LAKEHOUSE_ID].dynamic_variable == "$items.Lakehouse.lh.$id"
