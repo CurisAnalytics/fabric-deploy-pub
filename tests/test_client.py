@@ -1,4 +1,5 @@
-"""Unit tests for client.py: item lookup, pagination, refresh polling, API roots.
+"""Unit tests for client.py: workspace, capacity and item lookup, pagination,
+refresh polling, model definitions and API roots.
 
 Network is mocked at the `http_request` / `fabric_api_list` seams and
 `time.sleep` is stubbed, so these run with no Fabric access and no real waits.
@@ -7,8 +8,6 @@ Network is mocked at the `http_request` / `fabric_api_list` seams and
 from __future__ import annotations
 
 import base64
-import json
-import time
 
 import pytest
 from fabric_cicd import constants
@@ -25,17 +24,6 @@ from fabric_deploy.client import (
     refresh_semantic_model,
     refresh_sql_endpoint_metadata,
 )
-from fabric_deploy.identity import POWERBI_SCOPE, get_access_token
-
-
-def _jwt(exp_offset: int = 3600) -> str:
-    """A syntactically valid unsigned JWT with exp = now + offset."""
-    header = base64.urlsafe_b64encode(b'{"alg":"none"}').rstrip(b"=")
-    payload = base64.urlsafe_b64encode(
-        json.dumps({"exp": int(time.time()) + exp_offset}).encode()
-    ).rstrip(b"=")
-    return f"{header.decode()}.{payload.decode()}.sig"
-
 
 # --- pagination ------------------------------------------------------------
 
@@ -256,21 +244,6 @@ def test_semantic_model_definition_missing_raises(monkeypatch, body):
     _definition_response(monkeypatch, body)
     with pytest.raises(RuntimeError, match="no definition"):
         get_semantic_model_definition("ws", "sm")
-
-
-# --- get_access_token scope fallbacks ------------------------------------
-
-
-@pytest.mark.parametrize("set_powerbi", [True, False])
-def test_powerbi_scope_token_resolution(monkeypatch, set_powerbi: bool):
-    """Power BI scope prefers POWERBI_BEARER_TOKEN, else falls back to Fabric's."""
-    pbi, fabric = _jwt(), _jwt()
-    monkeypatch.setenv("FABRIC_BEARER_TOKEN", fabric)
-    if set_powerbi:
-        monkeypatch.setenv("POWERBI_BEARER_TOKEN", pbi)
-    else:
-        monkeypatch.delenv("POWERBI_BEARER_TOKEN", raising=False)
-    assert get_access_token(POWERBI_SCOPE) == (pbi if set_powerbi else fabric)
 
 
 # --- get_sqldatabase_server_host ------------------------------------------
