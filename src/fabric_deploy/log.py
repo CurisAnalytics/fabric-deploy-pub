@@ -2,24 +2,22 @@
 Logging and formatting utilities for fabric_cicd.
 
 This module provides custom logging formatters, error message formatting,
-and Azure account information display utilities.
+and error classification for the CLI's troubleshooting output.
 """
 
 import logging
 import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator
 
 from azure.core.exceptions import ClientAuthenticationError
 from fabric_cicd._common._color import Fore, Style
 
-from .identity import AzureAccount
+from .identity import AuthError
 
 __all__ = [
     "get_logger",
     "patch_fabric_cicd_logger",
     "print_error",
-    "format_auth_error_message",
-    "format_account_list",
     "http_status",
     "is_auth_error",
     "is_expired_credential_error",
@@ -218,51 +216,6 @@ def print_error(message: str) -> None:
     print(f"{Fore.RED}{message}{Style.RESET_ALL}")
 
 
-def format_account_list(accounts: Sequence[AzureAccount]) -> str:
-    """
-    Format list of Azure accounts with current marker.
-    Args:
-        accounts: List of Azure account dictionaries
-    Returns: Formatted string with account information
-    """
-    sorted_accounts = sorted(accounts, key=lambda a: a.get("name", "").lower())
-    lines: list[str] = []
-    for acct in sorted_accounts:
-        marker = " [CURRENT]" if acct.get("isDefault") else ""
-        lines.append(f"  • {acct['name']}{marker}")
-        user_type = acct["user"].get("type", "")
-        qualifier = "SPN" if user_type.lower() == "serviceprincipal" else "User"
-        lines.append(f"    {qualifier}: {acct['user']['name']}")
-        lines.append(f"    Subscription: {acct['id']}")
-    return "\n".join(lines)
-
-
-def format_auth_error_message(
-    all_accounts: Sequence[AzureAccount] | None = None,
-) -> str:
-    """
-    Format helpful authentication error message with account info.
-    Args:
-        all_accounts: List of all available Azure accounts (optional)
-    Returns:  Formatted error message string with troubleshooting tips
-    """
-    lines: list[str] = []
-
-    if all_accounts and len(all_accounts) > 1:
-        lines.extend(["Available accounts:"])
-        lines.append(format_account_list(all_accounts))
-
-        lines.extend(
-            [
-                "",
-                "To switch accounts: fabdep auth switch <subscription-id>",
-                "",
-            ]
-        )
-
-    return "\n".join(lines)
-
-
 def is_connection_error(error_msg: str) -> bool:
     """
     Check if error message indicates a connection reference issue.
@@ -334,7 +287,7 @@ def http_status(error: BaseException | str) -> int | None:
 def is_auth_error(error: BaseException | str) -> bool:
     """True when no token could be had, or the API refused the identity (401/403)."""
     if isinstance(error, BaseException) and any(
-        isinstance(exc, ClientAuthenticationError) for exc in _chain(error)
+        isinstance(exc, ClientAuthenticationError | AuthError) for exc in _chain(error)
     ):
         return True
     return http_status(error) in (401, 403) or bool(_AUTH_MESSAGES.search(str(error)))
@@ -355,18 +308,10 @@ def is_transient_error(error: BaseException | str) -> bool:
 
 
 def is_expired_credential_error(error_msg: str) -> bool:
-    """
-    Check if error message definitively means the active credential is expired.
+    """True when an Entra error code says the credential itself has expired.
 
-    These AADSTS codes identify an expired secret/cert or auth grant on the
-    *current* identity — switching accounts cannot fix them, so callers should
-    skip the account list and point at rotation / re-login instead.
-
-    Args:
-        error_msg: Error message string to check
-
-    Returns:
-        True if the credential is definitively expired, False otherwise
+    An expired client secret or certificate needs a new one issued; signing in
+    again with the same one cannot help.
     """
     error_lower = error_msg.lower()
 

@@ -196,7 +196,7 @@ class WorkspaceDeployer:
         self._detect_lakehouse()
 
     def _apply_tenant_pin(self) -> None:
-        """Honor fabdep.yml's `tenant:` block before any Fabric API call."""
+        """Adopt fabdep.yml's identity keys before any Fabric API call."""
         apply_tenant_pin(self.config.tenant, self.logger)
 
     def _resolve_workspace_id(self) -> None:
@@ -695,10 +695,7 @@ class WorkspaceDeployer:
             include_items: Include only specific items (format: "ItemName.ItemType")
             _retry_attempt: Internal retry counter (do not set manually)
         """
-        # fabric-cicd 1.0 requires an explicit token_credential. fabric_credential()
-        # returns AzureCliCredential by default, or a StaticTokenCredential wrapping
-        # FABRIC_BEARER_TOKEN for token-relay mode (used when `az login` is CA-blocked,
-        # e.g. Fabrikam tenant from a locked-down host).
+        # The REST calls' credential, so fabric-cicd deploys as the same checked identity.
         target_workspace = FabricWorkspace(
             workspace_id=self.workspace_id,
             repository_directory=str(self._repo_dir_resolved),

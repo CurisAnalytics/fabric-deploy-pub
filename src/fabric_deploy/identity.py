@@ -1,525 +1,312 @@
-"""Authentication: how fabdep acquires a token and as whom.
+"""Authentication: which credential fabdep signs in with, and a guard on who it signs in as.
 
-This is the single home for credential acquisition — keeping auth logic out of
-the REST client (`client.py`) and the deployer. Two strategies:
+The credential mode comes from the `--auth` flag, else the FABDEP_AUTH environment
+variable, else `auth:` in fabdep.yml, else `cli`:
 
-- **Default:** `AzureCliCredential`, so whatever account `fabdep auth switch`
-  selected is what we deploy as. It mints any requested scope on demand.
-- **Relay fallback:** a pre-fetched bearer token in the environment, for boxes
-  where `az login` is CA-blocked (e.g. a client tenant from a locked-down host). This is a
-  break-glass path — cert/interactive auth is preferred when available.
+    cli       AzureCliCredential: whoever `az login` signed in
+    env       EnvironmentCredential: a service principal from AZURE_* variables
+    workload  WorkloadIdentityCredential: a federated (OIDC) token file, as CI systems issue
+    managed   ManagedIdentityCredential: the managed identity of the Azure host
+    default   DefaultAzureCredential: azure-identity's own chain of the above
 
-Semantic-model refresh lives on the Power BI API, a different audience than the
-Fabric API; `get_access_token(scope)` handles both.
+A token supplied in FABRIC_BEARER_TOKEN (and POWERBI_BEARER_TOKEN for the Power BI
+API) is used as-is instead, for machines that cannot sign in themselves.
+
+Every new token is checked against fabdep.yml: its `tid` claim must be the pinned
+`tenant:`, and with `require_spn: true` it must be an app-only token. The claims
+are read, not verified: the APIs verify tokens, this only keeps fabdep from
+deploying as the wrong identity. REST calls and fabric-cicd share one credential,
+so both run as the same identity and reuse its cached tokens.
 """
 
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 import logging
 import os
-import subprocess
 import time
-from typing import TYPE_CHECKING, TypedDict
+from datetime import UTC, datetime
+from typing import Any
 
 from azure.core.credentials import AccessToken, TokenCredential
 from azure.core.exceptions import ClientAuthenticationError
-from azure.identity import AzureCliCredential
+from azure.identity import (
+    AzureCliCredential,
+    DefaultAzureCredential,
+    EnvironmentCredential,
+    ManagedIdentityCredential,
+    WorkloadIdentityCredential,
+)
 
-from .profile import read_fabdep_profile
-
-if TYPE_CHECKING:
-    from .config import TenantPin, TenantRegistryEntry
+from .config import AUTH_MODES, TenantPin
 
 __all__ = [
     "FABRIC_SCOPE",
     "POWERBI_SCOPE",
-    "AzureAccount",
-    "TenantMismatchError",
-    "StaticTokenCredential",
+    "AuthError",
+    "apply_tenant_pin",
+    "auth_hint",
+    "auth_mode",
+    "credential_in_use",
+    "describe_identity",
     "fabric_credential",
     "get_access_token",
-    "active_account",
-    "assert_active_tenant",
-    "tenant_registry",
-    "apply_tenant_pin",
-    "describe_tenants",
+    "set_auth_mode",
 ]
 
 FABRIC_SCOPE = "https://api.fabric.microsoft.com/.default"
-# A relayed FABRIC_BEARER_TOKEN is Fabric-audience and may be rejected by the
-# Power BI host; relay a Power BI token via POWERBI_BEARER_TOKEN when needed.
 POWERBI_SCOPE = "https://analysis.windows.net/powerbi/api/.default"
-_BEARER_ENV = "FABRIC_BEARER_TOKEN"
-_POWERBI_BEARER_ENV = "POWERBI_BEARER_TOKEN"
-# Treat a token as expired this many seconds early, so a long-running deploy
-# doesn't begin with a token that dies mid-flight — we can't refresh a relayed
-# token, so failing fast with a clear message beats a confusing 401 partway in.
-_EXPIRY_SKEW_SECONDS = 60
-
-# Process-wide identity state. `apply_tenant_pin` records the resolved pin so
-# token acquisition knows which tenant (and whether an SPN is required) a
-# fallback identity must satisfy; `_CLI_CREDENTIAL` caches the CLI credential
-# that actually minted a token, so one probe serves the whole run.
-_ACTIVE_PIN: TenantPin | None = None
-_CLI_CREDENTIAL: AzureCliCredential | None = None
-
-
-def _env_bearer_token() -> str | None:
-    """Return the relay bearer token from the environment, stripped, or None.
-
-    A stray newline (e.g. from `FABRIC_BEARER_TOKEN=$(cat file)` on some
-    shells) would corrupt the Authorization header, so strip defensively.
-    """
-    token = os.environ.get(_BEARER_ENV, "").strip()
-    return token or None
-
-
-def _env_powerbi_token() -> str | None:
-    """Return the relayed Power BI bearer token from the environment, or None."""
-    token = os.environ.get(_POWERBI_BEARER_ENV, "").strip()
-    return token or None
-
-
-def _jwt_exp(token: str) -> int:
-    """Decode `exp` (unix seconds) from a JWT payload without verifying signature."""
-    try:
-        payload_b64 = token.split(".")[1]
-        # base64url padding
-        padding = "=" * (-len(payload_b64) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(payload_b64 + padding))
-        return int(payload["exp"])
-    except (IndexError, KeyError, ValueError) as e:
-        raise RuntimeError(f"Relay bearer token is not a decodable JWT: {e}") from e
-
-
-def _token_expired(exp: int) -> bool:
-    """True if `exp` (unix seconds) is past, or within the skew margin."""
-    return time.time() >= exp - _EXPIRY_SKEW_SECONDS
-
-
-class StaticTokenCredential(TokenCredential):
-    """TokenCredential backed by a pre-fetched bearer token (env-supplied).
-
-    Used when token acquisition is blocked on the local box (e.g. Fabrikam CA
-    on a locked-down host) but a token relayed from another machine is available. Fails
-    loudly if the token is expired rather than silently issuing a 401-bound
-    request.
-    """
-
-    def __init__(self, token: str) -> None:
-        self._token = token
-        self._exp = _jwt_exp(token)
-
-    def get_token(self, *scopes: str, **_: object) -> AccessToken:  # noqa: ARG002
-        if _token_expired(self._exp):
-            raise ClientAuthenticationError(
-                f"{_BEARER_ENV} expired at unix {self._exp}; relay a fresh token."
-            )
-        return AccessToken(self._token, self._exp)
-
-
-def _logger() -> logging.Logger:
-    """The fabdep logger, imported lazily (`log` imports from this module)."""
-    from .log import get_logger
-
-    return get_logger("fabric_deploy")
-
-
-def _list_accounts() -> list[AzureAccount]:
-    """`az account list` as parsed JSON (empty if `az` is missing or fails)."""
-    try:
-        result = subprocess.run(
-            ["az", "account", "list", "--output", "json"],
-            capture_output=True,
-            text=True,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return []
-    if result.returncode != 0:
-        return []
-    try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return []
-
-
-def _is_spn(acct: AzureAccount) -> bool:
-    return acct.get("user", {}).get("type", "").lower() == "serviceprincipal"
-
-
-def _enabled_accounts(tenant_id: str) -> list[AzureAccount]:
-    """Every enabled `az` account acting in `tenant_id` (empty if `az` fails)."""
-    return [
-        a
-        for a in _list_accounts()
-        if a.get("state", "Enabled") == "Enabled" and a.get("tenantId") == tenant_id
-    ]
-
-
-def describe_tenants(accounts: list[AzureAccount] | None = None) -> str:
-    """One line per tenant visible to `az`, with its account labels.
-
-    Labels honor `fabdep auth rename`, so the listing matches `fabdep auth list`.
-    Meant for error and warning text: it tells the user which tenant GUID to
-    bind an alias to, or that nothing is logged in at all.
-    """
-    if accounts is None:
-        accounts = _list_accounts()
-    aliases: dict[str, str] = read_fabdep_profile().get("aliases", {})
-    by_tenant: dict[str, list[str]] = {}
-    for acct in accounts:
-        if acct.get("state", "Enabled") != "Enabled":
-            continue
-        label = aliases.get(acct["id"], acct.get("name", "?"))
-        if acct.get("isDefault"):
-            label += " [active]"
-        by_tenant.setdefault(acct.get("tenantId", "?"), []).append(label)
-    if not by_tenant:
-        return "Tenants visible to `az account list`: none (run `az login`)."
-    lines = [f"  {tid}  {', '.join(labels)}" for tid, labels in sorted(by_tenant.items())]
-    return "Tenants visible to `az account list`:\n" + "\n".join(lines)
-
-
-def _fallback_credential(
-    scope: str, first_error: ClientAuthenticationError
-) -> AzureCliCredential | None:
-    """Find another logged-in identity in the same tenant that can mint `scope`.
-
-    The active `az` account can be in the tenant the pin wants and still be
-    unable to get a token — an expired SPN secret, a revoked grant. That's not
-    a reason to fail the run when a second identity for the same tenant is
-    already logged in (the common case: an SPN plus the human's own account).
-
-    Selection is deliberately conservative: same tenant only (never a
-    cross-tenant fallback), enabled accounts only, and SPN-only when the pin
-    sets `require_spn`. Tokens are minted with `subscription=`, so the active
-    account is left alone — this never silently rewrites `az` state.
-
-    Returns the working credential, or None when no sibling identity qualifies.
-    """
-    pin = _ACTIVE_PIN
-    current = active_account()
-    tenant_id = pin.id if pin and pin.id else (current or {}).get("tenantId")
-    if not tenant_id:
-        return None
-
-    for acct in _enabled_accounts(tenant_id):
-        if current and acct["id"] == current["id"]:
-            continue
-        if pin and pin.require_spn and not _is_spn(acct):
-            continue
-        candidate = AzureCliCredential(subscription=acct["id"])
-        try:
-            _ = candidate.get_token(scope)
-        except ClientAuthenticationError:
-            continue
-        failed = (current or {}).get("user", {}).get("name", "?")
-        _logger().warning(
-            f"Active identity {failed} could not get a token "
-            f"({str(first_error).strip().splitlines()[0]}); falling back to "
-            f"'{acct['name']}' ({acct['user']['name']}) in the same tenant "
-            f"({tenant_id}). Fix or re-login the active identity to silence this."
-        )
-        return candidate
-    return None
-
-
-def _cli_token(scope: str) -> str:
-    """Mint `scope` via the Azure CLI, falling back within the pinned tenant.
-
-    Caches the credential that worked so one probe covers the whole run and
-    `fabric_credential()` hands fabric-cicd the same identity.
-    """
-    global _CLI_CREDENTIAL
-    credential = _CLI_CREDENTIAL or AzureCliCredential()
-    try:
-        return credential.get_token(scope).token
-    except ClientAuthenticationError as e:
-        fallback = _fallback_credential(scope, e)
-        if fallback is None:
-            raise
-        _CLI_CREDENTIAL = fallback
-        return fallback.get_token(scope).token
-
-
-def fabric_credential() -> TokenCredential:
-    """Return the credential fabdep should use for Fabric calls.
-
-    If `FABRIC_BEARER_TOKEN` is set, wrap it as a `StaticTokenCredential`
-    (token-relay mode). Otherwise return `AzureCliCredential()` — or whichever
-    sibling identity `_cli_token` already fell back to, so fabric-cicd deploys
-    as the same account the REST calls used. Workspace resolution always mints
-    a token before this is called, so the cache is warm by then.
-    """
-    token = _env_bearer_token()
-    if token:
-        return StaticTokenCredential(token)
-    return _CLI_CREDENTIAL or AzureCliCredential()
-
-
-def get_access_token(scope: str = FABRIC_SCOPE) -> str:
-    """
-    Get an Azure access token for the given API scope.
-
-    If a relay bearer token is set, use it directly (token-relay mode for
-    boxes where `az login` is CA-blocked). The Power BI scope prefers
-    `POWERBI_BEARER_TOKEN` and falls back to `FABRIC_BEARER_TOKEN` (whose
-    audience may be rejected by the Power BI host). Otherwise use
-    `AzureCliCredential`, which mints the requested scope on demand against
-    the active account chosen by `fabdep auth switch`.
-
-    Args:
-        scope: OAuth scope to request (Fabric API by default; pass the Power
-            BI scope for dataset-refresh calls).
-
-    Returns:
-        Access token string
-
-    Raises:
-        RuntimeError: If token acquisition fails (e.g. `az login` required)
-    """
-    if scope == POWERBI_SCOPE:
-        env_token = _env_powerbi_token() or _env_bearer_token()
-    else:
-        env_token = _env_bearer_token()
-    if env_token:
-        if _token_expired(_jwt_exp(env_token)):
-            raise RuntimeError(
-                f"Relay bearer token is expired; relay a fresh token from a box "
-                "that can `az account get-access-token --resource "
-                f"{scope.removesuffix('/.default')}`."
-            )
-        return env_token
-    try:
-        return _cli_token(scope)
-    except ClientAuthenticationError as e:
-        raise RuntimeError(
-            f"Failed to get Azure access token for scope {scope}.\n{e}\n\n"
-            "Make sure you're logged in with 'az login'"
-        ) from e
-
-
-# --- Identity introspection & tenant pinning -----------------------------
-
-
-class AzureUser(TypedDict):
-    name: str
-    type: str
-
-
-class AzureAccount(TypedDict):
-    cloudName: str
-    homeTenantId: str
-    id: str
-    isDefault: bool
-    name: str
-    state: str
-    tenantId: str
-    user: AzureUser
-
-
-class TenantMismatchError(RuntimeError):
-    """The active Azure identity does not satisfy fabdep.yml's tenant pin."""
-
-
-def active_account(config_dir: str | None = None) -> AzureAccount | None:
-    """Return the active `az` account, or None if not logged in.
-
-    Honors `config_dir` (an `AZURE_CONFIG_DIR`) so an isolated per-tenant
-    login can be inspected without disturbing the process environment.
-    """
-    env = os.environ.copy()
-    if config_dir:
-        env["AZURE_CONFIG_DIR"] = os.path.expanduser(config_dir)
-    result = subprocess.run(
-        ["az", "account", "show", "--output", "json"],
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-    if result.returncode != 0:
-        return None
-    try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError:
-        # Honor the "None if not logged in" contract even if `az` somehow
-        # returns success with non-JSON stdout, rather than leaking a decode error.
-        return None
-
-
-def assert_active_tenant(
-    expected_tenant_id: str,
-    *,
-    config_dir: str | None = None,
-    require_spn: bool = False,
-) -> AzureAccount:
-    """Verify the active identity lives in `expected_tenant_id`.
-
-    Raises `TenantMismatchError` if no one is logged in, the active tenant
-    differs, or `require_spn` is set and the identity is a user. Returns the
-    account on success.
-    """
-    acct = active_account(config_dir)
-    where = f" in AZURE_CONFIG_DIR={os.path.expanduser(config_dir)}" if config_dir else ""
-
-    if acct is None:
-        raise TenantMismatchError(
-            f"No active Azure login found{where}.\n"
-            f"fabdep.yml pins tenant {expected_tenant_id}.\n"
-            "Log in for this tenant, e.g.:\n"
-            "  AZURE_CONFIG_DIR=<dir> az login --service-principal \\\n"
-            "    --username <app-id> --tenant <tenant-id> --certificate <cert.pem>"
-        )
-
-    # Pin against tenantId (the tenant the identity is acting in), not
-    # homeTenantId — a guest / multi-tenant SPN acts in tenantId.
-    actual = acct.get("tenantId")
-    if actual != expected_tenant_id:
-        user = acct.get("user", {}).get("name", "?")
-        raise TenantMismatchError(
-            f"Active identity is in tenant {actual}, but fabdep.yml pins "
-            f"{expected_tenant_id}.\n"
-            f"Active account: {acct.get('name')} (identity: {user}).\n"
-            "Switch identity or correct the tenant pin before deploying."
-        )
-
-    if require_spn and acct.get("user", {}).get("type", "").lower() != "serviceprincipal":
-        user = acct.get("user", {}).get("name", "?")
-        raise TenantMismatchError(
-            f"fabdep.yml requires a service principal for tenant "
-            f"{expected_tenant_id}, but the active identity is a user ({user})."
-        )
-
-    return acct
-
-
-def tenant_registry() -> dict[str, TenantRegistryEntry]:
-    """Machine-local `alias -> {id, config_dir, ...}` map from the fabdep profile.
-
-    Lets a committed fabdep.yml carry a portable `tenant: <alias>` instead of a
-    machine-specific config_dir or a bare tenant GUID. Written by `fabdep auth
-    login` (the single source of truth); empty when none are registered.
-    """
-    return read_fabdep_profile().get("tenants", {})
+_AUTH_ENV = "FABDEP_AUTH"
+
+# Relayed tokens per scope, in order of preference. The Power BI API may reject a
+# Fabric-audience token; relay a Power BI one in POWERBI_BEARER_TOKEN if it does.
+_RELAY_ENV = {
+    FABRIC_SCOPE: ("FABRIC_BEARER_TOKEN",),
+    POWERBI_SCOPE: ("POWERBI_BEARER_TOKEN", "FABRIC_BEARER_TOKEN"),
+}
+_RENEW_BEFORE_S = 300  # mint a fresh token when the cached one expires sooner than this
+_RELAY_MIN_LIFE_S = 60  # a relayed token can't be renewed: refuse one about to expire
+
+_SIGN_IN = {
+    "cli": "Sign in with `az login --tenant {tenant}` (as a service principal: `az login "
+    "--service-principal --username <client-id> --certificate <cert.pem> --tenant {tenant}`).",
+    "env": "Set AZURE_TENANT_ID, AZURE_CLIENT_ID and AZURE_CLIENT_SECRET (or "
+    "AZURE_CLIENT_CERTIFICATE_PATH) for the service principal.",
+    "workload": "Set AZURE_TENANT_ID, AZURE_CLIENT_ID and AZURE_FEDERATED_TOKEN_FILE (a file "
+    "holding the OIDC token your CI system issues), and add a federated credential for "
+    "that issuer and subject to the app registration.",
+    "managed": "Run on an Azure resource with a managed identity; set AZURE_CLIENT_ID to "
+    "use a user-assigned one.",
+    "default": "DefaultAzureCredential tries AZURE_* variables, workload identity, managed "
+    "identity and `az login` in turn: set one of them up, or name one with --auth.",
+}
+
+_log = logging.getLogger(__name__)
+_pin: TenantPin | None = None  # fabdep.yml's identity keys, once a command adopts them
+_mode_flag: str | None = None  # the --auth flag
+_credential: _GuardedCredential | None = None
+
+
+class AuthError(RuntimeError):
+    """No token could be had, or the token is for an identity fabdep.yml rules out."""
+
+
+def set_auth_mode(mode: str | None) -> None:
+    """Force a credential mode (the --auth flag), ahead of FABDEP_AUTH and fabdep.yml."""
+    global _mode_flag, _credential
+    _mode_flag, _credential = mode, None
 
 
 def apply_tenant_pin(pin: TenantPin | None, logger: logging.Logger) -> None:
-    """Honor a fabdep.yml `tenant:` pin before any Fabric API call.
+    """Adopt fabdep.yml's identity keys for every token minted from here on.
 
-    Points `AZURE_CONFIG_DIR` at the tenant's isolated login so the right
-    identity is selected automatically (no manual `fabdep auth switch`) and two
-    tenants never share `~/.azure` state. Then asserts the active identity
-    lives in the pinned tenant, so an identity mix-up surfaces as a clear
-    tenant error here instead of a confusing "workspace not found" later — and,
-    under `--new-workspace`, can't create the workspace in the wrong tenant.
-
-    Shared by `WorkspaceDeployer` (deploy) and the refresh command so both
-    paths resolve the same pinned identity.
+    Call before the first Fabric API call. An unknown FABDEP_AUTH value fails here;
+    the tenant can only be checked on a token, which happens on first use.
     """
-    global _ACTIVE_PIN
-    if pin is None:
-        return
+    global _pin, _credential
+    _pin = pin
+    _credential = _GuardedCredential(*auth_mode(), pin=pin, logger=logger)
 
-    registry = tenant_registry()
-    if not registry:
-        # Nothing registered on this machine at all — a first run, or a legacy
-        # single-`~/.azure` setup. A committed `tenant:` alias shouldn't harden
-        # into a hard stop for someone who never opted into the registry, so
-        # warn and run under whatever `az` account is active. An alias missing
-        # from a *populated* registry still raises: there, the user does use
-        # aliases, and an unknown one means the pin is wrong.
-        logger.warning(
-            f"fabdep.yml pins tenant '{pin.alias}' but no tenants are registered "
-            "on this machine — proceeding under the active Azure login, "
-            "unguarded.\n"
-            f"{describe_tenants()}\n"
-            f"Bind the alias to one of them with `fabdep auth bind {pin.alias} "
-            "<tenant-id>` (uses your existing az login), or register an isolated "
-            f"SPN login with `fabdep auth login {pin.alias}`."
-        )
-        return
 
-    try:
-        pin = pin.resolve(registry)
-    except ValueError as e:
-        raise ValueError(f"{e}\n{describe_tenants()}") from None
-    assert pin.id is not None  # resolve() guarantees a concrete id or raises
-    _ACTIVE_PIN = pin
-
-    if pin.config_dir:
-        target = os.path.expanduser(pin.config_dir)
-        existing = os.environ.get("AZURE_CONFIG_DIR")
-        if existing and existing != target:
-            logger.info(
-                f"Overriding AZURE_CONFIG_DIR ({existing} -> {target}) per fabdep.yml tenant pin"
+def auth_mode() -> tuple[str, str]:
+    """The credential mode in effect and where it was set."""
+    if _mode_flag:
+        return _mode_flag, "--auth"
+    env = os.environ.get(_AUTH_ENV, "").strip().lower()
+    if env:
+        if env not in AUTH_MODES:
+            raise AuthError(
+                f"{_AUTH_ENV}={env!r} is not a credential mode; use one of: {', '.join(AUTH_MODES)}."
             )
-        # Set on the process env and intentionally not restored: AzureCliCredential
-        # reads AZURE_CONFIG_DIR at call time, so it must persist through the run.
-        # The CLI is one operation per process; concurrent multi-tenant work uses
-        # separate processes (see the multi-tenant-auth recipe), so this is safe.
-        os.environ["AZURE_CONFIG_DIR"] = target
-
-    # A pre-injected bearer token owns auth and can't be introspected via
-    # `az` — nothing to assert in that mode. Use the same helper api gates on,
-    # so a malformed (whitespace) token is treated identically by both.
-    if _env_bearer_token():
-        return
-
-    # Silent on success: the guard only proves tenant membership, not that the
-    # identity can mint a token, so announcing "OK" reads as a green light the
-    # check never gave. It speaks up by raising.
-    if pin.config_dir:
-        _ = assert_active_tenant(pin.id, config_dir=pin.config_dir, require_spn=pin.require_spn)
-    else:
-        _select_tenant_identity(pin, logger)
+        return env, _AUTH_ENV
+    if _pin and _pin.auth:
+        return _pin.auth, "fabdep.yml"
+    return "cli", "default"
 
 
-def _select_tenant_identity(pin: TenantPin, logger: logging.Logger) -> None:
-    """Satisfy a dir-less pin (`fabdep auth bind`) from the shared `az` login.
+def credential_in_use() -> str:
+    """Where Fabric tokens come from: a relayed token, or the mode and where it was set."""
+    relay = _relay_var(FABRIC_SCOPE)
+    if relay:
+        return f"token relayed in {relay}"
+    mode, source = auth_mode()
+    return f"{mode} ({source})"
 
-    A bound alias has no isolated config dir: its identities sit in the global
-    `~/.azure` next to other tenants'. If the active account already qualifies,
-    nothing changes. Otherwise pick the bound subscription — or, for a
-    tenant-only entry, an enabled account in that tenant, your own user login
-    before an SPN — and mint tokens with `--subscription`, so `az` state is
-    never rewritten and `fabdep auth switch` keeps meaning what it meant.
+
+def auth_hint() -> str:
+    """How to get a token for the right identity with the credential in use."""
+    relay = _relay_var(FABRIC_SCOPE)
+    if relay:
+        return f"Set {relay} to a fresh token for the right identity, or unset it to sign in."
+    return _sign_in_hint(auth_mode()[0], _pin.id if _pin else None)
+
+
+def get_access_token(scope: str = FABRIC_SCOPE) -> str:
+    """An access token for `scope`, from the shared credential.
+
+    Raises:
+        AuthError: No token could be had, or fabdep.yml rules out its identity.
     """
-    global _CLI_CREDENTIAL
-    assert pin.id is not None
-    current = active_account()
-    if (
-        current is not None
-        and current.get("tenantId") == pin.id
-        and (not pin.require_spn or _is_spn(current))
-        and (not pin.subscription or current.get("id") == pin.subscription)
-    ):
-        return
+    return _shared().get_token(scope).token
 
-    candidates = [a for a in _enabled_accounts(pin.id) if _is_spn(a) or not pin.require_spn]
-    if pin.subscription:
-        candidates = [a for a in candidates if a["id"] == pin.subscription]
-    else:
-        candidates.sort(key=_is_spn)  # stable: user logins first, az order within
-    if not candidates:
-        what = (
-            f"subscription {pin.subscription}"
-            if pin.subscription
-            else "service principal"
-            if pin.require_spn
-            else "account"
-        )
-        raise TenantMismatchError(
-            f"No enabled az {what} in tenant {pin.id} (alias '{pin.alias}').\n"
-            f"{describe_tenants()}\n"
-            f"Log in to it with `az login --tenant {pin.id}` and re-run, or point the "
-            f"alias elsewhere with `fabdep auth bind {pin.alias} <tenant-id|account>`."
-        )
 
-    chosen = candidates[0]
-    _CLI_CREDENTIAL = AzureCliCredential(subscription=chosen["id"])
-    aliases: dict[str, str] = read_fabdep_profile().get("aliases", {})
-    label = aliases.get(chosen["id"], chosen.get("name", "?"))
-    user = chosen.get("user", {}).get("name", "?")
-    logger.info(f"Tenant '{pin.alias}': using '{label}' ({user}); active az account unchanged")
+def fabric_credential() -> TokenCredential:
+    """The credential to hand fabric-cicd: the one REST calls use, cache included."""
+    return _shared()
+
+
+def describe_identity() -> dict[str, str]:
+    """Mint a Fabric token and describe whom it is for (`fabdep auth status`)."""
+    claims = _claims(get_access_token(), "The Fabric token")
+    tenant = str(claims.get("tid", "?"))
+    pinned = "pinned in fabdep.yml" if _pin and _pin.id else "fabdep.yml pins no tenant"
+    expires = datetime.fromtimestamp(int(claims.get("exp", 0)), UTC)
+    return {
+        "Credential": credential_in_use(),
+        "Identity": _who(claims),
+        "Token type": "app-only (service principal or managed identity)"
+        if _is_app_token(claims)
+        else "user (delegated)",
+        "Tenant": f"{tenant} ({pinned})",
+        "Expires": expires.strftime("%Y-%m-%d %H:%M UTC"),
+    }
+
+
+def _shared() -> _GuardedCredential:
+    global _credential
+    if _credential is None:
+        _credential = _GuardedCredential(*auth_mode(), pin=_pin, logger=_log)
+    return _credential
+
+
+def _new_credential(mode: str, tenant_id: str | None) -> TokenCredential:
+    """The azure-identity credential for `mode`, pinned to `tenant_id` where the class allows.
+
+    EnvironmentCredential takes its tenant from AZURE_TENANT_ID, a managed identity
+    belongs to its host's tenant, and DefaultAzureCredential has no single tenant
+    setting; for those, the `tid` check on each token enforces the pin.
+    """
+    if mode == "cli":
+        return AzureCliCredential(tenant_id=tenant_id or "")  # "": the signed-in tenant
+    if mode == "env":
+        return EnvironmentCredential()
+    if mode == "workload":
+        return WorkloadIdentityCredential(tenant_id=tenant_id)  # None: AZURE_TENANT_ID
+    if mode == "managed":
+        return ManagedIdentityCredential(client_id=os.environ.get("AZURE_CLIENT_ID"))
+    return DefaultAzureCredential()
+
+
+class _GuardedCredential(TokenCredential):
+    """The mode's credential (or a relayed token), cached per scope and checked against the pin."""
+
+    def __init__(
+        self, mode: str, source: str, *, pin: TenantPin | None, logger: logging.Logger
+    ) -> None:
+        self._mode, self._source = mode, source
+        self._pin = pin
+        self._logger = logger
+        self._inner: TokenCredential | None = None
+        self._cache: dict[tuple[str, ...], AccessToken] = {}
+        self._announced: set[str] = set()
+
+    def get_token(self, *scopes: str, **kwargs: Any) -> AccessToken:
+        cached = self._cache.get(scopes)
+        if cached and not kwargs and cached.expires_on - time.time() > _RENEW_BEFORE_S:
+            return cached
+        relay = _relay_var(scopes[0]) if len(scopes) == 1 else None
+        if relay:
+            token, issuer = self._relayed(relay, scopes[0]), f"the token in {relay}"
+        else:
+            token, issuer = self._mint(scopes, kwargs), f"the {self._mode} credential"
+        self._check(token.token, issuer, relay)
+        self._cache[scopes] = token
+        return token
+
+    def _relayed(self, var: str, scope: str) -> AccessToken:
+        token = os.environ[var].strip()
+        exp = int(_claims(token, f"The token in {var}").get("exp", 0))
+        if exp - time.time() < _RELAY_MIN_LIFE_S:
+            resource = scope.removesuffix("/.default")
+            raise AuthError(
+                f"The token in {var} has expired. Set it to a fresh one (`az account "
+                f"get-access-token --resource {resource} --query accessToken --output tsv` "
+                f"on a machine that can sign in), or unset it to use the {self._mode} credential."
+            )
+        if var not in self._announced:
+            self._announced.add(var)
+            self._logger.info(f"Using the access token in {var} instead of signing in")
+        return AccessToken(token, exp)
+
+    def _mint(self, scopes: tuple[str, ...], kwargs: dict[str, Any]) -> AccessToken:
+        tenant = self._pin.id if self._pin else None
+        try:
+            if self._inner is None:
+                self._inner = _new_credential(self._mode, tenant)
+            return self._inner.get_token(*scopes, **kwargs)
+        except (ClientAuthenticationError, ValueError) as e:
+            raise AuthError(
+                f"The {self._mode} credential ({self._source}) could not get a token: {e}\n"
+                f"{_sign_in_hint(self._mode, tenant)}"
+            ) from e
+
+    def _check(self, token: str, issuer: str, relay: str | None) -> None:
+        pin = self._pin
+        if not pin or not (pin.id or pin.require_spn):
+            return
+        claims = _claims(token, f"The token from {issuer}")
+        fix = (
+            f"Set {relay} to a token for the right identity, or unset it."
+            if relay
+            else _sign_in_hint(self._mode, pin.id)
+        )
+        tid = str(claims.get("tid", "?"))
+        if pin.id and tid.lower() != pin.id:
+            raise AuthError(
+                f"fabdep.yml pins tenant {pin.id}, but {issuer} signed in as "
+                f"{_who(claims)} in tenant {tid}.\n{fix}"
+            )
+        if pin.require_spn and not _is_app_token(claims):
+            raise AuthError(
+                f"fabdep.yml sets require_spn: true, but {issuer} signed in as the user "
+                f"{_who(claims)}. Use a service principal or managed identity.\n{fix}"
+            )
+
+
+def _relay_var(scope: str) -> str | None:
+    """The first environment variable holding a relayed token for `scope`, if any."""
+    return next((v for v in _RELAY_ENV.get(scope, ()) if os.environ.get(v, "").strip()), None)
+
+
+def _sign_in_hint(mode: str, tenant: str | None) -> str:
+    return _SIGN_IN[mode].format(tenant=tenant or "<tenant-id>")
+
+
+def _claims(token: str, what: str) -> dict[str, Any]:
+    """A JWT's payload, unverified."""
+    try:
+        payload = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except (IndexError, ValueError, binascii.Error):
+        claims = None
+    if not isinstance(claims, dict):
+        raise AuthError(f"{what} is not a JWT access token, so fabdep cannot tell whom it is for.")
+    return claims
+
+
+def _is_app_token(claims: dict[str, Any]) -> bool:
+    # `idtyp` is optional on some APIs; delegated (user) tokens always carry `scp`.
+    return claims.get("idtyp") == "app" or ("idtyp" not in claims and "scp" not in claims)
+
+
+def _who(claims: dict[str, Any]) -> str:
+    if _is_app_token(claims):
+        app = claims.get("appid") or claims.get("azp") or "?"
+        name = claims.get("app_displayname")
+        return f"{name} (app {app})" if name else f"app {app}"
+    for key in ("upn", "unique_name", "preferred_username", "oid"):
+        if claims.get(key):
+            return str(claims[key])
+    return "an unnamed user"

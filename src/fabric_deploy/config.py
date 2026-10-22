@@ -8,93 +8,69 @@ that turns the workspace name into a workspace ID.
 from __future__ import annotations
 
 import logging
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from difflib import get_close_matches
 from pathlib import Path
-from typing import NotRequired, TypedDict
 
 import yaml
 
 from .git import current_branch
 
-__all__ = ["FabdepConfig", "TenantPin", "TenantRegistryEntry"]
+__all__ = ["AUTH_MODES", "FabdepConfig", "TenantPin", "load_tenant_pin"]
 
-FABDEP_YML_KEYS = frozenset({"workspace_base_name", "capacity_id", "tenant", "manual_parameters"})
+# Credential modes for `auth:`, --auth and FABDEP_AUTH (see `identity`).
+AUTH_MODES = ("cli", "env", "workload", "managed", "default")
 
-
-class TenantRegistryEntry(TypedDict):
-    """A machine-local tenant registry entry (alias -> this).
-
-    Written by `fabdep auth login <alias>` (isolated config dir + fresh login) or
-    `fabdep auth bind <alias> <target>` (an identity already in the shared
-    `~/.azure`), and read by fabdep to resolve a `fabdep.yml` alias. Those two
-    commands are the only writers — see the multi-tenant-auth recipe.
-    """
-
-    id: str  # Entra tenant GUID asserted before deploy
-    config_dir: NotRequired[str]  # AZURE_CONFIG_DIR selecting this tenant's login
-    subscription: NotRequired[str]  # `fabdep auth bind`: pin this az account (global ~/.azure)
-    require_spn: NotRequired[bool]  # reject user creds, require an SPN (default off)
-    app_id: NotRequired[str]  # SPN client id, for flag-free `fabdep auth login` re-login
-    cert_path: NotRequired[str]  # SPN cert path, for flag-free re-login
+FABDEP_YML_KEYS = frozenset(
+    {"workspace_base_name", "capacity_id", "tenant", "auth", "require_spn", "manual_parameters"}
+)
+_GUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
 class TenantPin:
-    """Identity guard from fabdep.yml's `tenant:` alias.
+    """What fabdep.yml requires of the deploying identity.
 
-    `fabdep.yml` carries a portable alias (`tenant: contoso`) — no machine paths or
-    GUIDs in the committed repo. `resolve()` looks the alias up in the local
-    registry to get the tenant `id` and isolated `config_dir`.
-
-    Tenant-centric by design: a deploy is allowed as long as the active identity
-    lives in `id` — a user credential and a service principal in the same tenant
-    both pass, unless the registry entry sets `require_spn`.
+    `id` is the Microsoft Entra tenant every token must come from, `auth` the
+    credential mode (see `identity`), and `require_spn` rules out user sign-ins.
     """
 
-    alias: str  # registry key from fabdep.yml; resolved to id/config_dir before deploy
-    id: str | None = None  # expected Entra tenant GUID (filled by resolve())
-    config_dir: str | None = None  # AZURE_CONFIG_DIR to select this tenant's login
-    subscription: str | None = None  # bound az account to mint tokens under (no config_dir)
-    require_spn: bool = False  # reject user credentials, require an SPN
+    id: str | None = None  # lower-case tenant GUID
+    auth: str | None = None
+    require_spn: bool = False
 
     @classmethod
-    def from_yaml_value(cls, value: object) -> TenantPin:
-        """Parse the `tenant:` alias string, raising on anything else."""
-        if isinstance(value, str) and value:
-            return cls(alias=value)
-        raise ValueError(
-            "fabdep.yml 'tenant' must be a registry alias string, e.g.:\n\n  tenant: contoso\n"
-        )
-
-    def resolve(self, registry: dict[str, TenantRegistryEntry]) -> TenantPin:
-        """Fill `id`/`config_dir`/`subscription`/`require_spn` from the registry entry.
-
-        Raises ValueError on an unknown alias or a registry entry missing `id`.
-        """
-        if self.alias not in registry:
-            known = ", ".join(sorted(registry)) or "(none registered)"
+    def from_config(cls, config: Mapping[str, object]) -> TenantPin | None:
+        """Read the identity keys of a parsed fabdep.yml; None when it sets none of them."""
+        tenant, auth = config.get("tenant"), config.get("auth")
+        require_spn = config.get("require_spn", False)
+        if tenant is not None and not (isinstance(tenant, str) and _GUID.fullmatch(tenant)):
             raise ValueError(
-                f"Unknown tenant alias '{self.alias}' in fabdep.yml.\n"
-                f"Known aliases: {known}.\n"
-                "Register it under 'tenants' in ~/.azure/azureProfile.fabdep.json with "
-                "`fabdep auth bind <alias> <tenant-id>` (existing az login) or "
-                "`fabdep auth login <alias>` (isolated SPN login)."
+                f"fabdep.yml 'tenant' must be a Microsoft Entra tenant ID (a GUID), got {tenant!r}.\n"
+                "Find yours with `az account show --query tenantId --output tsv`, or in the "
+                "Azure portal under Microsoft Entra ID > Overview."
             )
-        entry = registry[self.alias]
-        if not entry.get("id"):
+        if auth is not None and not (isinstance(auth, str) and auth in AUTH_MODES):
             raise ValueError(
-                f"Tenant alias '{self.alias}' is registered without an 'id'; "
-                f"re-run `fabdep auth bind {self.alias} <tenant-id>` or "
-                f"`fabdep auth login {self.alias}`."
+                f"fabdep.yml 'auth' must be one of: {', '.join(AUTH_MODES)} (got {auth!r})."
             )
-        return TenantPin(
-            alias=self.alias,
-            id=entry["id"],
-            config_dir=entry.get("config_dir"),
-            subscription=entry.get("subscription"),
-            require_spn=bool(entry.get("require_spn", False)),
-        )
+        if not isinstance(require_spn, bool):
+            raise ValueError(
+                f"fabdep.yml 'require_spn' must be true or false (got {require_spn!r})."
+            )
+        if tenant is None and auth is None and not require_spn:
+            return None
+        return cls(id=tenant.lower() if tenant else None, auth=auth, require_spn=require_spn)
+
+
+def load_tenant_pin(repo_dir: Path | str) -> TenantPin | None:
+    """The identity keys of `repo_dir`'s fabdep.yml, if it has one."""
+    path = Path(repo_dir) / "fabdep.yml"
+    if not path.exists():
+        return None
+    return TenantPin.from_config(yaml.safe_load(path.read_text(encoding="utf-8")) or {})
 
 
 @dataclass
@@ -111,7 +87,7 @@ class FabdepConfig:
     workspace_base_name: str | None  # None when fabdep.yml is absent
     capacity_id: str | None = None
     manual_parameters: list[dict] = field(default_factory=list)
-    tenant: TenantPin | None = None  # identity guard; None when unset
+    tenant: TenantPin | None = None  # fabdep.yml's identity keys; None when unset
     from_yaml: bool = False  # True when fabdep.yml existed; False on dirname fallback
 
     @classmethod
@@ -162,9 +138,6 @@ class FabdepConfig:
         effective_base = base or resolved.name
         workspace_name = f"{effective_base} [{branch.upper()}]"
 
-        tenant_value = config.get("tenant")
-        tenant = TenantPin.from_yaml_value(tenant_value) if tenant_value else None
-
         return cls(
             repo_dir=resolved,
             branch=branch,
@@ -172,7 +145,7 @@ class FabdepConfig:
             workspace_base_name=base,
             capacity_id=config.get("capacity_id"),
             manual_parameters=config.get("manual_parameters") or [],
-            tenant=tenant,
+            tenant=TenantPin.from_config(config),
             from_yaml=from_yaml,
         )
 

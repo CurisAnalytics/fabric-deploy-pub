@@ -1,207 +1,240 @@
-"""Tests for the credential layer in fabric_deploy.identity (incl. relay path)."""
+"""Credential selection, the tenant/SPN guard, token caching and the token relay."""
 
-import base64
-import json
+from __future__ import annotations
+
+import logging
 import time
 
 import pytest
-from azure.core.credentials import AccessToken
-from azure.core.exceptions import ClientAuthenticationError
-from azure.identity import AzureCliCredential
 
 from fabric_deploy import identity
 from fabric_deploy.config import TenantPin
 from fabric_deploy.identity import (
-    _BEARER_ENV,
-    StaticTokenCredential,
-    _jwt_exp,
+    FABRIC_SCOPE,
+    POWERBI_SCOPE,
+    AuthError,
+    apply_tenant_pin,
+    auth_mode,
     fabric_credential,
     get_access_token,
+    set_auth_mode,
 )
 
+from .conftest import APP_ID, CONTOSO_TENANT, FABRIKAM_TENANT, make_jwt
 
-def _make_jwt(exp: int) -> str:
-    """Build a syntactically-valid (unsigned) JWT with the given exp claim."""
-    header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).rstrip(b"=")
-    payload = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).rstrip(b"=")
-    return f"{header.decode()}.{payload.decode()}.sig"
-
-
-class TestJwtExp:
-    def test_decodes_exp_claim(self):
-        token = _make_jwt(1_700_000_000)
-        assert _jwt_exp(token) == 1_700_000_000
-
-    def test_malformed_token_raises(self):
-        with pytest.raises(RuntimeError, match="not a decodable JWT"):
-            _jwt_exp("not.a.jwt!!!")
+LOG = logging.getLogger("fabric_deploy.test")
+# Captured at import, before the autouse fixture swaps in a stub that refuses to sign in.
+REAL_NEW_CREDENTIAL = identity._new_credential
+APP_CLAIMS = {"tid": CONTOSO_TENANT, "idtyp": "app", "appid": APP_ID}
 
 
-class TestStaticTokenCredential:
-    def test_returns_token_when_unexpired(self):
-        token = _make_jwt(int(time.time()) + 3600)
-        cred = StaticTokenCredential(token)
-        result = cred.get_token("https://api.fabric.microsoft.com/.default")
-        assert result.token == token
+class TestModeSelection:
+    @pytest.mark.parametrize(
+        ("flag", "env", "yml", "expected"),
+        [
+            (None, None, None, ("cli", "default")),
+            (None, None, "managed", ("managed", "fabdep.yml")),
+            (None, "env", "managed", ("env", "FABDEP_AUTH")),
+            ("workload", "env", "managed", ("workload", "--auth")),
+        ],
+    )
+    def test_flag_then_env_then_fabdep_yml_then_cli(self, monkeypatch, flag, env, yml, expected):
+        if env:
+            monkeypatch.setenv("FABDEP_AUTH", env)
+        set_auth_mode(flag)
+        apply_tenant_pin(TenantPin(auth=yml) if yml else None, LOG)
+        assert auth_mode() == expected
 
-    def test_raises_when_expired(self):
-        token = _make_jwt(int(time.time()) - 60)
-        cred = StaticTokenCredential(token)
-        with pytest.raises(ClientAuthenticationError, match="expired"):
-            cred.get_token("https://api.fabric.microsoft.com/.default")
+    def test_unknown_env_mode_fails_before_any_token(self, monkeypatch):
+        monkeypatch.setenv("FABDEP_AUTH", "azcli")
+        with pytest.raises(AuthError, match="FABDEP_AUTH='azcli'.*cli, env, workload, managed"):
+            apply_tenant_pin(None, LOG)
 
-
-class TestStaticTokenCredentialSkew:
-    def test_raises_when_within_skew_margin(self):
-        # token still technically valid (30s left) but inside the 60s skew
-        token = _make_jwt(int(time.time()) + 30)
-        cred = StaticTokenCredential(token)
-        with pytest.raises(ClientAuthenticationError, match="expired"):
-            cred.get_token("https://api.fabric.microsoft.com/.default")
-
-
-class TestFabricCredential:
-    def test_returns_cli_credential_by_default(self, monkeypatch):
-        monkeypatch.delenv(_BEARER_ENV, raising=False)
-        assert isinstance(fabric_credential(), AzureCliCredential)
-
-    def test_returns_static_credential_when_env_set(self, monkeypatch):
-        token = _make_jwt(int(time.time()) + 3600)
-        monkeypatch.setenv(_BEARER_ENV, token)
-        cred = fabric_credential()
-        assert isinstance(cred, StaticTokenCredential)
-
-    def test_blank_env_falls_through_to_cli(self, monkeypatch):
-        monkeypatch.setenv(_BEARER_ENV, "   ")
-        assert isinstance(fabric_credential(), AzureCliCredential)
-
-
-class TestGetAccessToken:
-    def test_returns_env_token_when_unexpired(self, monkeypatch):
-        token = _make_jwt(int(time.time()) + 3600)
-        monkeypatch.setenv(_BEARER_ENV, token)
-        assert get_access_token() == token
-
-    def test_strips_whitespace_from_env_token(self, monkeypatch):
-        token = _make_jwt(int(time.time()) + 3600)
-        monkeypatch.setenv(_BEARER_ENV, f"\n  {token}\n")
-        assert get_access_token() == token
-
-    def test_raises_on_expired_env_token(self, monkeypatch):
-        token = _make_jwt(int(time.time()) - 60)
-        monkeypatch.setenv(_BEARER_ENV, token)
-        with pytest.raises(RuntimeError, match="expired"):
-            get_access_token()
-
-
-# --- same-tenant identity fallback -----------------------------------------
-
-TENANT = "dddddddd-dddd-dddd-dddd-dddddddddddd"
-OTHER_TENANT = "99999999-9999-9999-9999-999999999999"
-
-
-def _account(sub: str, tenant: str = TENANT, user_type: str = "user") -> dict:
-    return {
-        "id": sub,
-        "isDefault": sub == "spn-sub",
-        "name": f"acct-{sub}",
-        "state": "Enabled",
-        "tenantId": tenant,
-        "user": {"name": f"{sub}@example", "type": user_type},
-    }
-
-
-class _FakeCliCredential:
-    """AzureCliCredential stand-in: only `working` subscriptions mint tokens."""
-
-    working: set[str | None] = set()
-
-    def __init__(self, *, subscription=None, **_):
-        self.subscription = subscription
-
-    def get_token(self, *_scopes, **_kw):
-        if self.subscription in self.working:
-            return AccessToken(f"token-{self.subscription}", int(time.time()) + 3600)
-        raise ClientAuthenticationError(
-            "AADSTS7000215: Invalid client secret provided.\nTrace ID: x"
-        )
-
-
-@pytest.fixture
-def cli_fallback(monkeypatch):
-    """Isolate the credential cache/pin and stub the CLI credential + account list."""
-    monkeypatch.delenv(_BEARER_ENV, raising=False)
-    monkeypatch.setattr(identity, "_CLI_CREDENTIAL", None)
-    monkeypatch.setattr(identity, "_ACTIVE_PIN", None)
-    monkeypatch.setattr(identity, "AzureCliCredential", _FakeCliCredential)
-    monkeypatch.setattr(identity, "active_account", lambda config_dir=None: _account("spn-sub"))
-    _FakeCliCredential.working = set()
-    yield monkeypatch
-    _FakeCliCredential.working = set()
-
-
-def _accounts(*accts):
-    return lambda tenant_id: [a for a in accts if a["tenantId"] == tenant_id]
-
-
-class TestSameTenantFallback:
-    def test_falls_back_to_sibling_in_same_tenant(self, cli_fallback, caplog):
-        # Active identity (spn-sub) is broken; the human's own login still works.
-        _FakeCliCredential.working = {"user-sub"}
-        cli_fallback.setattr(
-            identity, "_enabled_accounts", _accounts(_account("spn-sub"), _account("user-sub"))
-        )
-        with caplog.at_level("WARNING"):
-            assert get_access_token() == "token-user-sub"
-        assert "falling back to" in caplog.text
-
-    def test_caches_credential_for_fabric_credential(self, cli_fallback):
-        _FakeCliCredential.working = {"user-sub"}
-        cli_fallback.setattr(
-            identity, "_enabled_accounts", _accounts(_account("spn-sub"), _account("user-sub"))
-        )
+    def test_mode_and_pinned_tenant_reach_the_credential(self, credential):
+        apply_tenant_pin(TenantPin(id=CONTOSO_TENANT, auth="workload"), LOG)
         _ = get_access_token()
-        # fabric-cicd must deploy as the identity the REST calls fell back to.
-        assert fabric_credential().subscription == "user-sub"
+        assert credential.built == [("workload", CONTOSO_TENANT)]
 
-    def test_never_crosses_tenants(self, cli_fallback):
-        _FakeCliCredential.working = {"other-sub"}
-        cli_fallback.setattr(
-            identity,
-            "_enabled_accounts",
-            _accounts(_account("spn-sub"), _account("other-sub", tenant=OTHER_TENANT)),
-        )
-        with pytest.raises(RuntimeError, match="Failed to get Azure access token"):
-            get_access_token()
 
-    def test_require_spn_pin_skips_user_accounts(self, cli_fallback):
-        _FakeCliCredential.working = {"user-sub"}
-        cli_fallback.setattr(
-            identity, "_ACTIVE_PIN", TenantPin(alias="contoso", id=TENANT, require_spn=True)
-        )
-        cli_fallback.setattr(
-            identity, "_enabled_accounts", _accounts(_account("spn-sub"), _account("user-sub"))
-        )
-        with pytest.raises(RuntimeError, match="Failed to get Azure access token"):
-            get_access_token()
+class TestCredentialFactory:
+    """Each mode builds its azure-identity class, pinned to the tenant where the class allows."""
 
-    def test_pin_tenant_wins_over_active_account(self, cli_fallback):
-        # Pin names the tenant to search, even if the active account is elsewhere.
-        _FakeCliCredential.working = {"user-sub"}
-        cli_fallback.setattr(identity, "_ACTIVE_PIN", TenantPin(alias="contoso", id=TENANT))
-        cli_fallback.setattr(
-            identity,
-            "active_account",
-            lambda config_dir=None: _account("stray-sub", tenant=OTHER_TENANT),
-        )
-        cli_fallback.setattr(identity, "_enabled_accounts", _accounts(_account("user-sub")))
-        assert get_access_token() == "token-user-sub"
+    @pytest.fixture(autouse=True)
+    def _record(self, monkeypatch):
+        self.made: list[tuple[str, dict]] = []
 
-    def test_no_fallback_when_active_identity_works(self, cli_fallback):
-        _FakeCliCredential.working = {None}
+        def recorder(name: str):
+            def make(**kwargs):
+                self.made.append((name, kwargs))
+                return object()
 
-        def _boom(_tenant_id):
-            raise AssertionError("must not enumerate accounts on a healthy identity")
+            return make
 
-        cli_fallback.setattr(identity, "_enabled_accounts", _boom)
-        assert get_access_token() == "token-None"
+        for name in (
+            "AzureCliCredential",
+            "EnvironmentCredential",
+            "WorkloadIdentityCredential",
+            "ManagedIdentityCredential",
+            "DefaultAzureCredential",
+        ):
+            monkeypatch.setattr(identity, name, recorder(name))
+        monkeypatch.delenv("AZURE_CLIENT_ID", raising=False)
+
+    @pytest.mark.parametrize(
+        ("mode", "expected"),
+        [
+            ("cli", ("AzureCliCredential", {"tenant_id": CONTOSO_TENANT})),
+            ("env", ("EnvironmentCredential", {})),
+            ("workload", ("WorkloadIdentityCredential", {"tenant_id": CONTOSO_TENANT})),
+            ("managed", ("ManagedIdentityCredential", {"client_id": None})),
+            ("default", ("DefaultAzureCredential", {})),
+        ],
+    )
+    def test_pinned_tenant(self, mode, expected):
+        _ = REAL_NEW_CREDENTIAL(mode, CONTOSO_TENANT)
+        assert self.made == [expected]
+
+    @pytest.mark.parametrize(
+        ("mode", "expected"),
+        [
+            ("cli", ("AzureCliCredential", {"tenant_id": ""})),  # whatever az signed in to
+            ("workload", ("WorkloadIdentityCredential", {"tenant_id": None})),  # AZURE_TENANT_ID
+        ],
+    )
+    def test_unpinned_tenant(self, mode, expected):
+        _ = REAL_NEW_CREDENTIAL(mode, None)
+        assert self.made == [expected]
+
+    def test_managed_uses_a_user_assigned_identity_from_env(self, monkeypatch):
+        monkeypatch.setenv("AZURE_CLIENT_ID", APP_ID)
+        _ = REAL_NEW_CREDENTIAL("managed", None)
+        assert self.made == [("ManagedIdentityCredential", {"client_id": APP_ID})]
+
+
+class TestSignInFailures:
+    """Real azure-identity credentials that fail locally, without any network call."""
+
+    @pytest.fixture(autouse=True)
+    def _real_credentials(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(identity, "_new_credential", REAL_NEW_CREDENTIAL)
+        for var in (
+            "AZURE_TENANT_ID",
+            "AZURE_CLIENT_ID",
+            "AZURE_CLIENT_SECRET",
+            "AZURE_CLIENT_CERTIFICATE_PATH",
+            "AZURE_FEDERATED_TOKEN_FILE",
+            "AZURE_USERNAME",
+            "AZURE_PASSWORD",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("PATH", str(tmp_path))  # no `az` to find
+
+    def test_cli_without_az_says_how_to_sign_in(self):
+        apply_tenant_pin(TenantPin(id=CONTOSO_TENANT), LOG)
+        with pytest.raises(AuthError, match="cli credential") as exc:
+            _ = get_access_token()
+        assert f"az login --tenant {CONTOSO_TENANT}" in str(exc.value)
+
+    def test_env_lists_the_variables_to_set(self):
+        set_auth_mode("env")
+        with pytest.raises(AuthError, match="AZURE_CLIENT_SECRET"):
+            _ = get_access_token()
+
+    def test_workload_lists_the_variables_to_set(self):
+        set_auth_mode("workload")
+        with pytest.raises(AuthError, match="AZURE_FEDERATED_TOKEN_FILE"):
+            _ = get_access_token()
+
+
+class TestIdentityGuard:
+    def test_pinned_tenant_matches_case_insensitively(self, credential):
+        credential.claims["tid"] = CONTOSO_TENANT.upper()
+        apply_tenant_pin(TenantPin(id=CONTOSO_TENANT), LOG)
+        assert get_access_token()
+
+    def test_wrong_tenant_names_both_tenants_and_the_fix(self, credential):
+        credential.claims["tid"] = FABRIKAM_TENANT
+        apply_tenant_pin(TenantPin(id=CONTOSO_TENANT), LOG)
+        with pytest.raises(AuthError) as exc:
+            _ = get_access_token()
+        msg = str(exc.value)
+        assert f"user@contoso.com in tenant {FABRIKAM_TENANT}" in msg
+        assert f"fabdep.yml pins tenant {CONTOSO_TENANT}" in msg
+        assert f"az login --tenant {CONTOSO_TENANT}" in msg
+
+    def test_rejected_token_is_not_cached(self, credential):
+        credential.claims["tid"] = FABRIKAM_TENANT
+        apply_tenant_pin(TenantPin(id=CONTOSO_TENANT), LOG)
+        for _ in range(2):
+            with pytest.raises(AuthError):
+                _ = get_access_token()
+        assert len(credential.calls) == 2
+
+    def test_unpinned_accepts_any_tenant(self, credential):
+        credential.claims["tid"] = FABRIKAM_TENANT
+        apply_tenant_pin(None, LOG)
+        assert get_access_token()
+
+    def test_require_spn_rejects_a_user(self, credential):
+        apply_tenant_pin(TenantPin(require_spn=True), LOG)
+        with pytest.raises(AuthError, match="require_spn: true.*user user@contoso.com"):
+            _ = get_access_token()
+
+    @pytest.mark.parametrize(
+        "claims",
+        [APP_CLAIMS, {"tid": CONTOSO_TENANT, "appid": APP_ID}],  # no idtyp, no scp: app-only
+        ids=["idtyp", "no-scp"],
+    )
+    def test_require_spn_accepts_an_app_token(self, credential, claims):
+        credential.claims = claims
+        apply_tenant_pin(TenantPin(id=CONTOSO_TENANT, require_spn=True), LOG)
+        assert get_access_token()
+
+
+class TestTokenCache:
+    def test_one_token_per_scope(self, credential):
+        for scope in (FABRIC_SCOPE, FABRIC_SCOPE, POWERBI_SCOPE, POWERBI_SCOPE):
+            _ = get_access_token(scope)
+        assert credential.calls == [(FABRIC_SCOPE,), (POWERBI_SCOPE,)]
+
+    def test_renews_a_token_close_to_expiry(self, credential):
+        credential.lifetime = 120
+        _ = get_access_token()
+        _ = get_access_token()
+        assert len(credential.calls) == 2
+
+    def test_fabric_cicd_shares_the_rest_calls_credential(self, credential):
+        assert fabric_credential().get_token(FABRIC_SCOPE).token == get_access_token()
+        assert credential.calls == [(FABRIC_SCOPE,)]
+
+
+class TestRelay:
+    def test_used_instead_of_signing_in(self, monkeypatch, caplog):
+        token = make_jwt(tid=CONTOSO_TENANT)
+        monkeypatch.setenv("FABRIC_BEARER_TOKEN", f"\n  {token}\n")
+        with caplog.at_level(logging.INFO, logger="fabric_deploy"):
+            assert get_access_token() == token
+            assert fabric_credential().get_token(FABRIC_SCOPE).token == token
+        assert caplog.text.count("FABRIC_BEARER_TOKEN") == 1
+
+    def test_other_scopes_still_sign_in(self, monkeypatch, credential):
+        monkeypatch.setenv("FABRIC_BEARER_TOKEN", make_jwt())
+        _ = get_access_token("https://storage.azure.com/.default")
+        assert credential.calls == [("https://storage.azure.com/.default",)]
+
+    def test_expired_token_says_what_to_do(self, monkeypatch):
+        monkeypatch.setenv("FABRIC_BEARER_TOKEN", make_jwt(exp=int(time.time()) - 60))
+        with pytest.raises(AuthError, match="FABRIC_BEARER_TOKEN has expired") as exc:
+            _ = get_access_token()
+        assert "az account get-access-token" in str(exc.value)
+
+    def test_checked_against_the_pin(self, monkeypatch):
+        monkeypatch.setenv("FABRIC_BEARER_TOKEN", make_jwt(tid=FABRIKAM_TENANT))
+        apply_tenant_pin(TenantPin(id=CONTOSO_TENANT), LOG)
+        with pytest.raises(AuthError, match="FABRIC_BEARER_TOKEN"):
+            _ = get_access_token()
+
+    def test_malformed_token(self, monkeypatch):
+        monkeypatch.setenv("FABRIC_BEARER_TOKEN", "not-a-jwt")
+        with pytest.raises(AuthError, match="not a JWT"):
+            _ = get_access_token()

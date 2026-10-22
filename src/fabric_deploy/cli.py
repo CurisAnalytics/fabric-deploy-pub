@@ -5,19 +5,19 @@ import sys
 from pathlib import Path
 from textwrap import dedent
 
-from .auth import (
-    bind_tenant,
-    list_accounts,
-    login_tenant,
-    rename_subscription,
-    switch_account,
-)
+from .config import AUTH_MODES, load_tenant_pin
 from .detect import ParameterDetector
+from .identity import (
+    AuthError,
+    apply_tenant_pin,
+    auth_hint,
+    credential_in_use,
+    describe_identity,
+    set_auth_mode,
+)
 from .log import (
     SEP,
     error_hint,
-    format_account_list,
-    format_auth_error_message,
     get_logger,
     is_auth_error,
     is_connection_error,
@@ -73,17 +73,22 @@ def handle_command_error(error: Exception, context: str) -> None:
         )
         print_error(connection_help)
     elif is_expired_credential_error(error_msg):
-        # The credential itself is expired — switching accounts can't fix it,
-        # so the account list is noise. The AADSTS text above says what to do.
         print_error(
-            "The active credential has expired. Rotate the SPN secret/cert "
-            "(or `az login` again for a user account) — switching accounts "
-            "won't help.\n"
+            "The credential has expired: issue a new client secret or certificate for the "
+            "service principal (or sign in again as a user) and retry.\n"
         )
-    elif is_auth_error(error):
-        all_accounts = list_accounts()
-        auth_help = format_auth_error_message(all_accounts)
-        print_error(auth_help)
+    elif is_auth_error(error) and not isinstance(error, AuthError):
+        # AuthError already says how to sign in; this covers the API refusing the identity.
+        print_error(
+            f"{SEP}\nAuthentication or permissions\n{SEP}\n\n"
+            f"Credential: {credential_in_use()}\n"
+            "\t• Run `fabdep auth status` to see which identity and tenant that is.\n"
+            f"\t• {auth_hint()}\n"
+            "\t• The identity needs a Contributor (or higher) role on the workspace; a service\n"
+            "\t  principal also needs the Fabric admin setting that lets service principals use\n"
+            "\t  Fabric APIs.\n\n"
+            f"{SEP}\n"
+        )
 
     sys.exit(1)
 
@@ -103,48 +108,29 @@ def parse_args() -> argparse.Namespace:
         dest="command", help="Available commands (defaults to 'deploy')"
     )
 
-    auth_parser = subparsers.add_parser("auth", help="Manage Azure authentication")
+    # Shared by every command that calls Fabric.
+    auth_flag = argparse.ArgumentParser(add_help=False)
+    _ = auth_flag.add_argument(
+        "--auth",
+        choices=AUTH_MODES,
+        help="Credential to sign in with (default: $FABDEP_AUTH, then fabdep.yml 'auth:', then cli)",
+    )
+
+    auth_parser = subparsers.add_parser("auth", help="Show how fabdep authenticates")
     auth_subparsers = auth_parser.add_subparsers(
         dest="auth_command", required=True, help="Auth actions"
     )
-
-    _ = auth_subparsers.add_parser("list", help="List current and available Azure accounts")
-
-    switch_parser = auth_subparsers.add_parser("switch", help="Switch to different account")
-    _ = switch_parser.add_argument(
-        "account", help="Subscription ID or account name (alias supported)"
+    status_parser = auth_subparsers.add_parser(
+        "status",
+        parents=[auth_flag],
+        help="Sign in and show the identity, tenant, credential and token type fabdep would use",
     )
-
-    rename_parser = auth_subparsers.add_parser(
-        "rename", help="Label a subscription in `fabdep auth list` (not a tenant alias)"
-    )
-    _ = rename_parser.add_argument("subscription_id", help="Subscription ID to rename")
-    _ = rename_parser.add_argument("name", help="New subscription name")
-
-    login_parser = auth_subparsers.add_parser(
-        "login",
-        help="Log a tenant in to an isolated config dir and register its alias",
-    )
-    _ = login_parser.add_argument("alias", help="Tenant alias (e.g. contoso) used in fabdep.yml")
-    _ = login_parser.add_argument("--app", help="SPN client id (first login / cert swap)")
-    _ = login_parser.add_argument("--tenant", help="Entra tenant GUID (first login)")
-    _ = login_parser.add_argument("--cert", help="Path to the SPN cert .pem (first login)")
-    _ = login_parser.add_argument(
-        "--config-dir", help="AZURE_CONFIG_DIR to use (default ~/.azure-<alias>)"
-    )
-    _ = login_parser.add_argument(
-        "--user", action="store_true", help="Interactive user login instead of an SPN"
-    )
-
-    bind_parser = auth_subparsers.add_parser(
-        "bind",
-        help="Register a tenant alias against an existing az login (no new login)",
-    )
-    _ = bind_parser.add_argument("alias", help="Tenant alias (e.g. contoso) used in fabdep.yml")
-    _ = bind_parser.add_argument(
-        "target",
-        help="Tenant GUID (any account in it), or a subscription id/name from "
-        "`fabdep auth list` to pin that account",
+    _ = status_parser.add_argument(
+        "directory",
+        nargs="?",
+        default=".",
+        type=Path,
+        help="Workspace directory whose fabdep.yml applies (defaults to current directory)",
     )
 
     rename_items_parser = subparsers.add_parser(
@@ -202,6 +188,7 @@ def parse_args() -> argparse.Namespace:
 
     deploy_parser = subparsers.add_parser(
         "deploy",
+        parents=[auth_flag],
         help="Deploy Fabric workspace items (default command)",
         description="Deploy Fabric workspace items - auto-detects configuration from parameter.yml",
     )
@@ -304,6 +291,7 @@ def parse_args() -> argparse.Namespace:
 
     refresh_parser = subparsers.add_parser(
         "refresh",
+        parents=[auth_flag],
         help="Frame a Direct Lake semantic model (sync SQL endpoint -> refresh -> poll)",
         description="Sync the SQL analytics endpoint metadata, then refresh and "
         "poll the semantic model(s), surfacing the first framing error.",
@@ -351,6 +339,7 @@ def parse_args() -> argparse.Namespace:
     )
     rls_pull_parser = rls_subparsers.add_parser(
         "pull",
+        parents=[auth_flag],
         help="Diff the target's RLS roles against the repo; --write to adopt them",
     )
     _ = rls_pull_parser.add_argument(
@@ -401,55 +390,13 @@ def parse_args() -> argparse.Namespace:
 
 def handle_auth_command(args: argparse.Namespace) -> None:
     """Handle auth subcommand execution."""
-    if args.auth_command == "list":
-        try:
-            all_accounts = list_accounts()
-            print(format_account_list(all_accounts))
-        except Exception as e:
-            print_error(f"Failed to list accounts: {e}")
-            sys.exit(1)
-
-    elif args.auth_command == "switch":
-        try:
-            switch_account(args.account)
-        except Exception as e:
-            print_error(f"\nFailed to switch account: {e}\n")
-            sys.exit(1)
-
-    elif args.auth_command == "rename":
-        try:
-            rename_subscription(args.subscription_id, args.name)
-        except Exception as e:
-            print_error(f"\nFailed to rename subscription: {e}\n")
-            sys.exit(1)
-
-    elif args.auth_command == "login":
-        try:
-            entry = login_tenant(
-                args.alias,
-                app_id=args.app,
-                tenant=args.tenant,
-                cert=args.cert,
-                config_dir=args.config_dir,
-                user=args.user,
-            )
-            print(
-                f"registered tenant '{args.alias}' -> {entry['id']} "
-                f"(AZURE_CONFIG_DIR={entry.get('config_dir')})"
-            )
-        except Exception as e:
-            print_error(f"\nFailed to log in tenant '{args.alias}': {e}\n")
-            sys.exit(1)
-
-    elif args.auth_command == "bind":
-        try:
-            entry = bind_tenant(args.alias, args.target)
-            sub = entry.get("subscription")
-            via = f"account {sub}" if sub else "any enabled account in the tenant"
-            print(f"registered tenant '{args.alias}' -> {entry['id']} ({via})")
-        except Exception as e:
-            print_error(f"\nFailed to bind tenant '{args.alias}': {e}\n")
-            sys.exit(1)
+    try:
+        apply_tenant_pin(load_tenant_pin(args.directory), get_logger("fabric_deploy.cli"))
+        identity = describe_identity()
+    except Exception as e:
+        handle_command_error(e, "auth status")
+    for label, value in identity.items():  # pyright: ignore[reportPossiblyUnboundVariable]
+        print(f"{label + ':':<12} {value}")
 
 
 def handle_rename_command(args: argparse.Namespace) -> None:
@@ -628,6 +575,7 @@ def handle_rls_command(args: argparse.Namespace) -> None:
 def main() -> None:
     """CLI entry point - routes to appropriate command handler."""
     args = parse_args()
+    set_auth_mode(getattr(args, "auth", None))
 
     if args.command == "auth":
         handle_auth_command(args)

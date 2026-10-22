@@ -13,6 +13,7 @@ import urllib.error
 import pytest
 from azure.core.exceptions import ClientAuthenticationError
 
+from fabric_deploy.identity import AuthError
 from fabric_deploy.log import (
     error_hint,
     http_status,
@@ -71,6 +72,7 @@ def test_http_status(error, status):
         "AADSTS7000222: The provided client secret keys for app 'x' are expired.",
         _StatusError(403),
         ClientAuthenticationError("no token"),
+        AuthError("token is for another tenant"),
         _raised_from("deploy failed", ClientAuthenticationError("no token")),
     ],
 )
