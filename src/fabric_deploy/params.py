@@ -360,7 +360,16 @@ class ParameterFile:
             )
         rules: list[dict[str, Any]] = []
         if detector.should_skip_replacement(workspace_id):
-            summary.append("Source and target workspace are the same -- no detected replacements")
+            # Nothing detected needs rewriting, but fabdep.yml's manual_parameters still apply.
+            rules = [
+                rule
+                for rule in detector.generate_parameter_yml(environment)["find_replace"]
+                if "fabdep.yml" in detector.parameters[rule["find_value"]].source_files
+            ]
+            summary.append(
+                "Source and target workspace are the same -- no detected replacements"
+                + (f"; {_plural(len(rules), 'manual parameter')}" if rules else "")
+            )
         elif rules := detector.generate_parameter_yml(environment)["find_replace"]:
             unchanged = len(detector.parameters) - len(rules)
             summary.append(

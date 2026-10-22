@@ -385,6 +385,30 @@ class TestParameterFile:
         with pytest.raises(ValueError, match="parameter.yml"):
             self._deploy(deployer, fabric_cicd)
 
+    def test_same_workspace_still_applies_manual_parameters(
+        self, sample_ws, mock_fabric_api, monkeypatch, fabric_cicd
+    ):
+        """Deploying back to the source workspace needs no detected rules, but
+        fabdep.yml's manual_parameters still apply."""
+        monkeypatch.setattr("fabric_deploy.rls._remote_roles", lambda _ws, _name: None)
+        mock_fabric_api.workspace_id = SAMPLE_DEV_WORKSPACE_ID
+        replacement = "00000000-0000-0000-0000-0000000000a2"
+        (sample_ws / "fabdep.yml").write_text(
+            'workspace_base_name: "Fabdep Test"\n'
+            "manual_parameters:\n"
+            f'  - find_value: "{SAMPLE_LAKEHOUSE_ID}"\n'
+            f'    replace_value: "{replacement}"\n'
+        )
+        deployer = WorkspaceDeployer(sample_ws, branch_override="MAIN")
+
+        document = self._deploy(deployer, fabric_cicd)["document"]
+
+        assert document == {
+            "find_replace": [
+                {"find_value": SAMPLE_LAKEHOUSE_ID, "replace_value": {"MAIN": replacement}}
+            ]
+        }
+
     def test_nothing_to_add_leaves_fabric_cicd_on_the_repo_file(self, deployer, fabric_cicd):
         deployer._detector.parameters = {}
         seen = self._deploy(deployer, fabric_cicd)
