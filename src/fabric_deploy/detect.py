@@ -153,7 +153,7 @@ class ParameterDetector:
     # Fabric's "unattached / placeholder" sentinel. Appears as workspaceId in
     # TridentNotebook pipeline activities (fabric-cicd's _replace_workspace_ids
     # handles those itself) and as default_lakehouse_workspace_id in notebooks
-    # that were never attached. Never emit a find_replace rule for it.
+    # that are unattached or auto-bound. Never emit a find_replace rule for it.
     NULL_UUID = "00000000-0000-0000-0000-000000000000"
 
     # Sql.Database("<host>", "<database>") and the one-argument server-level
@@ -223,8 +223,8 @@ class ParameterDetector:
         # one of these — anything else is a deliberate cross-workspace
         # reference that must deploy verbatim.
         self._source_workspace_ids: set[str] = set()
-        # (source_file, guid) for each pipeline/copyjob workspaceId left
-        # verbatim as a cross-workspace reference.
+        # (source_file, guid) for each workspace id left verbatim as a
+        # cross-workspace reference.
         self.offtarget_workspace_refs: list[tuple[str, str]] = []
         # (report_item, function_name, udf_display_name, item_id) for each PBIR
         # button whose UDF reference was auto-rebound to the target workspace.
@@ -278,9 +278,6 @@ class ParameterDetector:
         # only fires for ids nothing in the repo claims. Correctness does not
         # depend on this order — _anchor_workspace repairs a parameter that
         # was classified first — only the log does.
-        # Notebook content is `.py` (Python/PySpark), `.sql` (T-SQL), etc.
-        # Metadata block is identical JSON-in-comments — the prefix differs
-        # (`# META` vs `-- META`) but the find_replace patterns don't anchor on it.
         self._process_files(
             self._item_files("Notebook", "notebook-content.py", "notebook-content.sql"),
             self._extract_from_notebook,
@@ -675,7 +672,7 @@ class ParameterDetector:
         if (source_file, ws_id) not in self.offtarget_workspace_refs:
             self.offtarget_workspace_refs.append((source_file, ws_id))
             self.logger.warning(
-                f"{source_file}: workspaceId {ws_id} is not a workspace this "
+                f"{source_file}: workspace {ws_id} is not a workspace this "
                 f"repo's content anchors — treating it as a cross-workspace "
                 f"reference and deploying it unchanged. If it is one of this "
                 f"repo's own workspaces, the deploying identity must be able "

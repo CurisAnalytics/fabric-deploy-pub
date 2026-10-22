@@ -185,9 +185,9 @@ class TestUdfBindingGuard:
     SKIPPED = [
         (
             "Finance Report",
-            "write_pl_statement",
+            "export_summary",
             "33333333-4444-5555-6666-777777777777",
-            "no .UserDataFunction item in the repo declares 'write_pl_statement'",
+            "no .UserDataFunction item in the repo declares 'export_summary'",
         )
     ]
 

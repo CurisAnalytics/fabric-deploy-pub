@@ -265,8 +265,7 @@ class TestSemanticModelExtraction:
 
     def test_extracts_sql_databases_navigation_form(self, tmp_path: Path):
         """`Sql.Databases("host")` (plural, one arg) — the database is picked
-        by name downstream, so only the hostname parameter is expected. This
-        form drove the Woodgrove prod deploy that kept its dev endpoint."""
+        by name downstream, so only the hostname parameter is expected."""
         _make_lakehouse(tmp_path, "lh")
         body = (
             "\t\t\t\tlet\n"
@@ -293,7 +292,7 @@ class TestSemanticModelExtraction:
     def test_mirrored_database_repo_resolves_analytics_endpoint(self, tmp_path: Path):
         """A repo whose only SQL-endpoint item is a MirroredDatabase resolves
         the `datawarehouse.*` hostname and endpoint item id to fabric-cicd's
-        MirroredDatabase dynamic variables (added in fabric-cicd 1.3)."""
+        MirroredDatabase dynamic variables."""
         _make_mirrored_db(tmp_path, "mdb")
         body = (
             'Source = Sql.Database("HOST-XXXX.datawarehouse.fabric.microsoft.com", '
@@ -854,11 +853,11 @@ class TestUserDataFunctionRebind:
     def test_bound_button_is_rebound_to_target_workspace(self, tmp_path: Path):
         """The dev itemId/workspaceId become target-resolved dynamics."""
         _make_lakehouse(tmp_path, "lh")
-        _make_udf(tmp_path, "Report Functions", ["update_report_json"])
+        _make_udf(tmp_path, "Report Functions", ["recalculate_totals"])
         _make_report_visual(
             tmp_path,
             "Finance Report",
-            _data_function_visual(UDF_ITEM_ID, WORKSPACE_ID, "update_report_json"),
+            _data_function_visual(UDF_ITEM_ID, WORKSPACE_ID, "recalculate_totals"),
         )
         d = ParameterDetector(tmp_path)
         d.detect_all()
@@ -871,7 +870,7 @@ class TestUserDataFunctionRebind:
         assert d.udf_bindings == [
             (
                 "Finance Report",
-                "update_report_json",
+                "recalculate_totals",
                 "Report Functions",
                 UDF_ITEM_ID,
             )
@@ -1113,11 +1112,11 @@ class TestLakehouseAutoBinding:
         """A bound UDF button names the repo's own workspace. That anchor must
         reach a pipeline reference whatever order the scans run in."""
         _auto_bound_repo(tmp_path)
-        _make_udf(tmp_path, "Functions", ["update_report_json"])
+        _make_udf(tmp_path, "Functions", ["recalculate_totals"])
         _make_report_visual(
             tmp_path,
             "Finance Report",
-            _data_function_visual(UDF_ITEM_ID, WORKSPACE_ID, "update_report_json"),
+            _data_function_visual(UDF_ITEM_ID, WORKSPACE_ID, "recalculate_totals"),
         )
         d = ParameterDetector(tmp_path)
         d.detect_all()
