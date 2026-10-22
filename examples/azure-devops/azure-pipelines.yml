@@ -1,0 +1,69 @@
+# Deploys a Microsoft Fabric workspace from this repository with fabdep.
+# A push to main or dev deploys the items the merged pull request changed; a
+# pull-request build shows the plan for the workspace of the branch it merges into.
+# Prerequisites: see examples/README.md.
+#
+# With Azure Repos, pull-request builds come from a build validation branch policy
+# on main and dev that runs this pipeline; the pr: section applies to GitHub and
+# Bitbucket repositories only.
+
+trigger:
+  branches:
+    include: [main, dev]
+
+pr:
+  branches:
+    include: [main, dev]
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  # The Azure Resource Manager service connection of the deploying service principal.
+  serviceConnection: fabric-deploy
+  # The folder holding fabdep.yml and the item folders, relative to the repository root.
+  fabdepDir: .
+  # OWNER is a placeholder: fabric-deploy's public repository isn't settled yet.
+  # Pin a release by appending @<tag>.
+  fabdepPackage: git+https://github.com/OWNER/fabric-deploy
+
+steps:
+  - checkout: self
+    fetchDepth: 0 # --pr reads the pull request's merge commit and its parent
+
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: "3.12"
+
+  - script: python -m pip install "$(fabdepPackage)"
+    displayName: Install fabdep
+
+  # AzureCLI@2 signs az in as the service connection, and --auth cli has fabdep use
+  # that sign-in, so addSpnToEnvironment isn't needed. Azure Pipelines checks out a
+  # detached HEAD, so --branch names the branch whose workspace is the target.
+  - task: AzureCLI@2
+    displayName: Plan
+    condition: eq(variables['Build.Reason'], 'PullRequest')
+    inputs:
+      azureSubscription: ${{ variables.serviceConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      # Add --output json for a plan other tools can read.
+      inlineScript: >-
+        fabdep plan "$(fabdepDir)" --auth cli
+        --branch "${SYSTEM_PULLREQUEST_TARGETBRANCH#refs/heads/}"
+
+  - task: AzureCLI@2
+    displayName: Deploy
+    condition: >-
+      and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'),
+      in(variables['Build.SourceBranch'], 'refs/heads/main', 'refs/heads/dev'))
+    inputs:
+      azureSubscription: ${{ variables.serviceConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      # --pr: only the items the newest merged pull request changed. Without it,
+      # fabdep deploys every item and unpublishes those the repository no longer has.
+      inlineScript: >-
+        fabdep deploy "$(fabdepDir)" --auth cli --pr
+        --branch "${BUILD_SOURCEBRANCH#refs/heads/}"

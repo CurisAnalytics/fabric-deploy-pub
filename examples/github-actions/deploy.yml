@@ -1,0 +1,65 @@
+# Deploys a Microsoft Fabric workspace from this repository with fabdep.
+# A pull request into main or dev gets a plan of what a deploy would change in the
+# workspace of the branch it merges into; a push to main or dev deploys the items
+# the merged pull request changed. Prerequisites: see examples/README.md.
+#
+# Copy to .github/workflows/ in the workspace repository.
+name: Fabric workspace
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+  id-token: write # azure/login exchanges the workflow's OIDC token for a Microsoft Entra token
+
+env:
+  # The folder holding fabdep.yml and the item folders, relative to the repository root.
+  FABDEP_DIR: .
+  # OWNER is a placeholder: fabric-deploy's public repository isn't settled yet.
+  # Pin a release by appending @<tag>.
+  FABDEP_PACKAGE: git+https://github.com/OWNER/fabric-deploy
+
+jobs:
+  plan:
+    # Pull requests from forks get no OIDC token, so they can't sign in.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv tool install "$FABDEP_PACKAGE"
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true # the service principal needs no Azure subscription
+      # --auth cli: sign in as the identity azure/login gave az, whatever fabdep.yml's
+      # auth: says. Add --output json for a plan other tools can read.
+      - run: fabdep plan "$FABDEP_DIR" --branch "$GITHUB_BASE_REF" --auth cli
+
+  deploy:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: fabdep-${{ github.ref_name }} # one deploy per workspace at a time
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # --pr reads the pull request's merge commit and its parent
+      - uses: astral-sh/setup-uv@v6
+      - run: uv tool install "$FABDEP_PACKAGE"
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+      # --pr: only the items the newest merged pull request changed. Without it,
+      # fabdep deploys every item and unpublishes those the repository no longer has.
+      - run: fabdep deploy "$FABDEP_DIR" --branch "$GITHUB_REF_NAME" --auth cli --pr
