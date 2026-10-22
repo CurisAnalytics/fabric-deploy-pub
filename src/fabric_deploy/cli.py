@@ -156,6 +156,13 @@ def handle_command_error(error: Exception, context: str) -> None:
     sys.exit(1)
 
 
+def _directory(value: str) -> Path:
+    """argparse type for the workspace directory: it has to exist."""
+    if not Path(value).is_dir():
+        raise argparse.ArgumentTypeError(f"no such directory: {value}")
+    return Path(value)
+
+
 def parse_args() -> argparse.Namespace:
     """Parse the command line; anything that isn't a command runs `deploy`."""
     from . import __version__
@@ -167,7 +174,7 @@ def parse_args() -> argparse.Namespace:
         "directory",
         nargs="?",
         default=".",
-        type=Path,
+        type=_directory,
         help="Workspace directory (default: the current directory)",
     )
     signed_in = argparse.ArgumentParser(add_help=False, parents=[repo])
@@ -404,14 +411,8 @@ def handle_detect_command(args: argparse.Namespace) -> None:
                 )
             print("Using dynamic variables: $workspace.$id, $items.Lakehouse.<name>.$id, etc.\n")
 
-    except FileNotFoundError as e:
-        print_error(f"\n{e}\n")
-        print("Usage: fabdep detect [DIRECTORY] [OPTIONS]")
-        print("Run 'fabdep detect -h' for more information.\n")
-        sys.exit(1)
     except Exception as e:
-        print_error(f"\nDetection failed: {e}\n")
-        sys.exit(1)
+        handle_command_error(e, "Detection")
 
 
 def handle_deploy_command(args: argparse.Namespace) -> None:
@@ -444,11 +445,6 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
             new_workspace=bool(args.new_workspace),
             skip_lakehouse=bool(args.skip_lakehouse),
         )
-    except FileNotFoundError as e:
-        print_error(f"\n{e}\n")
-        print("Usage: fabdep [OPTIONS]")
-        print("Run 'fabdep -h' for more information.\n")
-        sys.exit(1)
     except Exception as e:
         handle_command_error(e, "Workspace initialization")  # exits
 
@@ -508,9 +504,6 @@ def handle_refresh_command(args: argparse.Namespace) -> None:
             sync=not args.no_sync,
             timeout_s=int(args.timeout),
         )
-    except FileNotFoundError as e:
-        print_error(f"\n{e}\n")
-        sys.exit(1)
     except Exception as e:
         handle_command_error(e, "Framing")
 
@@ -527,9 +520,6 @@ def handle_rls_command(args: argparse.Namespace) -> None:
                 models=args.include_items,
                 write=bool(args.write),
             )
-        except FileNotFoundError as e:
-            print_error(f"\n{e}\n")
-            sys.exit(1)
         except Exception as e:
             handle_command_error(e, "RLS pull")
         # Diff-only run that found drift exits non-zero so CI can gate on it.

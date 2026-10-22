@@ -283,3 +283,38 @@ class TestRemovedCommands:
         assert f"'{' '.join(argv[:2] if argv[0] == 'auth' else argv[:1])}'" in captured.err
         assert "removed" in captured.err
         assert "CHANGELOG" in captured.err
+
+
+class TestCommandErrors:
+    @pytest.mark.parametrize(
+        ("command", "target"),
+        [("deploy", "WorkspaceDeployer"), ("detect", "ParameterDetector")],
+    )
+    def test_a_missing_file_is_not_a_usage_error(self, monkeypatch, capsys, command, target):
+        def missing_az(**_: object) -> None:
+            raise FileNotFoundError(2, "No such file or directory", "az")
+
+        monkeypatch.setattr(f"fabric_deploy.cli.{target}", missing_az)
+        with pytest.raises(SystemExit) as exc:
+            _run(monkeypatch, command)
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert "No such file or directory: 'az'" in captured.err + captured.out
+        assert "Usage:" not in captured.err + captured.out
+
+    def test_missing_fabdep_yml(self, monkeypatch, capsys, tmp_path):
+        with pytest.raises(SystemExit) as exc:
+            _run(monkeypatch, "deploy", str(tmp_path))
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert "No fabdep.yml" in captured.err + captured.out
+        assert "Usage:" not in captured.err + captured.out
+
+    @pytest.mark.parametrize(
+        "command", [["deploy"], ["detect"], ["refresh"], ["rls", "pull"], ["auth", "status"]]
+    )
+    def test_a_missing_directory_is_a_usage_error(self, monkeypatch, capsys, tmp_path, command):
+        with pytest.raises(SystemExit) as exc:
+            _parse(monkeypatch, *command, str(tmp_path / "missing"))
+        assert exc.value.code == 2
+        assert "no such directory" in capsys.readouterr().err
