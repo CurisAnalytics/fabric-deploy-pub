@@ -207,6 +207,7 @@ class ParameterDetector:
         """
         self.repo_dir = Path(repo_dir).resolve()  # pyright: ignore[reportUnannotatedClassAttribute]
         self.parameters: dict[str, DetectedParameter] = {}
+        self._detected = False
         self._seed_workspace_ids: set[str] = set(source_workspace_ids or ())
         self._seed_lakehouse_ids: dict[str, str] = dict(source_lakehouse_ids or {})
         # logicalId → displayName for the repo's Lakehouse items. Auto-bound
@@ -333,6 +334,7 @@ class ParameterDetector:
         )
         self._register_source_ids()
         self._warn_skipped_udf_buttons()
+        self._detected = True
 
     def _warn_skipped_udf_buttons(self) -> None:
         """One warning per distinct skip reason, not one per visual file.
@@ -1035,14 +1037,12 @@ class ParameterDetector:
         return file_path.name
 
     def _ensure_detected(self) -> None:
-        """Run detect_all() if no parameters have been detected yet.
+        """Run detect_all() unless it already ran.
 
-        Detection is idempotent within a session — once parameters are
-        populated, repeat calls are no-ops. Public methods that depend on
-        detected state call this so users can skip the explicit detect_all()
-        invocation.
+        Keyed on a flag, not on `parameters` being empty: filtering can
+        legitimately empty the set, and re-detecting would undo the filter.
         """
-        if not self.parameters:
+        if not self._detected:
             self.detect_all()
 
     def generate_parameter_yml(self, environment: str = "prod") -> dict:

@@ -630,6 +630,7 @@ class TestShouldSkipReplacement:
 class TestFilterLakehouseParams:
     def test_removes_lakehouse_descriptions_only(self, tmp_path: Path):
         d = ParameterDetector(tmp_path)
+        d.detect_all()
         # Manually populate parameters with a mix of types
         d.parameters = {
             WORKSPACE_ID: DetectedParameter(find_value=WORKSPACE_ID, description="Workspace ID"),
@@ -653,6 +654,19 @@ class TestFilterLakehouseParams:
         assert WORKSPACE_ID in d.parameters
         assert CONNECTION_ID in d.parameters
         assert LAKEHOUSE_ID not in d.parameters
+
+    def test_filtering_every_parameter_does_not_redetect(self, tmp_path: Path):
+        """A repo whose only detected parameters are lakehouse ones must stay
+        filtered: an empty parameter set is a result, not "not detected yet"."""
+        _make_lakehouse(tmp_path, "lh")
+        _make_semantic_model(
+            tmp_path, "sm", 'Source = Sql.Databases("HOST-XXXX.datawarehouse.fabric.microsoft.com")'
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert d.filter_lakehouse_params() == ["HOST-XXXX.datawarehouse.fabric.microsoft.com"]
+        assert d.generate_parameter_yml()["find_replace"] == []
 
 
 # --- _generate_dynamic_variable -------------------------------------------
