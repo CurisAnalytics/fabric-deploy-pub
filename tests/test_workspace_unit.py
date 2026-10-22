@@ -20,8 +20,9 @@ from fabric_deploy.params import ParameterFile
 from fabric_deploy.scope import _repo_items, validate_include_items
 from fabric_deploy.workspace import WorkspaceDeployer, format_deploy_options
 
+from .conftest import SAMPLE_DEV_WORKSPACE_ID
 
-TEST_WS_DIR = Path(__file__).parent / "test-wkspc"
+
 FAKE_WORKSPACE_ID = "00000000-0000-0000-0000-000000000001"
 
 
@@ -67,8 +68,8 @@ class TestFormatDeployOptions:
 
 
 @pytest.fixture
-def deployer():
-    """Build a WorkspaceDeployer pointed at the test-wkspc fixture
+def deployer(sample_ws):
+    """Build a WorkspaceDeployer pointed at the sample workspace fixture
     without making any network calls (all I/O is patched)."""
     with (
         patch(
@@ -79,7 +80,7 @@ def deployer():
         # Suppress fabric-cicd module-level logging side effects
         patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
     ):
-        d = WorkspaceDeployer(TEST_WS_DIR, branch_override="MAIN")
+        d = WorkspaceDeployer(sample_ws, branch_override="MAIN")
         return d
 
 
@@ -114,7 +115,7 @@ class TestFabricWorkspaceConstruction:
         )
         # The resolved workspace id / repo dir are passed straight through.
         assert kwargs.get("workspace_id") == FAKE_WORKSPACE_ID
-        assert kwargs.get("repository_directory") == str(TEST_WS_DIR.resolve())
+        assert kwargs.get("repository_directory") == str(deployer._repo_dir_resolved)
 
     def test_publish_called_with_returned_workspace(self, deployer):
         """publish_all_items must receive the FabricWorkspace instance, not a kwarg."""
@@ -423,16 +424,16 @@ class TestParameterFileWriter:
 
 # --- sibling-workspace anchor resolution ------------------------------------
 
-# test-wkspc's legacy notebook metadata names this workspace.
-DEV_WORKSPACE_ID = "16161616-1616-1616-1616-161616161616"
+# The sample notebook's legacy metadata names this workspace.
+DEV_WORKSPACE_ID = SAMPLE_DEV_WORKSPACE_ID
 QA_WORKSPACE_ID = "00000000-0000-0000-0000-00000000000d"
 SRC_LAKEHOUSE_ID = "00000000-0000-0000-0000-00000000001a"
 
 
 def _anchored_deployer(
-    monkeypatch, *, workspaces, lakehouses=None, list_error=None, **kwargs
+    monkeypatch, repo, *, workspaces, lakehouses=None, list_error=None, **kwargs
 ) -> tuple[WorkspaceDeployer, MagicMock, MagicMock]:
-    """Deployer on test-wkspc with the workspace listing under control."""
+    """Deployer on the sample workspace with the workspace listing under control."""
     list_ws = MagicMock(return_value=workspaces)
     if list_error:
         list_ws.side_effect = RuntimeError(list_error)
@@ -446,25 +447,24 @@ def _anchored_deployer(
         ),
         patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
     ):
-        d = WorkspaceDeployer(TEST_WS_DIR, branch_override="MAIN", **kwargs)
+        d = WorkspaceDeployer(repo, branch_override="MAIN", **kwargs)
     return d, list_ws, list_items
 
 
 class TestSiblingWorkspaceAnchors:
-    def test_target_is_anchored_even_without_siblings(self, monkeypatch):
-        d, _, list_items = _anchored_deployer(monkeypatch, workspaces=[])
+    def test_target_is_anchored_even_without_siblings(self, monkeypatch, sample_ws):
+        d, _, list_items = _anchored_deployer(monkeypatch, sample_ws, workspaces=[])
 
         assert d.source_workspace_ids == {FAKE_WORKSPACE_ID}
         assert d.source_lakehouse_ids == {}
         assert not list_items.called
         assert FAKE_WORKSPACE_ID in d._detector._source_workspace_ids
 
-    def test_referenced_sibling_anchors_and_lists_its_lakehouses(self, monkeypatch):
+    def test_referenced_sibling_anchors_and_lists_its_lakehouses(self, monkeypatch, sample_ws):
         """The content names DEV (legacy metadata here; a pipeline workspaceId
         or an abfss literal in an auto-bound repo), so DEV's lakehouse ids
         are fetched to map alongside its workspace id."""
-        d, _, list_items = _anchored_deployer(
-            monkeypatch,
+        d, _, list_items = _anchored_deployer(monkeypatch, sample_ws,
             workspaces=[
                 {"id": FAKE_WORKSPACE_ID, "displayName": "Fabdep Test [MAIN]"},
                 {"id": DEV_WORKSPACE_ID, "displayName": "Fabdep Test [DEV]"},
@@ -480,18 +480,16 @@ class TestSiblingWorkspaceAnchors:
         assert DEV_WORKSPACE_ID in d._detector._source_workspace_ids
         assert d._detector.parameters[DEV_WORKSPACE_ID].dynamic_variable == "$workspace.$id"
 
-    def test_unreferenced_sibling_is_anchored_but_not_listed(self, monkeypatch):
-        d, _, list_items = _anchored_deployer(
-            monkeypatch,
+    def test_unreferenced_sibling_is_anchored_but_not_listed(self, monkeypatch, sample_ws):
+        d, _, list_items = _anchored_deployer(monkeypatch, sample_ws,
             workspaces=[{"id": QA_WORKSPACE_ID, "displayName": "Fabdep Test [QA]"}],
         )
 
         assert QA_WORKSPACE_ID in d.source_workspace_ids
         assert not list_items.called
 
-    def test_other_repos_workspaces_are_not_siblings(self, monkeypatch):
-        d, _, _ = _anchored_deployer(
-            monkeypatch,
+    def test_other_repos_workspaces_are_not_siblings(self, monkeypatch, sample_ws):
+        d, _, _ = _anchored_deployer(monkeypatch, sample_ws,
             workspaces=[
                 {"id": QA_WORKSPACE_ID, "displayName": "Other [DEV]"},
                 {"id": DEV_WORKSPACE_ID, "displayName": "Fabdep Test Extra [DEV]"},
@@ -501,21 +499,20 @@ class TestSiblingWorkspaceAnchors:
 
         assert d.source_workspace_ids == {FAKE_WORKSPACE_ID}
 
-    def test_sibling_match_is_case_insensitive(self, monkeypatch):
-        d, _, _ = _anchored_deployer(
-            monkeypatch,
+    def test_sibling_match_is_case_insensitive(self, monkeypatch, sample_ws):
+        d, _, _ = _anchored_deployer(monkeypatch, sample_ws,
             workspaces=[{"id": QA_WORKSPACE_ID, "displayName": "fabdep test [qa]"}],
         )
 
         assert QA_WORKSPACE_ID in d.source_workspace_ids
 
-    def test_listing_failure_warns_and_keeps_target_anchor(self, monkeypatch, caplog):
-        d, _, _ = _anchored_deployer(monkeypatch, workspaces=[], list_error="403")
+    def test_listing_failure_warns_and_keeps_target_anchor(self, monkeypatch, sample_ws, caplog):
+        d, _, _ = _anchored_deployer(monkeypatch, sample_ws, workspaces=[], list_error="403")
 
         assert d.source_workspace_ids == {FAKE_WORKSPACE_ID}
         assert "anchor" in caplog.text
 
-    def test_lakehouse_listing_failure_warns_and_continues(self, monkeypatch, caplog):
+    def test_lakehouse_listing_failure_warns_and_continues(self, monkeypatch, sample_ws, caplog):
         list_ws = MagicMock(
             return_value=[{"id": DEV_WORKSPACE_ID, "displayName": "Fabdep Test [DEV]"}]
         )
@@ -531,7 +528,7 @@ class TestSiblingWorkspaceAnchors:
             ),
             patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
         ):
-            d = WorkspaceDeployer(TEST_WS_DIR, branch_override="MAIN")
+            d = WorkspaceDeployer(sample_ws, branch_override="MAIN")
 
         assert DEV_WORKSPACE_ID in d.source_workspace_ids
         assert d.source_lakehouse_ids == {}

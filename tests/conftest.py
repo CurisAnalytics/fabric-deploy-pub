@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -64,3 +66,36 @@ def mock_fabric_api(monkeypatch):
     # Suppress fabric-cicd module-level logging side effects during construction
     with patch("fabric_deploy.workspace.patch_fabric_cicd_logger"):
         yield handle
+
+
+SAMPLE_WORKSPACE = Path(__file__).parent / "fixtures" / "sample-workspace"
+# Ids the sample notebook's legacy lakehouse metadata carries.
+SAMPLE_DEV_WORKSPACE_ID = "00000000-0000-0000-0000-0000000000de"
+SAMPLE_LAKEHOUSE_ID = "00000000-0000-0000-0000-0000000000a1"
+
+
+@pytest.fixture
+def sample_ws(tmp_path) -> Path:
+    """A private copy of the sample workspace repo (tests may write into it)."""
+    dest = tmp_path / "sample-workspace"
+    shutil.copytree(SAMPLE_WORKSPACE, dest)
+    return dest
+
+
+@pytest.fixture(autouse=True)
+def _isolate_azure_identity(monkeypatch, tmp_path):
+    """Keep every test off the developer's az login, fabdep profile and env.
+
+    apply_tenant_pin writes os.environ["AZURE_CONFIG_DIR"] and the module-level
+    pin/credential caches directly; recording them here restores both at teardown.
+    """
+    from fabric_deploy import identity
+
+    monkeypatch.setenv("AZURE_CONFIG_DIR", "unset")  # records the original for restore
+    monkeypatch.delenv("AZURE_CONFIG_DIR")
+    for var in ("FABRIC_BEARER_TOKEN", "POWERBI_BEARER_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(identity, "_ACTIVE_PIN", None)
+    monkeypatch.setattr(identity, "_CLI_CREDENTIAL", None)
+    monkeypatch.setattr(identity, "_list_accounts", lambda: [])
+    monkeypatch.setattr("fabric_deploy.profile.FABDEP_PROFILE_PATH", tmp_path / "fabdep-profile.json")

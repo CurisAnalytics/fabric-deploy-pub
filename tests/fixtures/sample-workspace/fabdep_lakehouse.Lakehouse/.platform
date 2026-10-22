@@ -1,0 +1,4 @@
+{
+  "metadata": {"type": "Lakehouse", "displayName": "fabdep_lakehouse"},
+  "config": {"version": "2.0", "logicalId": "00000000-0000-0000-0000-0000000001a0"}
+}

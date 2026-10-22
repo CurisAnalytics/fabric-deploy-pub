@@ -1,4 +1,0 @@
-[submodule "test-wkspc"]
-	path = tests/test-wkspc
-	url = https://github.com/your-org/fabric-deploy-test-wkspc.git
-	branch = main

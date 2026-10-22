@@ -1,4 +1,4 @@
-"""CLI integration tests using test-wkspc submodule."""
+"""CLI tests against the sample workspace fixture."""
 
 import os
 import shutil
@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 
 from fabric_deploy.workspace import WorkspaceDeployer
+
+from .conftest import SAMPLE_DEV_WORKSPACE_ID, SAMPLE_LAKEHOUSE_ID
 
 
 # Resolve the fabdep binary once. Prefer PATH; fall back to the venv that
@@ -25,9 +27,8 @@ class TestCLI:
     """Test fabdep CLI commands against test workspace."""
 
     @pytest.fixture
-    def test_workspace_dir(self):
-        """Path to test-wkspc submodule."""
-        return Path(__file__).parent / "test-wkspc"
+    def test_workspace_dir(self, sample_ws):
+        return sample_ws
 
     @pytest.mark.integration
     def test_workspace_deployer(self, test_workspace_dir):
@@ -87,8 +88,8 @@ class TestCLI:
 
         # Verify it contains expected parameters
         content = detected_file.read_text()
-        assert "16161616-1616-1616-1616-161616161616" in content  # Workspace ID
-        assert "17171717-1717-1717-1717-171717171717" in content  # Lakehouse ID
+        assert SAMPLE_DEV_WORKSPACE_ID in content
+        assert SAMPLE_LAKEHOUSE_ID in content
         assert "$workspace.$id" in content
         assert "$items.Lakehouse.fabdep_lakehouse.$id" in content
 
@@ -119,21 +120,21 @@ class TestDetectSourceWorkspaceFlag:
         monkeypatch.setattr(
             sys,
             "argv",
-            ["fabdep", "detect", "--source-workspace-id", "16161616-1616-1616-1616-161616161616"],
+            ["fabdep", "detect", "--source-workspace-id", SAMPLE_DEV_WORKSPACE_ID],
         )
         args = parse_args()
-        assert args.source_workspace_ids == ["16161616-1616-1616-1616-161616161616"]
+        assert args.source_workspace_ids == [SAMPLE_DEV_WORKSPACE_ID]
 
     @_REQUIRES_FABDEP
-    def test_detect_with_source_workspace_id_runs(self):
+    def test_detect_with_source_workspace_id_runs(self, sample_ws):
         result = subprocess.run(
             [
                 _FABDEP,
                 "detect",
                 "--source-workspace-id",
-                "16161616-1616-1616-1616-161616161616",
+                SAMPLE_DEV_WORKSPACE_ID,
             ],
-            cwd=Path(__file__).parent / "test-wkspc",
+            cwd=sample_ws,
             capture_output=True,
             text=True,
         )
