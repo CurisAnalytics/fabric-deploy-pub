@@ -153,8 +153,19 @@ class _Template:
                 )
         return cls(text, where, tuple((literal, name) for literal, name, _, _ in parsed))
 
+    @property
+    def uses_base(self) -> bool:
+        return any(name == "base" for _, name in self.parts)
+
+    @property
+    def is_branch_only(self) -> bool:
+        """Whether the names it gives are the branch alone: no literal text, no {base}."""
+        return any(name in ("branch", "BRANCH") for _, name in self.parts) and not any(
+            literal or name == "base" for literal, name in self.parts
+        )
+
     def _check_base(self, base: str | None) -> None:
-        if base is None and any(name == "base" for _, name in self.parts):
+        if base is None and self.uses_base:
             raise ValueError(
                 f"fabdep.yml must set workspace_base_name: {self.where} {self.text!r} uses "
                 '{base}.\n  workspace_base_name: "Contoso Sales"'
@@ -314,6 +325,7 @@ class FabdepConfig:
         repo_workspaces = [env.name_pattern(base) for env in environments] or [
             default.pattern(base, _ANY_BRANCH)
         ]
+        _warn_open_templates(environments, default)
 
         manual_parameters: object = config.get("manual_parameters") or []
         if not isinstance(manual_parameters, list):
@@ -331,6 +343,13 @@ class FabdepConfig:
         # An exact key wins; otherwise the first glob that matches.
         entry = next((e for e in environments if not e.glob and e.matches(branch)), None)
         entry = entry or next((e for e in environments if e.matches(branch)), None)
+        if entry is None and environments and base is None and default.uses_base:
+            raise ValueError(
+                f"fabdep.yml environments has no entry for branch '{branch}' (entries: "
+                f"{', '.join(e.key for e in environments)}).\nAdd one, or set "
+                "workspace_base_name so that branches without an entry deploy to "
+                f"workspace_name_template {default.text!r}."
+            )
         return cls(
             repo_dir=resolved,
             branch=branch,
@@ -342,6 +361,24 @@ class FabdepConfig:
             capacity_id=capacity_id,
             manual_parameters=cast(list[object], manual_parameters),
             auth=AuthSettings.from_config(config),
+        )
+
+
+def _warn_open_templates(environments: list[_Environment], default: _Template) -> None:
+    """Flag a template whose names are the branch alone where any branch may fill
+    it (no map, or a glob key of wildcards only): every workspace whose name has
+    no ']' would count as the repo's, and have its ids in the content rewritten
+    to the target's."""
+    if environments:
+        candidates = [env.template for env in environments if env.glob and not env.key.strip("*?")]
+    else:
+        candidates = [default]
+    for template in {t.where: t for t in candidates if t.is_branch_only}.values():
+        logging.getLogger("fabric_deploy").warning(
+            f"fabdep.yml {template.where} {template.text!r} has no text besides the branch, "
+            "so every visible workspace whose name has no ']' counts as one of this repo's, "
+            "and its ids found in the content are rewritten to the target's. Add fixed "
+            "text around the branch, as in '{base} [{BRANCH}]'."
         )
 
 

@@ -118,10 +118,13 @@ class TestWorkspaceNames:
         assert _config(tmp_path, body).workspace_name == "Base [DEV]"
 
     def test_literal_names_need_no_base(self, tmp_path: Path):
-        body = "environments:\n  dev:\n    workspace: Sales Dev\n"
+        body = "environments:\n  dev:\n    workspace: Sales Dev\n  qa:\n    workspace: Sales QA\n"
         assert _config(tmp_path, body).workspace_name == "Sales Dev"
         # A branch without an entry still needs the base for the template.
-        with pytest.raises(ValueError, match="must set workspace_base_name"):
+        with pytest.raises(
+            ValueError,
+            match=r"(?s)no entry for branch 'main' \(entries: dev, qa\).*workspace_base_name",
+        ):
             _config(tmp_path, body, "main")
 
     @pytest.mark.parametrize(
@@ -191,6 +194,28 @@ class TestSiblingWorkspaces:
             "Contoso Sales - hotfix-22",
         ]
         assert self._siblings(tmp_path, MAP, names) == names[:7]
+
+    @pytest.mark.parametrize(
+        ("body", "open_template"),
+        [
+            (BASE, None),
+            ('workspace_name_template: "{branch}"\n', "{branch}"),
+            (BASE + 'workspace_name_template: "{BRANCH}{branch}"\n', "{BRANCH}{branch}"),
+            ('environments:\n  "*":\n    workspace: "{BRANCH}"\n', "{BRANCH}"),
+            (BASE + 'environments:\n  "feature/*":\n    workspace: "{branch}"\n', None),
+            ('workspace_name_template: "{branch}"\nenvironments:\n  dev:\n', None),
+        ],
+    )
+    def test_warns_when_the_branch_is_all_a_name_has(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, body: str, open_template
+    ):
+        """Every workspace name without a ']' would match, and count as the repo's."""
+        with caplog.at_level("WARNING", logger="fabric_deploy"):
+            _config(tmp_path, body)
+        warnings = [r.getMessage() for r in caplog.records if "no text besides" in r.getMessage()]
+        assert warnings == ([] if open_template is None else [warnings[0]])
+        if open_template is not None:
+            assert repr(open_template) in warnings[0]
 
 
 class TestTargetWorkspace:
