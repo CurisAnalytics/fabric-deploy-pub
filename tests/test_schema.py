@@ -145,9 +145,20 @@ def test_names_the_keys_the_loader_reads():
         pytest.param(BASE + ENTRY + "    file_path: x\n", False, id="manual-unknown-key"),
         pytest.param(
             BASE + f"manual_parameters:\n  - find_value: [{GUID}, b]\n"
-            f"    replace_value:\n      PROD: {GUID}\n      _ALL_: c\n",
+            f"    replace_value:\n      PROD: {GUID}\n      DEV: c\n",
             True,
             id="find-list-replace-map",
+        ),
+        pytest.param(
+            BASE + "manual_parameters:\n  - find_value: a\n    replace_value:\n      _all_: c\n",
+            True,
+            id="replace-map-all",
+        ),
+        pytest.param(
+            BASE + "manual_parameters:\n  - find_value: a\n"
+            "    replace_value:\n      PROD: b\n      _ALL_: c\n",
+            False,
+            id="replace-map-all-and-environment",
         ),
         pytest.param(
             BASE + "manual_parameters:\n  - find_value: []\n    replace_value: x\n",

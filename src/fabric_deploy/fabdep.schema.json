@@ -124,13 +124,20 @@
           ]
         },
         "replace_value": {
-          "description": "The replacement: one value, or a mapping of fabric-cicd environment names (_ALL_ for any other) to values.",
+          "description": "The replacement: one value, or a mapping of fabric-cicd environment names to values. _ALL_ applies to every environment and must then be the only key.",
           "anyOf": [
             { "$ref": "#/$defs/text" },
             {
               "type": "object",
               "minProperties": 1,
-              "propertyNames": { "minLength": 1 },
+              "maxProperties": 1,
+              "propertyNames": { "pattern": "^_[Aa][Ll][Ll]_$" },
+              "additionalProperties": { "$ref": "#/$defs/text" }
+            },
+            {
+              "type": "object",
+              "minProperties": 1,
+              "propertyNames": { "minLength": 1, "not": { "pattern": "^_[Aa][Ll][Ll]_$" } },
               "additionalProperties": { "$ref": "#/$defs/text" }
             }
           ]

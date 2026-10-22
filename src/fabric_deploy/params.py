@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import shutil
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Hashable, Mapping, Sequence
 from dataclasses import dataclass
 from difflib import get_close_matches
 from pathlib import Path
@@ -41,13 +41,27 @@ def for_environment(replace_value: str | dict[str, str], environment: str) -> st
     """The replacement `replace_value` gives `environment`, or None.
 
     A string applies everywhere. A mapping is looked up by environment name,
-    then by its `_ALL_` key (any case), as fabric-cicd reads parameter.yml.
+    then by its `_ALL_` key (any case), as fabric-cicd reads parameter.yml; the
+    loaders reject an `_ALL_` beside other keys, as fabric-cicd does.
     """
     if not isinstance(replace_value, dict):
         return replace_value
     if environment in replace_value:
         return replace_value[environment]
     return next((v for k, v in replace_value.items() if str(k).lower() == "_all_"), None)
+
+
+def _check_all_key(replace_value: Mapping[object, object], where: str) -> None:
+    """Reject an `_ALL_` key (any case) beside environment keys, as fabric-cicd does.
+
+    Raises:
+        ValueError: `replace_value` has `_ALL_` and another key.
+    """
+    if len(replace_value) > 1 and any(str(k).lower() == "_all_" for k in replace_value):
+        raise ValueError(
+            f"{where}: replace_value's _ALL_ key applies to every environment, so it "
+            f"must be the only key (got {', '.join(map(str, replace_value))})"
+        )
 
 
 def _is_str_list(value: object) -> bool:
@@ -94,6 +108,8 @@ def _manual_entries(
                 f"{where}: replace_value must be a non-empty string, or a mapping of "
                 "environment names (or _ALL_) to strings"
             )
+        if isinstance(replace, dict):
+            _check_all_key(replace, where)
         item_type = entry.get("item_type") or []
         item_types = [item_type] if isinstance(item_type, str) else item_type
         if not _is_str_list(item_types):
@@ -295,13 +311,62 @@ def _plural(count: int, noun: str) -> str:
     return f"{count} {noun}{'s' if count != 1 else ''}"
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """Safe YAML loading that rejects a mapping key given twice, ignoring case,
+    as fabric-cicd's parameter file loader does."""
+
+
+def _unique_key_mapping(loader: _UniqueKeyLoader, node: yaml.MappingNode) -> dict[Any, Any]:
+    loader.flatten_mapping(node)
+    seen: set[Hashable] = set()
+    for key_node, _ in node.value:
+        key: object = loader.construct_object(key_node)
+        folded = key.lower() if isinstance(key, str) else key
+        if not isinstance(folded, Hashable):
+            continue
+        if folded in seen:
+            raise yaml.constructor.ConstructorError(
+                None,
+                None,
+                f"duplicate key {key!r} (keys are compared ignoring case)",
+                key_node.start_mark,
+            )
+        seen.add(folded)
+    return loader.construct_mapping(node)
+
+
+_UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _unique_key_mapping
+)
+
+
 def _load_parameter_file(path: Path) -> dict[str, Any]:
-    with path.open(encoding="utf-8-sig") as f:
-        document = yaml.safe_load(f) or {}
+    """A parameter file or template, read as fabric-cicd reads it.
+
+    Raises:
+        ValueError: fabric-cicd would reject it (see `_check_all_key`), or a
+            find_replace or extend that isn't a list.
+    """
+    try:
+        with path.open(encoding="utf-8-sig") as f:
+            document: object = yaml.load(f, Loader=_UniqueKeyLoader) or {}
+    except yaml.YAMLError as e:
+        raise ValueError(f"{path}: {e}") from None
     if not isinstance(document, dict) or not all(
         isinstance(document.get(key, []), list) for key in ("find_replace", "extend")
     ):
         raise ValueError(f"{path}: expected a mapping whose find_replace and extend are lists")
+    document = cast(dict[str, Any], document)
+    for section, entries in document.items():
+        if not isinstance(entries, list):
+            continue
+        for n, entry in enumerate(cast(list[object], entries), start=1):
+            if isinstance(entry, dict) and isinstance(
+                replace_value := cast(dict[str, object], entry).get("replace_value"), dict
+            ):
+                _check_all_key(
+                    cast(dict[object, object], replace_value), f"{path}: {section} entry {n}"
+                )
     return document
 
 

@@ -398,6 +398,47 @@ class TestParameterFile:
         assert rules[1]["replace_value"] == {"MAIN": "$items.Lakehouse.fabdep_lakehouse.$id"}
         assert "overrides" not in deployer._paramfile.summary[-1]
 
+    @pytest.mark.parametrize(
+        ("files", "problem"),
+        [
+            pytest.param(
+                {
+                    "parameter.yml": 'find_replace:\n  - find_value: "x"\n    replace_value:\n'
+                    '      _ALL_: "a"\n      MAIN: "b"\n'
+                },
+                "_ALL_",
+                id="all-with-an-environment",
+            ),
+            pytest.param(
+                {
+                    "parameter.yml": 'find_replace:\n  - find_value: "x"\n    replace_value:\n'
+                    '      MAIN: "a"\n      main: "b"\n'
+                },
+                "duplicate key",
+                id="duplicate-key-any-case",
+            ),
+            pytest.param(
+                {
+                    "parameter.yml": 'extend:\n  - "t.yml"\n',
+                    "t.yml": 'find_replace:\n  - find_value: "x"\n    find_value: "y"\n'
+                    '    replace_value:\n      MAIN: "a"\n',
+                },
+                "t.yml.*duplicate key",
+                id="duplicate-key-in-template",
+            ),
+        ],
+    )
+    def test_user_file_fabric_cicd_would_reject_fails_before_publishing(
+        self, deployer, fabric_cicd, files, problem
+    ):
+        """fabdep reads the user's file as fabric-cicd does, so `plan` and the
+        deploy fail on it alike, before anything is published."""
+        for name, text in files.items():
+            (deployer._repo_dir_resolved / name).write_text(text)
+        with pytest.raises(ValueError, match=problem):
+            self._deploy(deployer, fabric_cicd)
+        fabric_cicd.publish.assert_not_called()
+
     def test_template_paths_resolve_from_the_repo(self, deployer, fabric_cicd):
         repo = deployer._repo_dir_resolved
         (repo / "params").mkdir()

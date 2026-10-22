@@ -116,18 +116,20 @@ class TestManualParameters:
         assert d._detector.parameters[DETECTED_UUID].item_types == expected
 
     @pytest.mark.parametrize(
-        ("branch", "expected"),
-        [("dev", "dev-value"), ("prod", "prod-value"), ("test", "any-value")],
+        ("branch", "replace_value", "expected"),
+        [
+            ("dev", '      dev: "dev-value"\n      prod: "prod-value"\n', "dev-value"),
+            ("prod", '      dev: "dev-value"\n      prod: "prod-value"\n', "prod-value"),
+            ("test", '      _ALL_: "any-value"\n', "any-value"),
+        ],
     )
-    def test_environment_keyed_replace_value(self, tmp_path: Path, branch: str, expected: str):
-        """A mapping picks the deploy environment's value, then `_ALL_`."""
+    def test_environment_keyed_replace_value(
+        self, tmp_path: Path, branch: str, replace_value: str, expected: str
+    ):
+        """A mapping picks the deploy environment's value; `_ALL_` applies to any."""
         _seed(
             tmp_path,
-            f'  - find_value: "{DETECTED_UUID}"\n'
-            "    replace_value:\n"
-            '      dev: "dev-value"\n'
-            '      prod: "prod-value"\n'
-            '      _ALL_: "any-value"\n',
+            f'  - find_value: "{DETECTED_UUID}"\n    replace_value:\n{replace_value}',
         )
         d = WorkspaceDeployer(tmp_path, branch_override=branch)
         assert d.environment == branch
@@ -187,6 +189,12 @@ class TestManualParameters:
                 f'  - find_value: "{DETECTED_UUID}"\n    replace_value:\n      prod: 5\n',
                 "replace_value",
                 id="int-env-value",
+            ),
+            pytest.param(
+                f'  - find_value: "{DETECTED_UUID}"\n    replace_value:\n'
+                '      _ALL_: "a"\n      prod: "b"\n',
+                "_ALL_.*only key",
+                id="all-with-an-environment",
             ),
             pytest.param(
                 f'  - find_value: "{DETECTED_UUID}"\n    replace_value: "x"\n'

@@ -60,7 +60,7 @@ STARTER_EXAMPLES: tuple[tuple[str, str], ...] = (
         "Find/replace rules on top of the IDs fabdep detects (`fabdep detect` lists them).\n"
         "A detected find_value gets this replace_value instead; any other find_value is\n"
         "added as a rule if it occurs in an item file. replace_value is one value, or one\n"
-        "per environment with _ALL_ for the rest; item_type limits the rule to item types.",
+        "per environment (_ALL_, alone, for every one); item_type limits it to item types.",
         "manual_parameters:\n"
         "  - find_value: 00000000-0000-0000-0000-0000000000aa\n"
         "    replace_value: 00000000-0000-0000-0000-0000000000aa\n"
@@ -71,7 +71,7 @@ STARTER_EXAMPLES: tuple[tuple[str, str], ...] = (
         "      - 00000000-0000-0000-0000-0000000000cc\n"
         "    replace_value:\n"
         "      PROD: 00000000-0000-0000-0000-0000000000dd\n"
-        "      _ALL_: 00000000-0000-0000-0000-0000000000ee",
+        "      DEV: 00000000-0000-0000-0000-0000000000ee",
     ),
 )
 
