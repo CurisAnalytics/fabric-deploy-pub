@@ -173,7 +173,7 @@ class WorkspaceDeployer:
     # One of this repo's workspaces: `{base} [{branch}]`.
     @staticmethod
     def _sibling_pattern(base_name: str) -> re.Pattern[str]:
-        return re.compile(rf"^{re.escape(base_name)} \[.+\]$", re.IGNORECASE)
+        return re.compile(rf"^{re.escape(base_name)} \[[^\]]+\]$", re.IGNORECASE)
 
     def _resolve_source_anchors(self) -> None:
         """Anchor the ids of this repo's other workspaces as environment ids.

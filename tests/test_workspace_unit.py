@@ -518,6 +518,18 @@ class TestSiblingWorkspaceAnchors:
 
         assert d.source_workspace_ids == {FAKE_WORKSPACE_ID}
 
+    def test_one_bracketed_suffix_marks_a_sibling(self, monkeypatch, sample_ws):
+        d, _, _ = _anchored_deployer(
+            monkeypatch,
+            sample_ws,
+            workspaces=[
+                {"id": QA_WORKSPACE_ID, "displayName": "Fabdep Test [ARCHIVE] Copy [DEV]"},
+                {"id": DEV_WORKSPACE_ID, "displayName": "Fabdep Test [DEV] [OLD]"},
+            ],
+        )
+
+        assert d.source_workspace_ids == {FAKE_WORKSPACE_ID}
+
     def test_sibling_match_is_case_insensitive(self, monkeypatch, sample_ws):
         d, _, _ = _anchored_deployer(
             monkeypatch,
