@@ -189,53 +189,54 @@ class TestHelp:
         assert args.directory == Path(".")
 
 
+MODEL = "SQL DB.SemanticModel"  # the sample workspace's model and notebook
+NOTEBOOK = "Fill Lakehouse.Notebook"
+
+
 class TestFrameScope:
     """`deploy --frame` refreshes only the semantic models the deploy published."""
 
     @pytest.fixture
-    def framed(self, monkeypatch) -> list[list[str] | None]:
-        calls: list[list[str] | None] = []
-
-        class FakeDeployer:
-            def __init__(self, **_: object) -> None:
-                self.deployed_items: list[str] = []
-
-            def deploy(self, include_items=None, pr=None, **_: object) -> None:
-                pr_items = ["Sales.SemanticModel", "Load.Notebook"] if pr else []
-                self.deployed_items = list(include_items or pr_items)
+    def framed(self, monkeypatch, sample_ws, mock_fabric_api, fabric_cicd) -> list[list[str]]:
+        calls: list[list[str]] = []
 
         def frame_models(**kwargs: object) -> list[dict]:
             calls.append(kwargs["models"])  # type: ignore[arg-type]
             return []
 
-        monkeypatch.setattr("fabric_deploy.cli.WorkspaceDeployer", FakeDeployer)
+        monkeypatch.setattr("fabric_deploy.rls._remote_roles", lambda _ws, _name: None)
+        monkeypatch.setattr(
+            "fabric_deploy.workspace.changed_paths_in",
+            lambda _repo, _commit: [f"{MODEL}/definition/model.tmdl"],
+        )
         monkeypatch.setattr("fabric_deploy.cli.frame_models", frame_models)
+        monkeypatch.chdir(sample_ws)
         return calls
 
     @pytest.mark.parametrize(
         ("argv", "expected"),
         [
-            ([], [None]),  # whole repo: every model
-            (["-i", "Sales.SemanticModel", "Load.Notebook"], [["Sales"]]),
-            (["--pr"], [["Sales"]]),
-            (["-t", "semanticmodel"], [None]),
-            (["-i", "Load.Notebook"], []),
+            ([], [["SQL DB"]]),
+            (["-i", MODEL, NOTEBOOK], [["SQL DB"]]),
+            (["--pr", "abc1234"], [["SQL DB"]]),
+            (["-t", "semanticmodel"], [["SQL DB"]]),
+            (["-i", NOTEBOOK], []),
             (["-t", "Notebook"], []),
             (["-x", "SemanticModel"], []),
-            (["-t", "Notebook", "-i", "Sales.SemanticModel"], []),
+            (["-t", "Notebook", "-i", MODEL], []),
         ],
     )
     def test_frames_what_the_deploy_published(self, monkeypatch, framed, argv, expected):
-        _run(monkeypatch, "deploy", "--frame", *argv)
+        _run(monkeypatch, "deploy", "-b", "MAIN", "--frame", *argv)
         assert framed == expected
 
     def test_says_why_nothing_was_framed(self, monkeypatch, framed, caplog):
         with caplog.at_level("INFO"):
-            _run(monkeypatch, "deploy", "--frame", "-i", "Load.Notebook")
+            _run(monkeypatch, "deploy", "-b", "MAIN", "--frame", "-i", NOTEBOOK)
         assert "no semantic model" in caplog.text
 
     def test_no_frame_without_the_flag(self, monkeypatch, framed):
-        _run(monkeypatch, "deploy")
+        _run(monkeypatch, "deploy", "-b", "MAIN")
         assert framed == []
 
 

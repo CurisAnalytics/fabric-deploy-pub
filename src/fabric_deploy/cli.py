@@ -494,32 +494,15 @@ def handle_deploy_command(args: argparse.Namespace) -> None:
     if not args.frame:
         return
 
-    models = _published_models(args, deployer.deployed_items)
-    if models == []:
+    suffix = ".SemanticModel"
+    models = sorted(i.removesuffix(suffix) for i in deployer.deployed_items if i.endswith(suffix))
+    if not models:
         log.info("--frame: the deploy published no semantic model, so there is nothing to frame.")
         return
     try:
         _ = frame_models(repo_dir=args.directory, branch_override=args.branch, models=models)
     except Exception as e:
         handle_command_error(e, "Framing")
-
-
-def _published_models(args: argparse.Namespace, deployed_items: list[str]) -> list[str] | None:
-    """Display names of the semantic models a deploy published; None means all the repo's.
-
-    Mirrors the deploy's scope: the -t/-x type filter (case-insensitive, as the
-    deploy applies it), then the item list that -i or --pr resolved to.
-    """
-    if args.item_types:  # -t wins over -x, as in the deploy
-        in_scope = "semanticmodel" in {t.lower() for t in args.item_types}
-    else:
-        in_scope = "semanticmodel" not in {t.lower() for t in args.exclude_types or ()}
-    if not in_scope:
-        return []
-    if not deployed_items:
-        return None
-    suffix = ".SemanticModel"
-    return [item.removesuffix(suffix) for item in deployed_items if item.endswith(suffix)]
 
 
 def handle_refresh_command(args: argparse.Namespace) -> None:

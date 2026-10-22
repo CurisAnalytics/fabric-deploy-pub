@@ -10,6 +10,8 @@ import socket
 import time
 from collections.abc import Mapping
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from azure.core.credentials import AccessToken
@@ -41,6 +43,22 @@ def mock_fabric_api(monkeypatch):
     }.items():
         monkeypatch.setattr(f"fabric_deploy.workspace.{name}", fake)
     return handle
+
+
+@pytest.fixture
+def fabric_cicd(monkeypatch) -> SimpleNamespace:
+    """fabric-cicd's deploy entry points, mocked. `workspace` is the FabricWorkspace class."""
+    fake = SimpleNamespace(
+        workspace=MagicMock(name="FabricWorkspace"),
+        publish=MagicMock(name="publish_all_items"),
+        unpublish=MagicMock(name="unpublish_all_orphan_items"),
+        flags=[],
+    )
+    monkeypatch.setattr("fabric_deploy.workspace.FabricWorkspace", fake.workspace)
+    monkeypatch.setattr("fabric_deploy.workspace.publish_all_items", fake.publish)
+    monkeypatch.setattr("fabric_deploy.workspace.unpublish_all_orphan_items", fake.unpublish)
+    monkeypatch.setattr("fabric_deploy.workspace.append_feature_flag", fake.flags.append)
+    return fake
 
 
 def make_item(

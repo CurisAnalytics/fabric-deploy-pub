@@ -35,9 +35,11 @@ from .params import (
     resolve_warehouse_endpoint_params,
 )
 from .scope import (
+    RepoItem,
     find_in_item_files,
     items_for_changed_paths,
     repo_item_types,
+    repo_items,
     resolve_item_scope,
     validate_include_items,
 )
@@ -45,6 +47,16 @@ from .scope import (
 # Sentinel for a bare `--pr`: search back from HEAD for the PR commit, rather
 # than treating a specific commit-ish as the PR.
 PR_HEAD = "HEAD"
+
+
+@dataclass(frozen=True)
+class DeployScope:
+    """What a deploy publishes: fabric-cicd's filters and the repo items they select."""
+
+    item_types: list[str] | None  # fabric-cicd's item_type_in_scope; None: every type
+    include_items: list[str] | None  # its items_to_include, all in the repo; None: no filter
+    items: list[RepoItem]  # the repo items the deploy publishes
+    cleanup: bool  # whether orphan cleanup runs afterwards
 
 
 @dataclass
@@ -96,7 +108,7 @@ class WorkspaceDeployer:
     config: FabdepConfig = field(init=False, repr=False)
     _paramfile: ParameterFile = field(init=False, repr=False)
     _detector: ParameterDetector | None = field(default=None, init=False, repr=False)
-    # Item scope a deploy() call resolved to (set by --pr / --include-items).
+    # The items the last deploy() published, as '<displayName>.<type>'.
     deployed_items: list[str] = field(default_factory=list, init=False, repr=False)
     _skipped_lakehouse_count: int = field(default=0, init=False, repr=False)
     _manual_count: int = field(default=0, init=False, repr=False)
@@ -388,6 +400,56 @@ class WorkspaceDeployer:
             )
         return matched
 
+    def resolve_scope(
+        self,
+        no_cleanup: bool = False,
+        item_types: list[str] | None = None,
+        exclude_types: list[str] | None = None,
+        include_items: list[str] | None = None,
+        pr: str | None = None,
+    ) -> DeployScope:
+        """Work out what a deploy with these options publishes (see `deploy`).
+
+        Raises:
+            RuntimeError: If `pr` is combined with `include_items`, no PR commit
+                is found, the PR touched no deployable item, or no
+                `include_items` entry names a repo item.
+        """
+        if pr:
+            if include_items:
+                raise RuntimeError(
+                    "--pr and --include-items both set the item filter. Use "
+                    "--pr to deploy what a PR touched, or --include-items to "
+                    "name items yourself — not both."
+                )
+            include_items = self._items_from_pr(pr)
+
+        if include_items:
+            self.logger.warning(
+                "Name-based item filtering is experimental. "
+                "Selective deployment may cause dependency issues. Use at your own risk."
+            )
+            self.logger.warning("Orphan cleanup disabled when using --include-items for safety.")
+            # Fail fast on a name mismatch instead of silently deploying nothing.
+            include_items = validate_include_items(
+                include_items, self._repo_dir_resolved, self.logger
+            )
+
+        types = resolve_item_scope(item_types, exclude_types, include_items, self.logger)
+        return DeployScope(
+            item_types=types,
+            include_items=include_items or None,
+            items=[
+                item
+                for item in repo_items(self._repo_dir_resolved)
+                if (types is None or item.type in types)
+                and (not include_items or item.key in include_items)
+            ],
+            # include_items + unpublish is a footgun: if names don't match,
+            # nothing publishes and orphan cleanup would wipe the workspace.
+            cleanup=not no_cleanup and not include_items,
+        )
+
     def deploy(
         self,
         no_cleanup: bool = False,
@@ -426,42 +488,22 @@ class WorkspaceDeployer:
                 `include_items`, so it cannot be combined with it.
 
         Raises:
-            RuntimeError: If `pr` is combined with `include_items`, no PR commit
-                is found, or the PR touched no deployable item.
+            RuntimeError: If the scope can't be resolved (see `resolve_scope`)
+                or a guard blocks the deploy.
         """
 
         for ws_id, name in sorted(self.source_workspaces.items(), key=lambda kv: kv[1]):
             self.logger.info(f"Source Workspace: {name} ({ws_id})")
         self.logger.info(f"Target Workspace: '{self.workspace_name}' ({self.workspace_id})")
 
-        if pr:
-            if include_items:
-                raise RuntimeError(
-                    "--pr and --include-items both set the item filter. Use "
-                    "--pr to deploy what a PR touched, or --include-items to "
-                    "name items yourself — not both."
-                )
-            include_items = self._items_from_pr(pr)
-        # Published as the resolved scope so callers (e.g. --frame) can act on
-        # what a --pr run actually selected instead of re-deriving it.
-        self.deployed_items = list(include_items or [])
-
-        if include_items:
-            append_feature_flag("enable_experimental_features")
-            append_feature_flag("enable_items_to_include")
-            self.logger.warning(
-                "Name-based item filtering is experimental. "
-                "Selective deployment may cause dependency issues. Use at your own risk."
-            )
-            self.logger.warning("Orphan cleanup disabled when using --include-items for safety.")
-            # Fail fast on a name mismatch instead of silently deploying nothing.
-            include_items = validate_include_items(
-                include_items, self._repo_dir_resolved, self.logger
-            )
-
-        item_type_in_scope = resolve_item_scope(
-            item_types, exclude_types, include_items, self.logger
+        scope = self.resolve_scope(
+            no_cleanup=no_cleanup,
+            item_types=item_types,
+            exclude_types=exclude_types,
+            include_items=include_items,
+            pr=pr,
         )
+        item_type_in_scope, include_items = scope.item_types, scope.include_items
 
         if fail_on_stale and self._detector and self._detector.unresolved_warehouse_bindings:
             files = ", ".join(
@@ -508,53 +550,33 @@ class WorkspaceDeployer:
         patch_fabric_cicd_logger()
 
         try:
-            self._deploy_items(
-                no_cleanup=no_cleanup,
-                item_types=item_type_in_scope,
-                include_items=include_items,
-            )
+            self._deploy_items(scope)
+            self.deployed_items = [item.key for item in scope.items]
             # One-line confirmation of what actually deployed — fabric-cicd's
             # "Skipping ... due to items_to_include" noise otherwise buries it.
-            # Filtered by the type scope: an item excluded via -x/--item-types
-            # stays in include_items but was never published.
             if include_items:
-                deployed = [
-                    it
-                    for it in include_items
-                    if item_type_in_scope is None or it.rsplit(".", 1)[-1] in item_type_in_scope
-                ]
-                self.logger.info(f"Deployed {len(deployed)} item(s): {', '.join(deployed)}")
+                self.logger.info(
+                    f"Deployed {len(self.deployed_items)} item(s): {', '.join(self.deployed_items)}"
+                )
             self.logger.info("Deployment complete!")
         finally:
             self._paramfile.cleanup()
 
-    def _deploy_items(
-        self,
-        no_cleanup: bool = False,
-        item_types: list[str] | None = None,
-        include_items: list[str] | None = None,
-    ) -> None:
-        """
-        Deploy items to workspace using fabric-cicd.
-
-        Args:
-            no_cleanup: Skip unpublishing orphaned items
-            item_types: Specific item types to deploy
-            include_items: Include only specific items (format: "ItemName.ItemType")
-        """
+    def _deploy_items(self, scope: DeployScope) -> None:
+        """Publish the scope's items with fabric-cicd, then clean up orphans if it says to."""
+        if scope.include_items:
+            append_feature_flag("enable_experimental_features")
+            append_feature_flag("enable_items_to_include")
         # The REST calls' credential, so fabric-cicd deploys as the same checked identity.
         target_workspace = FabricWorkspace(
             workspace_id=self.workspace_id,
             repository_directory=str(self._repo_dir_resolved),
             environment=self.environment,
-            item_type_in_scope=item_types,
+            item_type_in_scope=scope.item_types,
             token_credential=fabric_credential(),
             parameter_file_path=self._paramfile.path,
         )
 
-        _ = publish_all_items(target_workspace, items_to_include=include_items)
-
-        # include_items + unpublish is a footgun: if names don't match, nothing
-        # publishes and orphan cleanup would wipe the workspace.
-        if not no_cleanup and not include_items:
+        _ = publish_all_items(target_workspace, items_to_include=scope.include_items)
+        if scope.cleanup:
             _ = unpublish_all_orphan_items(target_workspace)

@@ -8,7 +8,6 @@ workspaces it anchors.
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -19,7 +18,10 @@ from fabric_deploy.workspace import WorkspaceDeployer
 
 from .conftest import FAKE_WORKSPACE_ID, SAMPLE_DEV_WORKSPACE_ID, SAMPLE_LAKEHOUSE_ID, make_item
 
-NOTEBOOK = "Fill Lakehouse.Notebook"  # the sample workspace's notebook
+# The sample workspace's items.
+NOTEBOOK = "Fill Lakehouse.Notebook"
+MODEL = "SQL DB.SemanticModel"
+LAKEHOUSE = "fabdep_lakehouse.Lakehouse"
 
 
 @pytest.fixture
@@ -30,22 +32,6 @@ def deployer(sample_ws, mock_fabric_api, monkeypatch) -> WorkspaceDeployer:
     """
     monkeypatch.setattr("fabric_deploy.rls._remote_roles", lambda _ws, _name: None)
     return WorkspaceDeployer(sample_ws, branch_override="MAIN")
-
-
-@pytest.fixture
-def fabric_cicd(monkeypatch) -> SimpleNamespace:
-    """fabric-cicd's deploy entry points, mocked. `workspace` is the FabricWorkspace class."""
-    fake = SimpleNamespace(
-        workspace=MagicMock(name="FabricWorkspace"),
-        publish=MagicMock(name="publish_all_items"),
-        unpublish=MagicMock(name="unpublish_all_orphan_items"),
-        flags=[],
-    )
-    monkeypatch.setattr("fabric_deploy.workspace.FabricWorkspace", fake.workspace)
-    monkeypatch.setattr("fabric_deploy.workspace.publish_all_items", fake.publish)
-    monkeypatch.setattr("fabric_deploy.workspace.unpublish_all_orphan_items", fake.unpublish)
-    monkeypatch.setattr("fabric_deploy.workspace.append_feature_flag", fake.flags.append)
-    return fake
 
 
 def test_deploy_hands_fabric_cicd_the_target_and_the_checked_credential(deployer, fabric_cicd):
@@ -124,11 +110,33 @@ class TestIncludeItems:
     def test_summary_leaves_out_items_of_excluded_types(self, deployer, fabric_cicd, caplog):
         """An item excluded with -x stays in include_items but is never published."""
         with caplog.at_level("INFO"):
-            deployer.deploy(
-                include_items=[NOTEBOOK, "SQL DB.SemanticModel"], exclude_types=["SemanticModel"]
-            )
+            deployer.deploy(include_items=[NOTEBOOK, MODEL], exclude_types=["SemanticModel"])
         summary = [r.message for r in caplog.records if r.message.startswith("Deployed ")]
         assert summary == [f"Deployed 1 item(s): {NOTEBOOK}"]
+
+
+@pytest.mark.parametrize(
+    ("options", "published"),
+    [
+        ({}, {LAKEHOUSE, NOTEBOOK, MODEL}),
+        ({"item_types": ["notebook"]}, {NOTEBOOK}),
+        ({"exclude_types": ["SemanticModel"]}, {LAKEHOUSE, NOTEBOOK}),
+        ({"include_items": [NOTEBOOK, "Ghost.Notebook"]}, {NOTEBOOK}),
+        ({"include_items": [NOTEBOOK, MODEL], "exclude_types": ["SemanticModel"]}, {NOTEBOOK}),
+        ({"item_types": ["Notebook"], "include_items": [MODEL]}, set()),
+        ({"pr": "abc1234"}, {NOTEBOOK}),
+    ],
+)
+def test_deployed_items_are_what_the_deploy_published(
+    deployer, fabric_cicd, monkeypatch, options, published
+):
+    """After -i matching, the -t/-x type scope and --pr, not the raw -i list."""
+    monkeypatch.setattr(
+        "fabric_deploy.workspace.changed_paths_in",
+        lambda _repo, _commit: [f"{NOTEBOOK}/notebook-content.py"],
+    )
+    deployer.deploy(**options)
+    assert set(deployer.deployed_items) == published
 
 
 STALE = [("nb.Notebook/notebook-content.py", "00000000-0000-0000-0000-0000000000f0", "Unknown")]
