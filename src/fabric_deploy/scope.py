@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
+from difflib import get_close_matches
 from json import loads
 from pathlib import Path
 
@@ -152,12 +153,11 @@ def resolve_item_scope(
     item_types: list[str] | None,
     exclude_types: list[str] | None,
     include_items: list[str] | None,
-    logger: logging.Logger,
 ) -> list[str] | None:
     """Normalize, validate, and combine item-type filters into a single scope.
 
     Returns the list of item types that fabric-cicd should deploy, or None if
-    no scope filtering is requested. Logs warnings for unrecognized types.
+    no scope filtering is requested.
 
     Combines (in priority order):
     1. Explicit `item_types` (after canonical-case normalization).
@@ -172,18 +172,16 @@ def resolve_item_scope(
             return types
         return [canonical.get(t.lower(), t) for t in types]
 
-    def _warn_unknown(types: list[str] | None, label: str) -> None:
-        if not types:
-            return
-        invalid = [t for t in types if t not in ACCEPTED_ITEM_TYPES]
-        if invalid:
-            logger.warning(f"Unrecognized item types in {label}: {', '.join(invalid)}")
-            logger.warning(f"Supported types: {', '.join(ACCEPTED_ITEM_TYPES)}")
-
     item_types = _normalize(item_types)
     exclude_types = _normalize(exclude_types)
-    _warn_unknown(item_types, "filter")
-    _warn_unknown(exclude_types, "exclusion filter")
+    for item_type in [*(item_types or []), *(exclude_types or [])]:
+        if item_type not in ACCEPTED_ITEM_TYPES:
+            hint = get_close_matches(item_type, ACCEPTED_ITEM_TYPES, n=1)
+            raise ValueError(
+                f"Unknown item type '{item_type}'"
+                + (f" (did you mean '{hint[0]}'?)" if hint else "")
+                + f". fabric-cicd deploys: {', '.join(ACCEPTED_ITEM_TYPES)}"
+            )
 
     if item_types:
         return item_types

@@ -91,13 +91,15 @@ def test_find_in_item_files_reads_item_files_only(tmp_path: Path):
     ],
 )
 def test_resolve_item_scope(item_types, exclude_types, include_items, expected):
-    assert resolve_item_scope(item_types, exclude_types, include_items, LOG) == expected
+    assert resolve_item_scope(item_types, exclude_types, include_items) == expected
 
 
-def test_resolve_item_scope_warns_about_unknown_types(caplog):
-    with caplog.at_level("WARNING"):
-        resolve_item_scope(["Notebook", "BogusType"], None, None, LOG)
-    assert "BogusType" in caplog.text
+@pytest.mark.parametrize(
+    "item_types, exclude_types", [(["Notebook", "Notebok"], None), (None, ["Notebok"])]
+)
+def test_resolve_item_scope_rejects_unknown_types(item_types, exclude_types):
+    with pytest.raises(ValueError, match="Unknown item type 'Notebok'.*did you mean 'Notebook'"):
+        resolve_item_scope(item_types, exclude_types, None)
 
 
 class TestValidateIncludeItems:

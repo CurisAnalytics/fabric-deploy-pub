@@ -492,7 +492,7 @@ class WorkspaceDeployer:
                 include_items, self._repo_dir_resolved, self.logger
             )
 
-        types = resolve_item_scope(item_types, exclude_types, include_items, self.logger)
+        types = resolve_item_scope(item_types, exclude_types, include_items)
         return DeployScope(
             item_types=types,
             include_items=include_items or None,
