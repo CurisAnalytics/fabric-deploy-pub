@@ -103,42 +103,13 @@ class TestNotebookExtraction:
         assert d.parameters[WORKSPACE_ID].description == "Workspace ID"
         assert d.parameters[LAKEHOUSE_ID].description == "Lakehouse ID"
 
-    @pytest.mark.parametrize("prefix,ext", [("#", "py"), ("--", "sql")])
-    def test_warns_on_multiple_attached_lakehouses(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, prefix: str, ext: str
-    ):
-        """A notebook with stale attachments (dev + prod) warns — py and T-SQL."""
-        _make_lakehouse(tmp_path, "lh")
-        stale_id = "99999999-9999-9999-9999-999999999999"
-        p = prefix
-        _make_notebook(
-            tmp_path,
-            "n1",
-            f"{p} META {{\n"
-            f'{p} META   "dependencies": {{\n'
-            f'{p} META     "lakehouse": {{\n'
-            f'{p} META       "default_lakehouse": "{LAKEHOUSE_ID}",\n'
-            f'{p} META       "known_lakehouses": [\n'
-            f'{p} META         {{"id": "{LAKEHOUSE_ID}"}},\n'
-            f'{p} META         {{"id": "{stale_id}"}}\n'
-            f"{p} META       ]\n"
-            f"{p} META     }}\n"
-            f"{p} META   }}\n"
-            f"{p} META }}\n",
-            ext=ext,
-        )
-        d = ParameterDetector(tmp_path)
-        with caplog.at_level("WARNING", logger="fabric_deploy.detect"):
-            d.detect_all()
-
-        assert any(
-            "2 lakehouses attached" in r.message and stale_id in r.message for r in caplog.records
-        ), [r.message for r in caplog.records]
-
-    def test_no_warning_on_clean_single_attachment(
+    def test_several_attached_lakehouses_are_not_flagged(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ):
+        """A notebook may legitimately attach more than one lakehouse besides
+        its default; that is not a stale attachment."""
         _make_lakehouse(tmp_path, "lh")
+        _make_lakehouse(tmp_path, "other")
         _make_notebook(
             tmp_path,
             "n1",
@@ -147,7 +118,8 @@ class TestNotebookExtraction:
             '# META     "lakehouse": {\n'
             f'# META       "default_lakehouse": "{LAKEHOUSE_ID}",\n'
             '# META       "known_lakehouses": [\n'
-            f'# META         {{"id": "{LAKEHOUSE_ID}"}}\n'
+            f'# META         {{"id": "{LAKEHOUSE_ID}"}},\n'
+            f'# META         {{"id": "{ENDPOINT_ID}"}}\n'
             "# META       ]\n"
             "# META     }\n"
             "# META   }\n"

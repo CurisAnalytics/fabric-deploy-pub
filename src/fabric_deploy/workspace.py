@@ -530,9 +530,9 @@ class WorkspaceDeployer:
             item_types: Specific item types to deploy
             exclude_types: Item types to exclude from deployment
             include_items: Include only specific items (format: "ItemName.ItemType")
-            fail_on_stale: Raise instead of warning when a notebook has multiple
-                lakehouses attached, or a warehouse attachment that can't be
-                remapped to the target workspace. Intended for CI / autonomous
+            fail_on_stale: Raise instead of warning when a notebook has a
+                warehouse attachment that can't be remapped to the target
+                workspace. Intended for CI / autonomous
                 agent loops where the inline warning would get buried in logs.
             allow_rls_change: Permit a deploy to change a model's live row-level
                 security. By default, if the repo carries RLS and the target's
@@ -606,14 +606,6 @@ class WorkspaceDeployer:
         item_type_in_scope = resolve_item_scope(
             item_types, exclude_types, include_items, self.logger
         )
-
-        if fail_on_stale and self._detector and self._detector.stale_attachments:
-            files = ", ".join(f for f, _ in self._detector.stale_attachments)
-            raise RuntimeError(
-                f"--fail-on-stale: {len(self._detector.stale_attachments)} "
-                f"notebook(s) have multiple lakehouses attached: {files}. "
-                f"See warnings above for stale IDs."
-            )
 
         if fail_on_stale and self._detector and self._detector.unresolved_warehouse_bindings:
             files = ", ".join(

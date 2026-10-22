@@ -143,53 +143,34 @@ class TestFeatureFlags:
 
 class TestFailOnStale:
     """Pin the --fail-on-stale contract: deploy raises before publish_all_items
-    is called when the detector has recorded stale lakehouse attachments."""
+    is called when a notebook warehouse attachment can't be remapped."""
 
-    def test_raises_before_publishing_when_stale_attachments_present(self, deployer):
-        deployer._detector.stale_attachments = [
-            ("foo.Notebook/notebook-content.py", ["99999999-9999-9999-9999-999999999999"])
-        ]
+    UNRESOLVED = [
+        ("foo.Notebook/notebook-content.py", "99999999-9999-9999-9999-999999999999", "Unknown")
+    ]
 
+    @pytest.mark.parametrize(
+        ("unresolved", "fail_on_stale", "blocks"),
+        [(UNRESOLVED, True, True), ([], True, False), (UNRESOLVED, False, False)],
+    )
+    def test_blocks_only_unresolved_bindings_with_the_flag(
+        self, deployer, unresolved, fail_on_stale, blocks
+    ):
+        deployer._detector.unresolved_warehouse_bindings = list(unresolved)
         with (
             patch("fabric_deploy.workspace.FabricWorkspace") as fake_fw,
             patch("fabric_deploy.workspace.publish_all_items") as fake_publish,
             patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
             patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
         ):
-            with pytest.raises(RuntimeError, match="fail-on-stale"):
-                deployer.deploy(item_types=["Notebook"], fail_on_stale=True)
+            if blocks:
+                with pytest.raises(RuntimeError, match="fail-on-stale"):
+                    deployer.deploy(item_types=["Notebook"], fail_on_stale=fail_on_stale)
+            else:
+                deployer.deploy(item_types=["Notebook"], fail_on_stale=fail_on_stale)
 
-        assert not fake_fw.called, "FabricWorkspace should not be constructed"
-        assert not fake_publish.called, "publish_all_items should not be called"
-
-    def test_deploy_proceeds_when_no_stale_attachments(self, deployer):
-        deployer._detector.stale_attachments = []
-
-        with (
-            patch("fabric_deploy.workspace.FabricWorkspace"),
-            patch("fabric_deploy.workspace.publish_all_items") as fake_publish,
-            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
-            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
-        ):
-            deployer.deploy(item_types=["Notebook"], fail_on_stale=True)
-
-        assert fake_publish.called
-
-    def test_warning_only_by_default(self, deployer):
-        """Without the flag, stale attachments don't block deploy."""
-        deployer._detector.stale_attachments = [
-            ("foo.Notebook/notebook-content.py", ["99999999-9999-9999-9999-999999999999"])
-        ]
-
-        with (
-            patch("fabric_deploy.workspace.FabricWorkspace"),
-            patch("fabric_deploy.workspace.publish_all_items") as fake_publish,
-            patch("fabric_deploy.workspace.unpublish_all_orphan_items"),
-            patch("fabric_deploy.workspace.patch_fabric_cicd_logger"),
-        ):
-            deployer.deploy(item_types=["Notebook"])  # fail_on_stale defaults to False
-
-        assert fake_publish.called
+        assert fake_fw.called is not blocks
+        assert fake_publish.called is not blocks
 
 
 class TestUdfBindingGuard:

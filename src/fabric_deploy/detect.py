@@ -219,13 +219,9 @@ class ParameterDetector:
         self._sqldatabase_names: list[str] = []
         self._warehouse_names: list[str] = []
         self._mirroreddatabase_names: list[str] = []
-        # (source_file, [stale_ids]) for each notebook with >1 known_lakehouse.
-        # Populated alongside the inline warning so the caller (e.g. deploy
-        # with --fail-on-stale) can promote it to a fatal error.
-        self.stale_attachments: list[tuple[str, list[str]]] = []
         # (source_file, guid, type) for each notebook warehouse attachment
         # that has no replacement mapping — the source-workspace GUID would
-        # deploy verbatim. Same promote-to-fatal contract as stale_attachments.
+        # deploy verbatim. Deploy with --fail-on-stale promotes it to an error.
         self.unresolved_warehouse_bindings: list[tuple[str, str, str]] = []
         # Workspace ids this repo's own items were exported from (legacy
         # notebook attachments, semantic-model OneLake URLs, bound UDF buttons,
@@ -273,7 +269,6 @@ class ParameterDetector:
     def detect_all(self):
         "Detect all parameters from workspace files."
         self.parameters = {}
-        self.stale_attachments = []
         self.unresolved_warehouse_bindings = []
         self.udf_bindings = []
         self.udf_skipped = []
@@ -581,7 +576,6 @@ class ParameterDetector:
             self.auto_bound_notebooks.append(str(file_path.parent.relative_to(self.repo_dir)))
 
         self._extract_warehouse_attachments(source_file, content)
-        self._warn_on_stale_lakehouse_attachments(source_file, content)
 
     def _extract_warehouse_attachments(self, source_file: str, content: str) -> None:
         """Detect `dependencies.warehouse` bindings from notebook metadata.
@@ -635,35 +629,6 @@ class ParameterDetector:
                         f"Add the matching item to the repo or a manual_parameters "
                         f"entry in fabdep.yml."
                     )
-
-    def _warn_on_stale_lakehouse_attachments(self, source_file: str, content: str) -> None:
-        """Warn when a notebook has multiple lakehouses attached.
-
-        Fabric retains every lakehouse a notebook has ever been attached to
-        in `known_lakehouses`, so switching defaults (e.g. dev → prod) leaves
-        the prior attachment behind. Deploying that file rewrites IDs by
-        regex but doesn't drop the extra entry — the target workspace ends up
-        with a cross-workspace lakehouse reference.
-        """
-        for block in _iter_meta_blocks(content):
-            try:
-                data = json.loads(block)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(data, dict):
-                continue
-            lakehouse_meta = data.get("dependencies", {}).get("lakehouse", {})
-            known = lakehouse_meta.get("known_lakehouses", [])
-            if len(known) <= 1:
-                continue
-            default_lh = lakehouse_meta.get("default_lakehouse")
-            stale = [k.get("id") for k in known if k.get("id") != default_lh]
-            self.stale_attachments.append((source_file, stale))
-            self.logger.warning(
-                f"{source_file}: {len(known)} lakehouses attached "
-                f"(default={default_lh}, stale={stale}). "
-                f"Detach extras in the Fabric UI and re-export before deploying."
-            )
 
     def _extract_from_semantic_model(self, file_path: Path, content: str) -> None:
         """Extract SQL connection strings and endpoint IDs from semantic models."""
