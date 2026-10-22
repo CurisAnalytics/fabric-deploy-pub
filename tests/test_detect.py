@@ -618,12 +618,14 @@ class TestDynamicVariable:
                 "$items.MirroredDatabase.mdb.$sqlendpointid",
             ),
             (["mdb.MirroredDatabase"], Kind.LAKEHOUSE, ""),
-            # ...unless the repo has a lakehouse too.
+            # With a lakehouse too, either answers for the workspace's host...
             (
                 ["lh.Lakehouse", "mdb.MirroredDatabase"],
                 Kind.SQL_ENDPOINT_HOST,
                 "$items.Lakehouse.lh.$sqlendpoint",
             ),
+            # ...but an endpoint id could be either one's.
+            (["lh.Lakehouse", "mdb.MirroredDatabase"], Kind.SQL_ENDPOINT_ID, ""),
         ],
     )
     def test_kind_maps_to_dynamic_variable(
@@ -635,6 +637,17 @@ class TestDynamicVariable:
         d = ParameterDetector(tmp_path)
         d._index_items()
         assert d._dynamic(kind, "find-value") == expected
+
+    def test_name_shared_by_items_of_two_types_is_not_bound(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        make_item(tmp_path, "sales", "Lakehouse")
+        make_item(tmp_path, "sales", "MirroredDatabase")
+        d = ParameterDetector(tmp_path)
+        d._index_items()
+        with caplog.at_level("WARNING", logger="fabric_deploy.detect"):
+            assert d._dynamic(Kind.SQL_ENDPOINT_ID, "find-value", name="sales") == ""
+        assert "sales.Lakehouse, sales.MirroredDatabase" in caplog.text
 
 
 # --- warehouse attachments (dependencies.warehouse) ------------------------

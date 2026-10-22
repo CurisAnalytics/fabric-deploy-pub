@@ -43,10 +43,10 @@ class Kind(StrEnum):
     UDF = "User Data Function Item ID"
 
 
-# Kind -> (repo item types that can answer for it, in preference order; the
-# fabric-cicd attribute; whether it must be one specific item). A host is the
-# workspace's SQL server, shared by every endpoint in the workspace, so any
-# matching item resolves it.
+# Kind -> (repo item types that can answer for it; the fabric-cicd attribute;
+# whether it must be one specific item). A host is the workspace's SQL server,
+# shared by every endpoint in the workspace, so any matching item resolves it,
+# the first type listed first.
 ITEM_RULES: dict[Kind, tuple[tuple[str, ...], str, bool]] = {
     Kind.LAKEHOUSE: (("Lakehouse",), "$id", True),
     Kind.SQL_ENDPOINT_HOST: (("Lakehouse", "MirroredDatabase"), "$sqlendpoint", False),
@@ -393,31 +393,34 @@ class ParameterDetector:
         """The fabric-cicd dynamic variable a `kind` reference maps to, or ""
         when no repo item answers for it.
 
-        A named reference binds to the repo item of that name, or to nothing
-        (it lives outside the repo). An unnamed one that needs one specific
-        item binds to the repo's only candidate; with several, guessing could
-        rewire it to the wrong item, so it is left unchanged and warned about.
+        The candidates are the repo's items of every type that can answer for
+        `kind`, of that name if the reference names one (no candidate: it
+        lives outside the repo). A reference that needs one specific item
+        binds only to a sole candidate; with several, guessing could rewire it
+        to the wrong item, so it is left unchanged and warned about.
         """
         if kind is Kind.WORKSPACE:
             return "$workspace.$id"
         if kind not in ITEM_RULES:
             return ""
         item_types, attr, specific = ITEM_RULES[kind]
-        if name:
-            item_type = next((t for t in item_types if name in self._names[t]), None)
-            return f"$items.{item_type}.{name}.{attr}" if item_type else ""
-        item_type = next((t for t in item_types if self._names[t]), None)
-        if item_type is None:
+        candidates = [
+            (item_type, item_name)
+            for item_type in item_types
+            for item_name in self._names[item_type]
+            if not name or item_name == name
+        ]
+        if not candidates:
             return ""
-        names = self._names[item_type]
-        if len(names) > 1 and specific:
+        if len(candidates) > 1 and specific:
+            listed = ", ".join(f"{item_name}.{item_type}" for item_type, item_name in candidates)
             self.logger.warning(
-                f"{kind} {find_value}: nothing says which of the repo's {item_type} items "
-                f"({', '.join(names)}) it refers to, so it deploys unchanged. Map it with a "
-                f"manual_parameters entry in fabdep.yml."
+                f"{kind} {find_value}: it could be any of the repo's items {listed}, so it "
+                f"deploys unchanged. Map it with a manual_parameters entry in fabdep.yml."
             )
             return ""
-        return f"$items.{item_type}.{names[0]}.{attr}"
+        item_type, item_name = candidates[0]
+        return f"$items.{item_type}.{item_name}.{attr}"
 
     def _extract_from_notebook(self, file_path: Path, content: str) -> None:
         """Extract the lakehouse and warehouse attachments from notebook metadata."""
