@@ -47,8 +47,6 @@ from .scope import (
     validate_include_items,
 )
 
-# Sentinel for a bare `--pr`: search back from HEAD for the PR commit, rather
-# than treating a specific commit-ish as the PR.
 # `--pr` with no commit: search back from HEAD for the pull-request commit. Not a
 # valid git ref, so an explicit `--pr HEAD` still means HEAD's own changes.
 PR_LATEST = "<latest pull request>"
@@ -333,7 +331,7 @@ class WorkspaceDeployer:
         # workspace (no fabric-cicd dynamic exists). Manual overrides above
         # win; same-workspace deploys skip replacement entirely.
         if not detector.should_skip_replacement(self.workspace_id):
-            target = self.workspace_id or None  # None: a dry run's workspace-to-be
+            target = self.workspace_id or None  # None: a workspace the deploy is to create
             _ = resolve_warehouse_endpoint_params(detector, target, self.logger)
             # SQL database hostnames also resolve to literals: fabric-cicd's
             # $sqlendpoint dynamic returns serverFqdn with a ",1433" port

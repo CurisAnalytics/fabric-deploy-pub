@@ -302,8 +302,8 @@ def resolve_sqldatabase_hostname_params(
     return len(pending)
 
 
-# Why a dry run that would create the workspace resolves nothing against it:
-# the deploy itself would find the new workspace empty.
+# Why nothing resolves against a workspace the deploy is to create: detection
+# runs before deploy() creates it, and a new workspace holds no items anyway.
 _NO_WORKSPACE = "the target workspace does not exist yet"
 
 
