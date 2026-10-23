@@ -387,13 +387,15 @@ class Rule:
 class ParameterFile:
     """The parameter file fabric-cicd reads for one deploy.
 
-    It is the repo's own parameter.yml with the detected rules added, written
+    It is the repo's own parameter.yml, with the templates it extends merged
+    in as fabric-cicd would merge them, and the detected rules added, written
     to a temporary directory: the repo is never modified. The user's entries
-    win. A detected rule is dropped when the user's file (or a template it
-    extends) has an entry for its find_value that applies to every file in
-    this environment; the user's find_replace entries come first, so where a
-    narrower entry of theirs applies, it applies first. With nothing to add, `path` stays None
-    and fabric-cicd reads the repo's parameter.yml, if any, itself.
+    win. A detected rule is dropped when the user's file or a template has an
+    entry for its find_value that applies to every file in this environment;
+    the user's and the templates' find_replace entries come first, so where a
+    narrower entry of theirs applies, it applies first. With nothing to add,
+    `path` stays None and fabric-cicd reads the repo's parameter.yml, if any,
+    itself.
     """
 
     def __init__(self, repo_dir: Path) -> None:
@@ -417,6 +419,11 @@ class ParameterFile:
         Returns:
             The document to hand fabric-cicd, or None when it should read the
             repo's parameter.yml (if any) as it is.
+
+        Raises:
+            ValueError: fabric-cicd would reject the repo's parameter.yml or a
+                template it extends (see `_load_parameter_file`), or a template
+                is missing or extends others itself.
         """
         summary = []
         if skipped_lakehouse_count:
@@ -448,14 +455,11 @@ class ParameterFile:
 
         user_file = self.repo_dir / "parameter.yml"
         user: dict[str, Any] = _load_parameter_file(user_file) if user_file.is_file() else {}
-        templates = [(user_file.parent / str(t)).resolve() for t in user.get("extend") or []]
-        extended: list[tuple[Path, dict[str, Any]]] = [
-            (t, _load_parameter_file(t)) for t in templates if t.is_file()
-        ]
+        templates = _templates(user_file, user)
+        merged = _merge_templates(user, templates)
         covered = {
             entry.get("find_value")
-            for document in [user, *(d for _, d in extended)]
-            for entry in _entries(document)
+            for entry in _entries(merged)
             if _applies_everywhere(entry, environment)
         }
         added = [rule for rule in rules if rule["find_value"] not in covered]
@@ -472,22 +476,16 @@ class ParameterFile:
             origin = "fabdep.yml" if "fabdep.yml" in param.source_files else "detected"
             return Rule(entry, origin, str(param.description))
 
-        # fabric-cicd appends a template's entries to the file's own.
+        # The templates are inlined: fabric-cicd would append their entries
+        # after the detected rules, where a narrower one could never apply.
         self.rules = [
             *(Rule(e, "parameter.yml") for e in _entries(user)),
+            *(Rule(e, self._relative(t)) for t, d in templates for e in _entries(d)),
             *(detected(entry) for entry in added),
-            *(Rule(e, self._relative(t)) for t, d in extended for e in _entries(d)),
         ]
         if not added:
             return None
-        document: dict[str, Any] = {
-            **user,
-            "find_replace": [*(user.get("find_replace") or []), *added],
-        }
-        if templates:
-            # fabric-cicd resolves templates relative to the parameter file.
-            document["extend"] = [str(t) for t in templates]
-        return document
+        return {**merged, "find_replace": [*(merged.get("find_replace") or []), *added]}
 
     def write(
         self,
@@ -525,6 +523,57 @@ class ParameterFile:
             if path.is_relative_to(self.repo_dir)
             else str(path)
         )
+
+
+def _templates(parameter_file: Path, document: dict[str, Any]) -> list[tuple[Path, dict[str, Any]]]:
+    """The templates `document`, read from `parameter_file`, extends, each with
+    its content: resolved relative to the file, each once, as fabric-cicd does.
+
+    Raises:
+        ValueError: A template is missing, extends others itself (fabric-cicd
+            reads one level), or fabric-cicd would reject it.
+    """
+    templates: list[tuple[Path, dict[str, Any]]] = []
+    for name in cast(list[object], document.get("extend") or []):
+        path = (parameter_file.parent / str(name)).resolve()
+        if any(path == seen for seen, _ in templates):
+            continue
+        if not path.is_file():
+            raise ValueError(f"{parameter_file}: the template '{name}' in extend doesn't exist")
+        template = _load_parameter_file(path)
+        if "extend" in template:
+            raise ValueError(
+                f"{path}: a template can't itself extend other files (fabric-cicd reads one level)"
+            )
+        templates.append((path, template))
+    return templates
+
+
+def _merge_templates(
+    document: dict[str, Any], templates: list[tuple[Path, dict[str, Any]]]
+) -> dict[str, Any]:
+    """`document` with `templates` merged in, in order, and without its `extend`."""
+    merged = {key: value for key, value in document.items() if key != "extend"}
+    for _, template in templates:
+        merged = _merge(merged, template)
+    return merged
+
+
+def _merge(base: dict[str, Any], template: dict[str, Any]) -> dict[str, Any]:
+    """`template` merged into `base` as fabric-cicd merges a template: lists
+    concatenate, mappings merge, and any other clash becomes the list of both
+    values, left to fabric-cicd's validation."""
+    result = dict(base)
+    for key, value in template.items():
+        if key not in result:
+            result[key] = value
+        elif isinstance(result[key], list) and isinstance(value, list):
+            result[key] = [*cast(list[object], result[key]), *cast(list[object], value)]
+        elif isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _merge(cast(dict[str, Any], result[key]), cast(dict[str, Any], value))
+        else:
+            result[key] = [result[key], value]
+    return result
 
 
 def _applies_everywhere(entry: dict[str, Any], environment: str) -> bool:

@@ -459,6 +459,29 @@ class TestParameterFile:
                 "t.yml.*duplicate key",
                 id="duplicate-key-in-template",
             ),
+            pytest.param(
+                {
+                    "parameter.yml": 'extend:\n  - "t.yml"\n',
+                    "t.yml": 'find_replace:\n  - find_value: "x"\n    replace_value:\n'
+                    '      _ALL_: "a"\n      MAIN: "b"\n',
+                },
+                "t.yml.*_ALL_",
+                id="all-with-an-environment-in-template",
+            ),
+            pytest.param(
+                {"parameter.yml": 'extend:\n  - "missing.yml"\n'},
+                "missing.yml",
+                id="missing-template",
+            ),
+            pytest.param(
+                {
+                    "parameter.yml": 'extend:\n  - "t.yml"\n',
+                    "t.yml": 'extend:\n  - "u.yml"\n',
+                    "u.yml": "find_replace: []\n",
+                },
+                "t.yml.*extend",
+                id="nested-template",
+            ),
         ],
     )
     def test_user_file_fabric_cicd_would_reject_fails_before_publishing(
@@ -472,20 +495,52 @@ class TestParameterFile:
             self._deploy(deployer, fabric_cicd)
         fabric_cicd.publish.assert_not_called()
 
-    def test_template_paths_resolve_from_the_repo(self, deployer, fabric_cicd):
+    def test_templates_apply_like_the_users_own_entries(self, deployer, fabric_cicd):
+        """A template's entries are inlined after the file's own and ahead of the
+        detected rules, so a narrower one applies first; a template's entry that
+        applies everywhere replaces the detected rule. Other sections merge as
+        fabric-cicd merges them, and a template listed twice counts once."""
         repo = deployer._repo_dir_resolved
         (repo / "params").mkdir()
-        (repo / "params" / "ws.yml").write_text(
-            f'find_replace:\n  - find_value: "{SAMPLE_DEV_WORKSPACE_ID}"\n'
+        template = (
+            "find_replace:\n"
+            f'  - find_value: "{SAMPLE_DEV_WORKSPACE_ID}"\n'
             '    replace_value:\n      _ALL_: "from-template"\n'
+            f'  - find_value: "{SAMPLE_LAKEHOUSE_ID}"\n'
+            '    item_type: "Notebook"\n'
+            '    replace_value:\n      MAIN: "template-lakehouse"\n'
+            "key_value_replace:\n"
+            '  - find_key: "$.properties.t"\n'
+            '    replace_value:\n      MAIN: "t"\n'
         )
-        (repo / "parameter.yml").write_text('extend:\n  - "params/ws.yml"\n')
+        user_file = (
+            'extend:\n  - "params/ws.yml"\n  - "params/ws.yml"\n'
+            "find_replace:\n"
+            '  - find_value: "user-only"\n'
+            '    replace_value:\n      _ALL_: "x"\n'
+            "key_value_replace:\n"
+            '  - find_key: "$.properties.x"\n'
+            '    replace_value:\n      MAIN: "y"\n'
+        )
+        (repo / "params" / "ws.yml").write_text(template)
+        (repo / "parameter.yml").write_text(user_file)
 
         document = self._deploy(deployer, fabric_cicd)["document"]
 
-        assert isinstance(document, dict)
-        assert document["extend"] == [str(repo / "params" / "ws.yml")]
-        assert [e["find_value"] for e in document["find_replace"]] == [SAMPLE_LAKEHOUSE_ID]
+        user, inlined = yaml.safe_load(user_file), yaml.safe_load(template)
+        assert document == {
+            "find_replace": [
+                *user["find_replace"],
+                *inlined["find_replace"],
+                {
+                    "find_value": SAMPLE_LAKEHOUSE_ID,
+                    "replace_value": {"MAIN": "$items.Lakehouse.fabdep_lakehouse.$id"},
+                },
+            ],
+            "key_value_replace": [*user["key_value_replace"], *inlined["key_value_replace"]],
+        }
+        origins = [rule.origin for rule in deployer._paramfile.rules]
+        assert origins == ["parameter.yml", "params/ws.yml", "params/ws.yml", "detected"]
 
     def test_malformed_user_file_fails_the_deploy(self, deployer, fabric_cicd):
         (deployer._repo_dir_resolved / "parameter.yml").write_text('extend: "one.yml"\n')

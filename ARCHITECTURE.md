@@ -91,15 +91,18 @@ results and exits; the other modules log and raise.
    warehouse attachments), report buttons whose User Data Function can't be rebound
    (`--allow-unbound-udf`), and every in-scope semantic model's live RLS roles
    (`--allow-rls-change`).
-8. **Parameter file.** The repo's `parameter.yml`, if any, plus the detected rules, written
-   to a temporary directory and passed as `parameter_file_path`. A detected rule is left out
-   when the file, or a template it `extend`s, has an entry for its `find_value` that rewrites
-   it everywhere in this environment: a value for the environment and no `item_type`,
-   `item_name` or `file_path` filter. The file's own entries come first; fabric-cicd appends
-   a template's after the detected rules. The file and its templates are read with
-   fabric-cicd's rules (no key twice, ignoring case; `_ALL_` only as the sole key). With
-   nothing to add, fabric-cicd reads the repo's file itself. When every detected workspace
-   id already is the target's, only `manual_parameters` rules are added.
+8. **Parameter file.** The repo's `parameter.yml`, if any, with the templates it `extend`s
+   merged in as fabric-cicd merges them (so the written file has no `extend`), plus the
+   detected rules, written to a temporary directory and passed as `parameter_file_path`. A
+   detected rule is left out when the file or a template has an entry for its `find_value`
+   that rewrites it everywhere in this environment: a value for the environment and no
+   `item_type`, `item_name` or `file_path` filter. The file's own entries come first, then
+   its templates', then the detected rules, so a narrower entry of the user's applies
+   first. The file and its templates are read with fabric-cicd's rules (no key twice,
+   ignoring case; `_ALL_` only as the sole key); a missing template, or one that extends
+   others, is an error. With nothing to add, fabric-cicd reads the repo's file itself.
+   When every detected workspace id already is the target's, only `manual_parameters`
+   rules are added.
 9. **Workspace creation** (`-N`, `create: true`), now that the options, the guards and the
    parameter file have passed: a typo or a blocking guard leaves no empty workspace.
 10. **Publish.** `FabricWorkspace(...)` with the target id, environment, type scope,
@@ -203,6 +206,7 @@ fabdep relies on `FabricWorkspace`, `publish_all_items`, `unpublish_all_orphan_i
 `append_feature_flag`, `constants.ACCEPTED_ITEM_TYPES`, the API root constants, the constants
 `plan` uses to order items and to tell which orphans cleanup leaves
 (`SERIAL_ITEM_PUBLISH_ORDER`, `UNPUBLISH_FLAG_MAPPING`, `FEATURE_FLAG`), the semantics of
-`parameter.yml` (dynamic variables, `_ALL_`, `extend`) and fabric-cicd's logger. That is
+`parameter.yml` (dynamic variables, `_ALL_`, how `extend` merges templates, which fabdep
+does itself) and fabric-cicd's logger. That is
 why `pyproject.toml` caps fabric-cicd below its next minor version: raise the cap only after
 the test suite passes against the new release.

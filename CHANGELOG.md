@@ -15,9 +15,10 @@ Releases before the first public one are summarized in a few lines each.
 - `fabdep.yml` is required (no workspace name guessed from the folder). `capacity_id` must be
   a GUID, and is needed to create a workspace when several capacities are active.
 - fabric-cicd's environment is the branch name (or its `environments:` entry's), not `fabdep`.
-  The repo's `parameter.yml` now applies: its entry for a `find_value` replaces the detected
-  rule if it has a value for the environment and no item or file filter, else both apply,
-  `parameter.yml`'s first.
+  The repo's `parameter.yml` and the templates it `extend`s now apply: their entry for a
+  `find_value` replaces the detected rule if it has a value for the environment and no item
+  or file filter, else both apply, theirs first. A missing template, or one that extends
+  others, is an error.
 - `detect --save` keys replacements by `_ALL_` instead of `prod`.
 - Malformed `manual_parameters` entries fail the deploy. A `replace_value` mapping is read by
   environment, and `_ALL_` must be its only key, as fabric-cicd requires.

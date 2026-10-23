@@ -172,14 +172,14 @@ manual_parameters:
   be a list. `replace_value` is one value, or one per environment, as above (an environment
   it doesn't list keeps the detected replacement, if any); `_ALL_` covers every environment
   and must then be the only key.
-- **Your `parameter.yml`.** A `parameter.yml` in the workspace folder is merged with the
-  detected rules; its other sections pass through. Its `find_replace` entry for a
-  `find_value` (or an `extend`ed template's) replaces the detected rule only if it has a
-  value for the environment and no `item_type`, `item_name` or `file_path` filter.
-  Otherwise both apply: the file's own entries first, a template's after the detected rules
-  (fabric-cicd appends them). A key given twice (ignoring case), or `_ALL_` beside other
-  keys, is an error, as in fabric-cicd. The merged file is written to a temporary
-  directory; fabdep never modifies the repo.
+- **Your `parameter.yml`.** A `parameter.yml` in the workspace folder, with the templates
+  it `extend`s, is merged with the detected rules; its other sections pass through. Its
+  `find_replace` entry for a `find_value` (or a template's) replaces the detected rule only
+  if it has a value for the environment and no `item_type`, `item_name` or `file_path`
+  filter. Otherwise both apply, the file's and its templates' entries first. A key given
+  twice (ignoring case), `_ALL_` beside other keys, a missing template and a template that
+  extends others are errors. The merged file is written to a temporary directory; fabdep
+  never modifies the repo.
 - **Validation.** Unknown top-level keys warn; unknown keys in an `environments` or
   `manual_parameters` entry fail. For editor checks, run
   `fabdep schema -o fabdep.schema.json` and start fabdep.yml with
