@@ -124,7 +124,7 @@
           ]
         },
         "replace_value": {
-          "description": "The replacement: one value, or a mapping of fabric-cicd environment names to values. _ALL_ applies to every environment and must then be the only key.",
+          "description": "The replacement: one value, or a mapping of fabric-cicd environment names (case-sensitive) to values. _ALL_ applies to every environment and must then be the only key.",
           "anyOf": [
             { "$ref": "#/$defs/text" },
             {

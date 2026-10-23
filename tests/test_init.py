@@ -123,6 +123,22 @@ class TestStarter:
         (tmp_path / "fabdep.yml").write_text(text, encoding="utf-8")
         assert _read(tmp_path, "main").workspace_name == "Contoso Sales"
 
+    def test_manual_parameters_keys_are_the_examples_environments(self, tmp_path: Path):
+        """replace_value keys are looked up by exact environment name, so the example
+        keys are the environments its own `environments:` example gives main and dev."""
+        text = starter_fabdep_yml("Contoso Sales")
+        for _, example in STARTER_EXAMPLES:
+            text = text.replace("".join(f"# {line}\n" for line in example.splitlines()), example)
+        (tmp_path / "fabdep.yml").write_text(text, encoding="utf-8")
+
+        environments = {_read(tmp_path, branch).environment for branch in ("main", "dev")}
+        keyed = [
+            set(entry["replace_value"])
+            for entry in yaml.safe_load(text)["manual_parameters"]
+            if isinstance(entry["replace_value"], dict)
+        ]
+        assert keyed == [environments]
+
     def test_explains_editor_validation(self):
         text = starter_fabdep_yml("Contoso Sales")
         assert "fabdep schema -o fabdep.schema.json" in text

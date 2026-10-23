@@ -169,9 +169,9 @@ manual_parameters:
 - **`manual_parameters`** adds to detection. A detected `find_value` gets your
   `replace_value` (the `find_value` itself keeps a reference unchanged); any other becomes a
   new rule if it occurs in an item file, else it is skipped with a warning. `find_value` may
-  be a list. `replace_value` is one value, or one per environment, as above (an environment
-  it doesn't list keeps the detected replacement, if any); `_ALL_` covers every environment
-  and must then be the only key.
+  be a list. `replace_value` is one value, or one per environment, keyed by its exact
+  (case-sensitive) name as above (an environment it doesn't list keeps the detected
+  replacement, if any); `_ALL_` covers every environment and must then be the only key.
 - **Your `parameter.yml`.** A `parameter.yml` in the workspace folder, with the templates
   it `extend`s, is merged with the detected rules; its other sections pass through. Its
   `find_replace` entry for a `find_value` (or a template's) replaces the detected rule only
