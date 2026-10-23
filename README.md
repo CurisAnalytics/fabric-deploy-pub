@@ -71,8 +71,10 @@ $ fabdep
 - A way to sign in: the Azure CLI (`az login`) for the default `cli` mode, or another
   [authentication mode](#authentication).
 - The Contributor role (or higher) on each target workspace, and access to the connections
-  the items use. To rewrite the IDs of the repo's other workspaces (dev's, when deploying
-  `main`), the identity must also be able to see those workspaces; any role will do.
+  the items use. The identity needn't see the repo's other workspaces (dev's, when
+  deploying `main`): fabdep then recognizes their IDs by a notebook lakehouse or a button's
+  function named like the repo's. Seeing them (any role will do) lets fabdep rewrite their
+  IDs wherever they occur.
 - For a service principal, the Fabric tenant setting *Service principals can call Fabric
   public APIs*; for fabdep to create workspaces, also *Service principals can create
   workspaces, connections, and deployment pipelines*.
@@ -148,12 +150,14 @@ manual_parameters:
   `workspace_name_template`, names the target; templates take `{base}`, `{branch}` and
   `{BRANCH}` (the branch upper-cased).
 - **The repo's own workspaces.** IDs of the workspaces fabdep.yml can name, among those the
-  identity can see, are rewritten to the target's. IDs of other workspaces deploy
-  unchanged, with a warning, even where a notebook's lakehouse there is named like one of
-  the repo's. Only if fabdep can't list workspaces does it go by that name instead. With
-  `environments`, only the map's workspaces count, so give an entry to every branch the
-  content may come from (an empty one will do, like `dev:` above). See
-  [ARCHITECTURE.md](ARCHITECTURE.md#detection).
+  identity can see, are rewritten to the target's. IDs of the other workspaces it can see
+  deploy unchanged, with a warning, even where a notebook's lakehouse or a button's
+  function there is named like one of the repo's. A workspace it can't see (any workspace,
+  if fabdep can't list them) counts as the repo's where a notebook attaches a lakehouse
+  there named like a repo lakehouse, or a report button calls a function there that a repo
+  User Data Function declares. With `environments`, only the map's workspaces count, so
+  give an entry to every branch the content may come from (an empty one will do, like
+  `dev:` above). See [ARCHITECTURE.md](ARCHITECTURE.md#detection).
 - **Environment.** fabric-cicd's environment is the entry's `environment`, else the branch
   name. It selects the `replace_value`s of `manual_parameters` and of your `parameter.yml`,
   and Variable Library value sets.
@@ -278,8 +282,9 @@ one's verdict.
   overwrite them on purpose with `--allow-rls-change`. A model not yet in the target passes.
 - **Report buttons bound to User Data Functions** are rebound to the target's function,
   matched on the function name a repo `.UserDataFunction` item declares. If no repo item
-  declares it (the repo may have none), or more than one does, the button would still call
-  the source workspace's function, so a deploy that publishes that report is blocked;
+  declares it (the repo may have none), more than one does, or the button calls a workspace
+  the identity can see that isn't one of the repo's, the button would still call another
+  workspace's function, so a deploy that publishes that report is blocked;
   `--allow-unbound-udf` ships it as is.
 - **Notebook warehouse attachments** that can't be remapped deploy with their source IDs and
   a warning; `-F` (`--fail-on-stale`) makes that an error, for CI.

@@ -668,16 +668,43 @@ class TestSiblingWorkspaceAnchors:
         assert d._detector is not None
         assert d._detector.parameters[DEV_WORKSPACE_ID].dynamic_variable == "$workspace.$id"
 
-    def test_unlisted_workspace_of_a_notebook_lakehouse_deploys_unchanged(
+    def test_source_workspace_the_identity_cannot_see_is_placed_by_lakehouse_name(
         self, monkeypatch, sample_ws
     ):
-        """The listed workspaces are all of the repo's: the notebook's lakehouse is in
-        another one, though named like the repo's lakehouse."""
-        d, _ = _with_listing(monkeypatch, sample_ws, [_ws(QA_WORKSPACE_ID, "Fabdep Test [QA]")])
+        """A least-privilege CI identity sees only the target: the DEV workspace the
+        repo was exported from is invisible, not foreign, so the notebook's lakehouse,
+        named like the repo's, still points it at the target."""
+        d, _ = _with_listing(monkeypatch, sample_ws, [_ws(FAKE_WORKSPACE_ID, "Fabdep Test [MAIN]")])
 
+        assert d.foreign_workspace_ids == set()
+        assert d._detector is not None
+        assert d._detector.parameters[DEV_WORKSPACE_ID].dynamic_variable == "$workspace.$id"
+        assert (
+            d._detector.parameters[SAMPLE_LAKEHOUSE_ID].dynamic_variable
+            == "$items.Lakehouse.fabdep_lakehouse.$id"
+        )
+
+    def test_visible_unrelated_workspace_of_a_notebook_lakehouse_deploys_unchanged(
+        self, monkeypatch, sample_ws, caplog
+    ):
+        """A workspace the identity sees and fabdep.yml doesn't name is another
+        workspace, though its lakehouse is named like the repo's."""
+        d, _ = _with_listing(
+            monkeypatch,
+            sample_ws,
+            [
+                _ws(FAKE_WORKSPACE_ID, "Fabdep Test [MAIN]"),
+                _ws(QA_WORKSPACE_ID, "Fabdep Test [QA]"),
+                _ws(DEV_WORKSPACE_ID, "Northwind Shared"),
+            ],
+        )
+
+        assert d.foreign_workspace_ids == {DEV_WORKSPACE_ID}
         assert d._detector is not None
         assert d._detector.parameters[DEV_WORKSPACE_ID].dynamic_variable == ""
         assert d._detector.parameters[SAMPLE_LAKEHOUSE_ID].dynamic_variable == ""
+        assert [ws for _, ws in d._detector.offtarget_workspace_refs] == [DEV_WORKSPACE_ID]
+        assert f"workspace {DEV_WORKSPACE_ID} is not" in caplog.text
 
     def test_lakehouse_listing_failure_warns_and_continues(self, monkeypatch, sample_ws, caplog):
         d, _ = _with_listing(

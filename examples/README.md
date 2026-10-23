@@ -41,7 +41,9 @@ submodule that isn't public).
    workspaces, connections, and deployment pipelines*.
 3. **The Contributor role (or higher) on each workspace** the pipeline deploys to,
    and access to the connections the repository's items use (`fabdep detect` lists
-   them).
+   them). The service principal needn't see the workspace the content was exported from
+   (dev, for a deploy to `main`): fabdep then recognizes its IDs by the repo's lakehouse
+   and function names. Any role on it lets fabdep rewrite its IDs wherever they occur.
 4. **A `tenant:` pin in fabdep.yml**: the tenant ID (`az account show --query tenantId
    --output tsv`). fabdep then refuses a token from any other tenant, so a pipeline
    signed in to the wrong tenant fails before it calls an API. Add

@@ -70,9 +70,11 @@ results and exits; the other modules log and raise.
 3. **Target.** The workspace is looked up by name. With `-N` it must not exist yet (else an
    error); with `create: true` it may be missing. A workspace to create only gets its
    capacity here (`capacity_id`, else the only active one); step 9 creates it.
-4. **Anchors.** Every visible workspace whose name `fabdep.yml` could produce is a sibling.
-   For each sibling an item file mentions, its lakehouses are listed. If the workspaces
-   can't be listed, detection falls back to lakehouse names (see below), with a warning.
+4. **Anchors.** Every visible workspace whose name `fabdep.yml` could produce is a sibling;
+   every other visible workspace is foreign. For each sibling an item file mentions, its
+   lakehouses are listed. A workspace the identity can't see is neither, and detection
+   places it by lakehouse names (see below); if the workspaces can't be listed, so is
+   every workspace, with a warning.
 5. **Detection.** `ParameterDetector.detect_all()` (see below). Then `-L` drops the lakehouse
    rules, `manual_parameters` override or add rules for the environment, and SQL database
    hosts and endpoint ids are looked up in the target (a workspace still to be created has
@@ -135,10 +137,12 @@ fabric-cicd dynamic variable, a literal, or none).
   workspaces the content ties to the repo's own items: the one a button's function lives in,
   when a repo User Data Function declares that function, and that of a notebook's default
   lakehouse named like a repo lakehouse (and of a Direct Lake source on that lakehouse).
-  Lakehouse names count only in `detect` and when the deployer couldn't list the
-  workspaces; once it has, a lakehouse in any workspace other than the target and the
-  siblings is foreign, whatever its name. A sibling's id gets a rule only where an item file
-  contains it; its lakehouses' ids map to the repo lakehouse of the same name.
+  A workspace the deployer can see that is neither the target nor a sibling is never an
+  anchor: a lakehouse, Direct Lake source or button function there is foreign, whatever
+  it is called. Names decide for the workspaces it can't see (a CI identity may see only
+  the target), for every workspace when it couldn't list them, and in `detect`. A
+  sibling's id gets a rule only where an item file contains it; its lakehouses' ids map to
+  the repo lakehouse of the same name.
 - **The null UUID**: Fabric's "this workspace" placeholder, also written by lakehouse
   auto-binding. No rule; fabric-cicd resolves auto-bound lakehouses by logicalId.
 - **Foreign**: any other workspace, e.g. a pipeline invoking a notebook elsewhere, a Direct

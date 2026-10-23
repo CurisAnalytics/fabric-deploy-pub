@@ -153,7 +153,7 @@ class ParameterDetector:
         logger_name: str | None = None,
         source_workspace_ids: Iterable[str] | None = None,
         source_lakehouse_ids: dict[str, str] | None = None,
-        sources_complete: bool = False,
+        foreign_workspace_ids: Iterable[str] | None = None,
     ):
         """
         Initialize parameter detector.
@@ -176,19 +176,21 @@ class ParameterDetector:
                 item file still carries the physical id (an abfss literal in
                 notebook code, say) — the coverage legacy notebook metadata
                 gave for free.
-            sources_complete: `source_workspace_ids` is every one of the
-                repo's workspaces (the deployer could list them). A notebook
-                attached to a lakehouse in any other workspace then refers to
-                that workspace, even when the lakehouse shares a repo
-                lakehouse's name; without the list (offline `detect`), the
-                name decides.
+            foreign_workspace_ids: Workspaces known not to be this repo's:
+                the deployer can see them and they are neither the target nor
+                a sibling. A notebook's lakehouse, a Direct Lake source or a
+                report button's function in one of them belongs to that
+                workspace, whatever it is called, and is never anchored. A
+                workspace in neither list (one the deploying identity can't
+                see, or any in offline `detect`) is placed by the repo
+                lakehouse or function its content names.
         """
         self.repo_dir = Path(repo_dir).resolve()  # pyright: ignore[reportUnannotatedClassAttribute]
         self.parameters: dict[str, DetectedParameter] = {}
         self._detected = False
         self._seed_workspace_ids: set[str] = set(source_workspace_ids or ())
         self._seed_lakehouse_ids: dict[str, str] = dict(source_lakehouse_ids or {})
-        self._sources_complete: bool = sources_complete
+        self._foreign_workspace_ids: set[str] = set(foreign_workspace_ids or ())
         # The repo's items, shallowest first.
         self._items: list[RepoItem] = []
         # Item type -> display names of the repo's items of that type.
@@ -239,6 +241,17 @@ class ParameterDetector:
             and bool(self.UUID_PATTERN.fullmatch(value))
             and value != self.NULL_UUID
         )
+
+    def _is_foreign(self, ws_id: object) -> bool:
+        """Whether `ws_id` is a workspace known not to be this repo's (see __init__)."""
+        return isinstance(ws_id, str) and ws_id in self._foreign_workspace_ids
+
+    def _foreign_item(self, item_id: str, source_file: str) -> None:
+        """Record `item_id`, an item in a known-foreign workspace, as a
+        cross-workspace reference, also when a name mapped it earlier."""
+        param = self._add_parameter(item_id, source_file, Kind.CROSS_WORKSPACE)
+        param.description = Kind.CROSS_WORKSPACE
+        param.dynamic_variable = ""
 
     def detect_all(self):
         "Detect all parameters from workspace files."
@@ -320,8 +333,8 @@ class ParameterDetector:
             names = ", ".join(f"'{r}'" for r in sorted(reports[reason]))
             self.logger.warning(
                 f"{count} User Data Function button(s) in {names} not rebound — "
-                f"{reason}. They will deploy still pointing at the source "
-                f"workspace's function."
+                f"{reason}. They will deploy still calling another workspace's "
+                f"function."
             )
 
     def _index_items(self) -> None:
@@ -443,18 +456,18 @@ class ParameterDetector:
         An attachment to one of the repo's lakehouses also anchors its
         workspace as the one the repo was exported from. One naming no repo
         lakehouse (a shared lakehouse in another workspace, say), or one in a
-        workspace outside a complete source list, deploys unchanged. The
-        null-UUID workspace is auto-binding's form: the lakehouse is named by
-        its git logicalId, which fabric-cicd resolves before any parameter
-        applies, so neither id needs a rule.
+        known-foreign workspace, deploys unchanged. The null-UUID workspace is
+        auto-binding's form: the lakehouse is named by its git logicalId,
+        which fabric-cicd resolves before any parameter applies, so neither
+        id needs a rule.
         """
         ws_id = lakehouse.get("default_lakehouse_workspace_id")
         lh_id = lakehouse.get("default_lakehouse")
         if ws_id == self.NULL_UUID or not self._is_id(lh_id):
             return
-        if self._sources_complete and self._is_id(ws_id) and ws_id not in self._seed_workspace_ids:
+        if self._is_foreign(ws_id):
             _ = self._classify_workspace(ws_id, source_file)
-            _ = self._add_parameter(lh_id, source_file, Kind.CROSS_WORKSPACE)
+            self._foreign_item(lh_id, source_file)
             return
         name = lakehouse.get("default_lakehouse_name") or self._seed_lakehouse_ids.get(lh_id)
         if self._add_parameter(lh_id, source_file, Kind.LAKEHOUSE, name).dynamic_variable:
@@ -522,8 +535,13 @@ class ParameterDetector:
         lakehouse (a notebook attaches it, or a sibling workspace lists it by
         a repo lakehouse's name) or the workspace is a known source workspace.
         Anything else is another workspace's lakehouse, a shared one say, and
-        deploys unchanged.
+        deploys unchanged; so does a lakehouse in a known-foreign workspace,
+        also where a notebook attachment naming no workspace mapped it by name.
         """
+        if self._is_foreign(ws_id):
+            _ = self._classify_workspace(ws_id, source_file)
+            self._foreign_item(lh_id, source_file)
+            return
         name = self._seed_lakehouse_ids.get(lh_id)
         known = self.parameters.get(lh_id)
         if name in self._names["Lakehouse"] or (
@@ -563,7 +581,7 @@ class ParameterDetector:
 
         Anchors come from notebook attachments to repo lakehouses, Direct
         Lake sources on them, bound UDF buttons and the deployer-listed
-        sibling workspaces.
+        sibling workspaces; callers never pass a known-foreign workspace.
         With `source_file` the id also becomes a `$workspace.$id` rule; a
         seed without one stays an anchor only and gets a rule when
         `_register_source_ids` finds it in an item file. The order anchors
@@ -645,9 +663,10 @@ class ParameterDetector:
                 f"{source_file}: workspace {ws_id} is not a workspace this "
                 f"repo's content anchors — treating it as a cross-workspace "
                 f"reference and deploying it unchanged. If it is one of this "
-                f"repo's own workspaces, the deploying identity must be able "
-                f"to list it (fabdep detect takes --source-workspace-id); "
-                f"otherwise a manual_parameters entry in fabdep.yml can remap it."
+                f"repo's own workspaces, fabdep.yml must name it and the "
+                f"deploying identity must be able to list it (fabdep detect "
+                f"takes --source-workspace-id); otherwise a manual_parameters "
+                f"entry in fabdep.yml can remap it."
             )
         return False
 
@@ -746,10 +765,10 @@ class ParameterDetector:
 
         Conservative by design — a reference is only parameterized when every
         structural gate holds: the literal wrappers are the expected shape,
-        both GUIDs are real UUIDs, and the named function resolves to exactly
-        one `.UserDataFunction` item in the repo. Anything else is warned about
-        and left verbatim, because a wrong rebind points a live button at the
-        wrong workspace's function.
+        both GUIDs are real UUIDs, the workspace is not known-foreign, and the
+        named function resolves to exactly one `.UserDataFunction` item in the
+        repo. Anything else is warned about and left verbatim, because a wrong
+        rebind points a live button at the wrong workspace's function.
         """
         if "dataFunction" not in content:
             return  # most report files; spares parsing every visual
@@ -777,6 +796,21 @@ class ParameterDetector:
                 inner = metadata.get("dataFunction", {})
                 if isinstance(inner, dict):
                     function_name = inner.get("name") or ""
+
+            # A function of the same name in the repo doesn't make another
+            # workspace the repo's.
+            if self._is_foreign(workspace_id):
+                _ = self._classify_workspace(workspace_id, source_file)
+                self._foreign_item(item_id, source_file)
+                self.udf_skipped.append(
+                    (
+                        report_name,
+                        function_name,
+                        item_id,
+                        f"they call workspace {workspace_id}, which fabdep.yml doesn't name",
+                    )
+                )
+                continue
 
             # Matched on the declared function name, and only when exactly one
             # repo item declares it: an ambiguous or unknown function is left

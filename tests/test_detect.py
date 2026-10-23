@@ -954,6 +954,56 @@ class TestUserDataFunctionRebind:
         assert d.udf_bindings == []
         assert [(r, fn) for r, fn, _, _ in d.udf_skipped] == [("R", "f")]
 
+    def test_button_calling_a_visible_unrelated_workspace_is_not_rebound(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        """A repo function of the same name doesn't make another workspace the
+        repo's: the button keeps calling that workspace's function, with the
+        off-target warning, and is left to the unbound-UDF guard."""
+        make_item(tmp_path, "lh", "Lakehouse")
+        _make_udf(tmp_path, "Report Functions", ["recalculate_totals"])
+        _make_report_visual(
+            tmp_path,
+            "Finance Report",
+            _data_function_visual(UDF_ITEM_ID, OTHER_WORKSPACE_ID, "recalculate_totals"),
+        )
+        d = ParameterDetector(
+            tmp_path,
+            source_workspace_ids=[WORKSPACE_ID],
+            foreign_workspace_ids=[OTHER_WORKSPACE_ID],
+        )
+        with caplog.at_level("WARNING", logger="fabric_deploy.detect"):
+            d.detect_all()
+
+        assert d.parameters[UDF_ITEM_ID].dynamic_variable == ""
+        assert d.parameters[OTHER_WORKSPACE_ID].dynamic_variable == ""
+        assert OTHER_WORKSPACE_ID not in d._source_workspace_ids
+        assert d.generate_parameter_yml()["find_replace"] == []
+        assert d.udf_bindings == []
+        assert [(r, fn) for r, fn, _, _ in d.udf_skipped] == [
+            ("Finance Report", "recalculate_totals")
+        ]
+        assert [ws for _, ws in d.offtarget_workspace_refs] == [OTHER_WORKSPACE_ID]
+        assert any(OTHER_WORKSPACE_ID in r.message for r in caplog.records)
+
+    def test_button_calling_a_workspace_the_deployer_cannot_see_is_rebound(self, tmp_path: Path):
+        """A workspace outside the visible set may be the repo's own (a CI identity
+        seeing only the target), so the repo function's name still decides."""
+        make_item(tmp_path, "lh", "Lakehouse")
+        _make_udf(tmp_path, "Report Functions", ["recalculate_totals"])
+        _make_report_visual(
+            tmp_path,
+            "Finance Report",
+            _data_function_visual(UDF_ITEM_ID, OTHER_WORKSPACE_ID, "recalculate_totals"),
+        )
+        d = ParameterDetector(
+            tmp_path, source_workspace_ids=[WORKSPACE_ID], foreign_workspace_ids=[HUB_WORKSPACE_ID]
+        )
+        d.detect_all()
+
+        assert d.parameters[OTHER_WORKSPACE_ID].dynamic_variable == "$workspace.$id"
+        assert d.udf_skipped == []
+
 
 # --- lakehouse auto-binding / source-workspace anchors ----------------------
 
@@ -1178,6 +1228,7 @@ class TestLakehouseAutoBinding:
 # --- binding a reference to its own repo item --------------------------------
 
 HUB_LAKEHOUSE_ID = "99999999-9999-9999-9999-999999999999"
+HUB_WORKSPACE_ID = "aaaaaaaa-0000-0000-0000-000000000000"
 
 
 class TestItemBinding:
@@ -1257,13 +1308,21 @@ class TestItemBinding:
         assert d.parameters[OTHER_WORKSPACE_ID].dynamic_variable == ""
         assert OTHER_WORKSPACE_ID not in d._source_workspace_ids
 
-    @pytest.mark.parametrize(("sources_complete", "rewritten"), [(True, False), (False, True)])
+    @pytest.mark.parametrize(
+        ("foreign", "rewritten"),
+        [
+            pytest.param([OTHER_WORKSPACE_ID], False, id="visible-unrelated-workspace"),
+            pytest.param([HUB_WORKSPACE_ID], True, id="workspace-the-deployer-cannot-see"),
+            pytest.param([], True, id="offline-detect"),
+        ],
+    )
     def test_lakehouse_named_like_a_repo_one_in_another_workspace(
-        self, tmp_path: Path, sources_complete: bool, rewritten: bool
+        self, tmp_path: Path, foreign: list[str], rewritten: bool
     ):
-        """With the repo's workspaces listed, a workspace outside them is another
-        workspace whatever its lakehouse is called, so a pipeline invoking a
-        notebook there keeps pointing there. Offline, the name is all there is."""
+        """A workspace the deployer can see that is not one of the repo's is another
+        workspace whatever its lakehouse is called, so a pipeline invoking a notebook
+        there keeps pointing there. One it can't see (a CI identity that sees only the
+        target), or any offline, is placed by the lakehouse name."""
         make_item(tmp_path, "lh", "Lakehouse")
         _make_notebook(tmp_path, "nb", _lakehouse_meta(OTHER_WORKSPACE_ID, HUB_LAKEHOUSE_ID, "lh"))
         _make_pipeline(
@@ -1276,7 +1335,7 @@ class TestItemBinding:
             },
         )
         d = ParameterDetector(
-            tmp_path, source_workspace_ids=[WORKSPACE_ID], sources_complete=sources_complete
+            tmp_path, source_workspace_ids=[WORKSPACE_ID], foreign_workspace_ids=foreign
         )
         d.detect_all()
 
@@ -1285,6 +1344,34 @@ class TestItemBinding:
         refs = {f for f, ws in d.offtarget_workspace_refs if ws == OTHER_WORKSPACE_ID}
         expected = {"nb.Notebook/notebook-content.py", "pl.DataPipeline/pipeline-content.json"}
         assert refs == (set() if rewritten else expected)
+
+    @pytest.mark.parametrize(("foreign", "rewritten"), [([OTHER_WORKSPACE_ID], False), ([], True)])
+    def test_direct_lake_source_names_the_workspace_a_notebook_left_out(
+        self, tmp_path: Path, foreign: list[str], rewritten: bool
+    ):
+        """A notebook attachment without a workspace id names the lakehouse only; a
+        Direct Lake source that puts that lakehouse in a visible unrelated workspace
+        makes both references foreign."""
+        make_item(tmp_path, "lh", "Lakehouse")
+        lakehouse = {"default_lakehouse": HUB_LAKEHOUSE_ID, "default_lakehouse_name": "lh"}
+        meta = json.dumps({"dependencies": {"lakehouse": lakehouse}})
+        _make_notebook(tmp_path, "nb", f"# META {meta}\n")
+        _make_semantic_model(
+            tmp_path,
+            "sm",
+            'Source = AzureStorage.DataLake("https://onelake.dfs.fabric.microsoft.com/'
+            f'{OTHER_WORKSPACE_ID}/{HUB_LAKEHOUSE_ID}")',
+        )
+        d = ParameterDetector(
+            tmp_path, source_workspace_ids=[WORKSPACE_ID], foreign_workspace_ids=foreign
+        )
+        d.detect_all()
+
+        assert bool(d.parameters[OTHER_WORKSPACE_ID].dynamic_variable) == rewritten
+        assert bool(d.parameters[HUB_LAKEHOUSE_ID].dynamic_variable) == rewritten
+        assert (OTHER_WORKSPACE_ID in d._source_workspace_ids) == rewritten
+        refs = [ws for _, ws in d.offtarget_workspace_refs]
+        assert refs == ([] if rewritten else [OTHER_WORKSPACE_ID])
 
 
 class TestForeignDirectLakeSource:

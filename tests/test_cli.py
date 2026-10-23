@@ -123,6 +123,19 @@ class TestDetectSourceWorkspaceFlag:
         assert "Source workspace anchor" in result.stdout
 
 
+def test_detect_places_the_workspaces_it_is_not_given_by_lakehouse_name(
+    monkeypatch, capsys, sample_ws
+):
+    """Offline, the notebook's lakehouse, named like the repo's, makes its workspace
+    a source, whatever --source-workspace-id names."""
+    other = "00000000-0000-0000-0000-0000000000f0"
+    _run(monkeypatch, "detect", str(sample_ws), "--source-workspace-id", other)
+    out = capsys.readouterr().out
+    anchors = next(line for line in out.splitlines() if line.startswith("Source workspace"))
+    assert SAMPLE_DEV_WORKSPACE_ID in anchors
+    assert other in anchors
+
+
 def test_detect_prints_its_results_to_stdout(monkeypatch, capsys, sample_ws):
     """`fabdep detect > ids.txt` captures the results; warnings stay on stderr."""
     _run(monkeypatch, "detect", str(sample_ws))

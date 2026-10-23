@@ -122,12 +122,12 @@ class WorkspaceDeployer:
     # This repo's workspaces (target + siblings) and the lakehouses of the
     # siblings the content references, by item id — the detector's anchors
     # (see _resolve_source_anchors). `source_workspaces` is the referenced
-    # siblings by id → display name, for the run summary.
+    # siblings by id → display name, for the run summary. `foreign_workspace_ids`
+    # is every other workspace the identity can see: never anchored.
     source_workspace_ids: set[str] = field(init=False, default_factory=set, repr=False)
     source_workspaces: dict[str, str] = field(init=False, default_factory=dict, repr=False)
     source_lakehouse_ids: dict[str, str] = field(init=False, default_factory=dict, repr=False)
-    # Whether the workspace list was read, so source_workspace_ids is complete.
-    _sources_complete: bool = field(init=False, default=False, repr=False)
+    foreign_workspace_ids: set[str] = field(init=False, default_factory=set, repr=False)
 
     _repo_dir_resolved: Path = field(init=False, repr=False)
     config: FabdepConfig = field(init=False, repr=False)
@@ -237,12 +237,16 @@ class WorkspaceDeployer:
         out (a `main` checkout after a dev-to-main merge still carries the dev
         workspace's ids). The lakehouses of each sibling the content references
         are listed too, so their ids map where notebook code still carries them
-        (abfss paths). A failed lookup is a warning, not an error.
+        (abfss paths). Every other visible workspace is foreign: its ids deploy
+        unchanged whatever its lakehouses are called. A workspace the identity
+        can't see (a CI identity often sees only the target) is in neither set,
+        so the detector places it by the repo lakehouse its content names. A
+        failed lookup is a warning, not an error.
         """
         self.source_workspace_ids = {self.workspace_id} if self.workspace_id else set()
         self.source_workspaces = {}
         self.source_lakehouse_ids = {}
-        self._sources_complete = False
+        self.foreign_workspace_ids = set()
         try:
             workspaces = list_workspaces()
         except Exception as e:
@@ -252,7 +256,6 @@ class WorkspaceDeployer:
                 f"workspace; other workspace ids deploy unchanged."
             )
             return
-        self._sources_complete = True
 
         siblings = {
             ws["id"]: ws["displayName"]
@@ -261,9 +264,11 @@ class WorkspaceDeployer:
             and ws["id"] != self.workspace_id
             and self.config.is_repo_workspace(ws.get("displayName") or "")
         }
+        self.source_workspace_ids |= set(siblings)
+        visible = {ws["id"] for ws in workspaces if ws.get("id")}
+        self.foreign_workspace_ids = visible - self.source_workspace_ids
         if not siblings:
             return
-        self.source_workspace_ids |= set(siblings)
 
         referenced = {
             ws_id
@@ -294,7 +299,7 @@ class WorkspaceDeployer:
             logger_name=self.logger.name,
             source_workspace_ids=self.source_workspace_ids,
             source_lakehouse_ids=self.source_lakehouse_ids,
-            sources_complete=self._sources_complete,
+            foreign_workspace_ids=self.foreign_workspace_ids,
         )
         detector.detect_all()
 
@@ -361,13 +366,13 @@ class WorkspaceDeployer:
         return Verdict("warn", f"{found} (--fail-on-stale makes this an error)", files)
 
     def _udf_verdict(self, scope: DeployScope, allow_unbound_udf: bool) -> Verdict:
-        """Report buttons that would ship pointing at the source workspace's function.
+        """Report buttons that would ship calling another workspace's function.
 
         A bound button whose function name resolves to no repo
-        `.UserDataFunction` item deploys still calling the SOURCE workspace's
-        function — a silent cross-workspace leak. It blocks when its report is
-        published, unless --allow-unbound-udf; a report the deploy doesn't
-        publish can't leak.
+        `.UserDataFunction` item, or that calls a workspace known not to be
+        the repo's, deploys still calling that workspace's function — a silent
+        cross-workspace leak. It blocks when its report is published, unless
+        --allow-unbound-udf; a report the deploy doesn't publish can't leak.
         """
         reports = {item.name for item in scope.items if item.type == "Report"}
         skipped = self._detector.udf_skipped if self._detector else []
@@ -381,15 +386,15 @@ class WorkspaceDeployer:
             return Verdict(
                 "warn",
                 f"--allow-unbound-udf: {len(in_scope)} User Data Function "
-                f"button(s) deploy still pointing at the source workspace's "
+                f"button(s) deploy still calling another workspace's "
                 f"function. See warnings above.",
                 findings,
             )
         return Verdict(
             "block",
             f"{len(in_scope)} User Data Function button(s) cannot be rebound "
-            f"to the target workspace and would deploy still calling the "
-            f"source workspace's function: {', '.join(findings)}. Fix the button's "
+            f"to the target workspace and would deploy still calling another "
+            f"workspace's function: {', '.join(findings)}. Fix the button's "
             f"function binding (or the missing/ambiguous .UserDataFunction "
             f"item), or pass --allow-unbound-udf to deploy as-is. See "
             f"warnings above.",
@@ -566,7 +571,7 @@ class WorkspaceDeployer:
             allow_unbound_udf: Deploy report buttons whose User Data Function
                 reference could not be rebound to the target workspace. By
                 default an in-scope report carrying such a button blocks the
-                deploy, because the button would ship still calling the SOURCE
+                deploy, because the button would ship still calling another
                 workspace's function.
             pr: Restrict the deploy to the items a pull request touched.
                 PR_LATEST searches back from HEAD for the PR commit; any other

@@ -349,8 +349,9 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Deploy report buttons whose User Data Function reference could "
         "not be rebound to the target workspace (missing or ambiguous "
-        ".UserDataFunction item). By default such a button blocks the deploy, "
-        "because it would ship still calling the SOURCE workspace's function.",
+        ".UserDataFunction item, or a workspace fabdep.yml doesn't name). By "
+        "default such a button blocks the deploy, because it would ship still "
+        "calling another workspace's function.",
     )
 
     deploy = commands.add_parser(

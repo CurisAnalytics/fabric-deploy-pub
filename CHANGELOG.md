@@ -23,13 +23,15 @@ Releases before the first public one are summarized in a few lines each.
   environment, and `_ALL_` must be its only key, as fabric-cicd requires.
 - An unnamed reference with several candidate items, of any type that could own it, and a
   Direct Lake source or notebook lakehouse in another workspace (even named like a repo
-  lakehouse, if fabdep can list workspaces) deploy unchanged with a warning, not rebound.
+  lakehouse, when fabdep can see that workspace and fabdep.yml doesn't name it) deploy
+  unchanged with a warning, not rebound.
 - Models on a `pbidedicated.windows.net` SQL host get the endpoint's `fabric.microsoft.com` host.
 - `--fail-on-stale` covers only warehouse attachments that can't be remapped.
 - The RLS guard checks every in-scope model, also one without roles in the repo, and blocks
   a changed role `PBI_Id` (the service would drop the role's members).
-- A report button bound to a User Data Function no repo item declares blocks the deploy
-  (unless `--allow-unbound-udf`), also in a repo with no User Data Function.
+- A report button bound to a User Data Function no repo item declares, or in a workspace
+  fabdep can see and fabdep.yml doesn't name, blocks the deploy (unless
+  `--allow-unbound-udf`), also in a repo with no User Data Function.
 - Bare `--pr` takes the newest commit worded as a merged pull request (not a plain merge) in
   HEAD's first-parent history, and fails when HEAD is past it (a rebase merge, a direct
   push): pass `--pr <commit>`. `--pr HEAD` means HEAD's own changes.
