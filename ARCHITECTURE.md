@@ -84,7 +84,8 @@ results and exits; the other modules log and raise.
    if HEAD has first-parent commits on top of it (a rebase merge or a direct push would
    otherwise redeploy an older pull request); `--pr <commit>` takes that commit, so
    `--pr HEAD` is HEAD's own changes. A pull request that changed no item ends the deploy
-   here, having created and published nothing. `-i` names are checked against `.platform`
+   here, having created and published nothing (its plan has no items or rules, and every
+   guard passes). `-i` names are checked against `.platform`
    display names (no match is an error); `-t`/`-x` become fabric-cicd's
    `item_type_in_scope`.
 7. **Guards**, before anything is created or published: `--fail-on-stale` (unremappable

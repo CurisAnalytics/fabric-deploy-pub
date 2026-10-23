@@ -214,9 +214,9 @@ merged pull request by Azure DevOps, GitHub (merge or squash), GitLab or Bitbuck
 on top of that one (a direct push, a rebase merge), `--pr` fails rather than redeploy an
 older pull request: name the commit with `--pr <commit>` (`--pr HEAD` is `HEAD`'s own
 changes). Changed files outside any item are ignored, a pull request that changed no item
-deploys nothing, and `--pr` never unpublishes an item the pull request deleted. `-i` and
-`--pr` rely on fabric-cicd's experimental `items_to_include`, which publishes only the items
-named: name what they depend on too.
+deploys nothing (nor creates the workspace), and `--pr` never unpublishes an item the pull
+request deleted. `-i` and `--pr` rely on fabric-cicd's experimental `items_to_include`,
+which publishes only the items named: name what they depend on too.
 
 ### `fabdep plan`
 

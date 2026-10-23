@@ -151,6 +151,33 @@ class TestTarget:
         assert [m.status for m in plan.guards["rls"].models] == ["new"]
         assert not any("/items" in r or "getDefinition" in r for r in fabric.requests)
 
+    @pytest.mark.parametrize(
+        ("config", "new_workspace"),
+        [
+            pytest.param("", True, id="-N"),
+            pytest.param("environments:\n  MAIN:\n    create: true\n", False, id="create-entry"),
+        ],
+    )
+    def test_pr_that_touched_no_item_creates_no_workspace(
+        self, sample_ws, fabric, monkeypatch, config, new_workspace
+    ):
+        """The deploy stops before creating the workspace, so the plan says it wouldn't."""
+        (sample_ws / "fabdep.yml").write_text('workspace_base_name: "Fabdep Test"\n' + config)
+        fabric.workspaces = []
+        monkeypatch.setattr(
+            "fabric_deploy.workspace.changed_paths_in", lambda _r, _c: ["README.md"]
+        )
+
+        plan = _plan(sample_ws, new_workspace=new_workspace, pr="abc1234")
+
+        target = plan.target
+        assert (target.create, target.workspace_id, target.capacity_id) == (False, None, None)
+        assert plan.items == ()
+        text = format_plan(plan)
+        assert "would be created" not in text
+        assert "Fabdep Test [MAIN] (does not exist; nothing to deploy, so not created)" in text
+        assert plan_json(plan)["target"]["create"] is False
+
     def test_new_workspace_flag_refuses_an_existing_one(self, sample_ws, fabric):
         with pytest.raises(ValueError, match="remove the -N flag"):
             _plan(sample_ws, new_workspace=True)
@@ -197,13 +224,30 @@ class TestItems:
         assert "unpublish" not in {action for action, _, _ in _actions(plan)}
 
     def test_pr_that_touched_no_item_plans_nothing(self, sample_ws, fabric, monkeypatch):
+        """The deploy stops before its guards and parameter rules, so the plan has
+        none: a stale warehouse attachment --fail-on-stale blocks on doesn't block it."""
+        make_item(
+            sample_ws,
+            "Query",
+            "Notebook",
+            files={
+                "notebook-content.sql": "-- META "
+                + json.dumps({"dependencies": {"warehouse": {"default_warehouse": MODEL_ID}}})
+            },
+        )
         monkeypatch.setattr(
             "fabric_deploy.workspace.changed_paths_in", lambda _r, _c: ["README.md"]
         )
-        plan = _plan(sample_ws, pr="abc1234")
+        plan = _plan(sample_ws, pr="abc1234", fail_on_stale=True)
 
-        assert (plan.items, plan.cleanup, plan.blocked) == ((), "--pr", False)
+        assert (plan.items, plan.parameters, plan.cleanup) == ((), (), "--pr")
+        assert {name: v.status for name, v in plan.guards.items()} == {
+            "fail_on_stale": "pass",
+            "unbound_udf": "pass",
+            "rls": "pass",
+        }
         assert any("nothing to deploy" in w for w in plan.warnings)
+        assert _plan(sample_ws, fail_on_stale=True).guards["fail_on_stale"].status == "block"
 
     def test_type_scope_limits_publishing_and_cleanup(self, sample_ws, fabric):
         fabric.items[TARGET_ID].append(_item("Old Notebook", "Notebook"))

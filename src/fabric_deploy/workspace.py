@@ -59,9 +59,16 @@ class DeployScope:
     """What a deploy publishes: fabric-cicd's filters and the repo items they select."""
 
     item_types: list[str] | None  # fabric-cicd's item_type_in_scope; None: every type
-    include_items: list[str] | None  # its items_to_include, all in the repo; None: no filter
+    # fabric-cicd's items_to_include, all in the repo; None: no filter; []: nothing to deploy
+    include_items: list[str] | None
     items: list[RepoItem]  # the repo items the deploy publishes
     cleanup: bool  # whether orphan cleanup runs afterwards
+
+    @property
+    def nothing_to_deploy(self) -> bool:
+        """A `--pr` that changed no item: the deploy stops before it creates a
+        workspace, runs a guard or publishes anything."""
+        return self.include_items == []
 
 
 @dataclass(frozen=True)
@@ -604,7 +611,7 @@ class WorkspaceDeployer:
             pr=pr,
         )
         item_type_in_scope, include_items = scope.item_types, scope.include_items
-        if include_items == []:  # --pr touched no item
+        if scope.nothing_to_deploy:
             self.deployed_items = []
             return
 

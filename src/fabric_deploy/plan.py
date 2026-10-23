@@ -44,9 +44,10 @@ __all__ = [
 BLOCKED_EXIT_CODE = 3  # `fabdep plan` exits with it when a guard would block the deploy
 
 JSON_SHAPE = """\
-target      {branch, workspace, workspace_id (null: the deploy would create the
-            workspace), create, capacity_id (of a workspace it would create),
-            environment, credential, tenant (null: not pinned)}
+target      {branch, workspace, workspace_id (null: the workspace doesn't exist),
+            create (whether the deploy would create it), capacity_id (of a
+            workspace it would create), environment, credential, tenant (null:
+            not pinned)}
 items       [{name, type, action: create | update | unpublish}], in the order
             fabric-cicd would act on them
 cleanup     {runs, reason: --no-cleanup | --include-items | --pr | null}
@@ -71,8 +72,8 @@ class Target:
 
     branch: str
     workspace: str  # display name
-    workspace_id: str | None  # None: the deploy would create the workspace
-    create: bool
+    workspace_id: str | None  # None: the workspace doesn't exist
+    create: bool  # whether the deploy would create it
     capacity_id: str | None  # the capacity a workspace the deploy creates gets
     environment: str  # fabric-cicd environment
     credential: str  # how fabdep signs in, e.g. "cli (default)"
@@ -157,24 +158,36 @@ def plan_deploy(
             include_items=include_items,
             pr=pr,
         )
-        guards = dict(
-            deployer.guard_verdicts(scope, fail_on_stale, allow_rls_change, allow_unbound_udf)
+        # With nothing to deploy, the deploy stops before its guards, the
+        # parameter file and creating the workspace.
+        nothing = scope.nothing_to_deploy
+        guards = (
+            {name: Verdict("pass") for name in _GUARD_LABELS}
+            if nothing
+            else dict(
+                deployer.guard_verdicts(scope, fail_on_stale, allow_rls_change, allow_unbound_udf)
+            )
         )
         in_workspace = list_workspace_items(deployer.workspace_id) if deployer.workspace_id else []
         items = _items(scope, repo_items(deployer.config.repo_dir), in_workspace, deployer.logger)
-        rules = _planned_rules(deployer.parameter_rules(), deployer.environment, scope.items)
+        rules = (
+            []
+            if nothing
+            else _planned_rules(deployer.parameter_rules(), deployer.environment, scope.items)
+        )
 
     cleanup = None  # the option that turns orphan cleanup off, if one does
     if not scope.cleanup:
         cleanup = "--no-cleanup" if no_cleanup else "--pr" if pr else "--include-items"
     config = deployer.config
+    create = deployer.creates_workspace and not nothing
     return Plan(
         target=Target(
             branch=config.branch,
             workspace=deployer.workspace_name,
             workspace_id=deployer.workspace_id or None,
-            create=deployer.creates_workspace,
-            capacity_id=deployer.capacity_id or None,
+            create=create,
+            capacity_id=(deployer.capacity_id or None) if create else None,
             environment=deployer.environment,
             credential=credential_in_use(),
             tenant=config.auth.tenant if config.auth else None,
@@ -385,11 +398,12 @@ def format_plan(plan: Plan, color: bool = False) -> str:
         return f"{code}{word}{RESET}{' ' * (width - len(word))}" if code else word.ljust(width)
 
     target = plan.target
-    where = (
-        f"{target.workspace} ({target.workspace_id})"
-        if target.workspace_id
-        else f"{target.workspace} (would be created on capacity {target.capacity_id})"
-    )
+    if target.workspace_id:
+        where = f"{target.workspace} ({target.workspace_id})"
+    elif target.create:
+        where = f"{target.workspace} (would be created on capacity {target.capacity_id})"
+    else:
+        where = f"{target.workspace} (does not exist; nothing to deploy, so not created)"
     rows = [
         ("Workspace", where),
         ("Branch", target.branch),

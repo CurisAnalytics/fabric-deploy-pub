@@ -71,7 +71,8 @@ Releases before the first public one are summarized in a few lines each.
 - `fabdep detect` prints its results to stdout, so they can be redirected; warnings stay on
   stderr.
 - `-N` creates the workspace only once the deploy's options, guards and parameter file pass.
-- A pull request that changed no item deploys nothing with `--pr` (was: an error).
+- A pull request that changed no item deploys nothing with `--pr` (was: an error), creating
+  no workspace; its plan says so.
 
 ### Fixed
 
