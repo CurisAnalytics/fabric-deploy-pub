@@ -148,6 +148,25 @@ class TestIncludeItems:
             deployer.deploy(include_items=["Ghost.Notebook"])
         fabric_cicd.workspace.assert_not_called()
 
+    @pytest.mark.parametrize(
+        ("options", "flag"),
+        [({"include_items": [NOTEBOOK]}, "--include-items"), ({"pr": "abc1234"}, "--pr")],
+    )
+    def test_warnings_name_the_option_that_set_the_filter(
+        self, deployer, fabric_cicd, monkeypatch, caplog, options, flag
+    ):
+        monkeypatch.setattr(
+            "fabric_deploy.workspace.changed_paths_in",
+            lambda _repo, _commit: [f"{NOTEBOOK}/notebook-content.py"],
+        )
+        with caplog.at_level("WARNING"):
+            deployer.deploy(**options)
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert any("experimental" in w and flag in w for w in warnings), warnings
+        assert any(f"Orphan cleanup disabled when using {flag}" in w for w in warnings), warnings
+        other = "--pr" if flag == "--include-items" else "--include-items"
+        assert not any(other in w for w in warnings), warnings
+
     def test_summary_leaves_out_items_of_excluded_types(self, deployer, fabric_cicd, caplog):
         """An item excluded with -x stays in include_items but is never published."""
         with caplog.at_level("INFO"):

@@ -523,11 +523,12 @@ class WorkspaceDeployer:
                 )
 
         if include_items:
+            option = "--pr" if pr else "--include-items"
             self.logger.warning(
-                "Name-based item filtering is experimental. "
+                f"Name-based item filtering ({option}) is experimental. "
                 "Selective deployment may cause dependency issues. Use at your own risk."
             )
-            self.logger.warning("Orphan cleanup disabled when using --include-items for safety.")
+            self.logger.warning(f"Orphan cleanup disabled when using {option} for safety.")
             # Fail fast on a name mismatch instead of silently deploying nothing.
             include_items = validate_include_items(
                 include_items, self._repo_dir_resolved, self.logger

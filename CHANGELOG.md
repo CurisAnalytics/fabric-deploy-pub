@@ -92,6 +92,7 @@ Releases before the first public one are summarized in a few lines each.
   files into it.
 - `refresh` and `--frame` fail when a SQL endpoint table fails to sync, before refreshing any
   model (the failure was only a warning).
+- With `--pr`, the item-filter and orphan-cleanup warnings name `--pr`, not `--include-items`.
 - Repos without a lakehouse deploy; orphan cleanup no longer spares items named like it.
 - Requests time out and retry 429, and 5xx on reads, honouring `Retry-After`.
 - Lists follow pagination (stopping at a repeated token or 1000 pages). An unreadable model
