@@ -164,7 +164,7 @@ class WorkspaceDeployer:
         self._paramfile = ParameterFile(self._repo_dir_resolved)
 
         self.config = FabdepConfig.from_path(
-            self._repo_dir_resolved, branch_override=self.branch_override
+            self._repo_dir_resolved, branch_override=self.branch_override, logger=self.logger
         )
         self.workspace_name = self.config.workspace_name
         self.environment = self.environment or self.config.environment

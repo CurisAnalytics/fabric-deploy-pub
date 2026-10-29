@@ -198,7 +198,8 @@ Changes must keep these true.
   elsewhere than intended is an error: `-i` matching nothing, a scope of no items with orphan
   cleanup on, `--pr` without a pull-request commit, with HEAD past it, or in a shallow clone,
   several active capacities without `capacity_id`, an unbound User Data Function button, any
-  RLS difference, an unknown key in an `environments:` or `manual_parameters` entry.
+  RLS difference, an unknown key in an `environments:` or `manual_parameters` entry, a
+  top-level key that looks like a misspelled `tenant`, `auth` or `require_spn`.
 - **Only the repo's own workspaces are rewritten.** An id of an unrelated workspace is never
   pointed at the target.
 - **Guards run before anything is created, published or unpublished.**

@@ -65,6 +65,8 @@ FABDEP_YML_KEYS = frozenset(
         "manual_parameters",
     }
 )
+# The keys that restrict who may deploy: misspelling one is an error, not a warning.
+IDENTITY_KEYS = ("tenant", "auth", "require_spn")
 DEFAULT_WORKSPACE_NAME_TEMPLATE = "{base} [{BRANCH}]"
 ENVIRONMENT_KEYS = ("workspace", "environment", "create")
 _TEMPLATE_FIELDS = ("base", "branch", "BRANCH")
@@ -90,7 +92,21 @@ class AuthSettings:
 
     @classmethod
     def from_config(cls, config: Mapping[str, object]) -> AuthSettings | None:
-        """Read the identity keys of a parsed fabdep.yml; None when it sets none of them."""
+        """Read the identity keys of a parsed fabdep.yml; None when it sets none of them.
+
+        Raises:
+            ValueError: If a key is invalid, or an unknown key is a close match
+                to one (`tenan:` would otherwise drop the tenant check silently).
+        """
+        for key in config:
+            if key in FABDEP_YML_KEYS:
+                continue
+            if hint := get_close_matches(str(key), IDENTITY_KEYS, n=1, cutoff=0.6):
+                raise ValueError(
+                    f"fabdep.yml: unknown key '{key}' — did you mean '{hint[0]}'? A "
+                    "misspelled identity key would drop the check it asks for, so fabdep "
+                    "stops; correct or remove it."
+                )
         tenant, auth = config.get("tenant"), config.get("auth")
         require_spn = config.get("require_spn", False)
         if tenant is not None and not (isinstance(tenant, str) and _GUID.fullmatch(tenant)):
@@ -293,12 +309,19 @@ class FabdepConfig:
         return self.repo_workspaces.fullmatch(name) is not None
 
     @classmethod
-    def from_path(cls, repo_dir: Path | str, branch_override: str | None = None) -> FabdepConfig:
+    def from_path(
+        cls,
+        repo_dir: Path | str,
+        branch_override: str | None = None,
+        logger: logging.Logger | None = None,
+    ) -> FabdepConfig:
         """Build a FabdepConfig from a workspace repository directory.
 
         Args:
             repo_dir: Path to the workspace repo.
             branch_override: Skip git branch lookup and use this branch name.
+            logger: Where warnings about the file go (unknown keys, open
+                templates); default the "fabric_deploy" logger.
 
         Raises:
             FileNotFoundError: If `repo_dir` or its fabdep.yml doesn't exist.
@@ -319,7 +342,9 @@ class FabdepConfig:
                 "which deploys branch <name> to the workspace 'Contoso Sales [<NAME>]'."
             )
         config = _read_yaml(config_file)
-        _warn_unknown_keys(config)
+        log = logger or logging.getLogger("fabric_deploy")
+        auth = AuthSettings.from_config(config)  # first: it rejects misspelled identity keys
+        _warn_unknown_keys(config, log)
 
         base = config.get("workspace_base_name")
         if base is not None and not (isinstance(base, str) and base):
@@ -335,7 +360,7 @@ class FabdepConfig:
         repo_workspaces = [env.name_pattern(base) for env in environments]
         if not environments or (default.uses_base and base is not None):
             repo_workspaces.append(default.pattern(base, _ANY_BRANCH))
-        _warn_open_templates(environments, default)
+        _warn_open_templates(environments, default, log)
 
         manual_parameters: object = config.get("manual_parameters") or []
         if not isinstance(manual_parameters, list):
@@ -370,11 +395,13 @@ class FabdepConfig:
             create_workspace=bool(entry and entry.create),
             capacity_id=capacity_id,
             manual_parameters=cast(list[object], manual_parameters),
-            auth=AuthSettings.from_config(config),
+            auth=auth,
         )
 
 
-def _warn_open_templates(environments: list[_Environment], default: _Template) -> None:
+def _warn_open_templates(
+    environments: list[_Environment], default: _Template, log: logging.Logger
+) -> None:
     """Flag a template whose names are the branch alone where any branch may fill
     it (no map, or a glob key of wildcards only): every workspace whose name has
     no ']' would count as the repo's, and have its ids in the content rewritten
@@ -384,7 +411,7 @@ def _warn_open_templates(environments: list[_Environment], default: _Template) -
     else:
         candidates = [default]
     for template in {t.where: t for t in candidates if t.is_branch_only}.values():
-        logging.getLogger("fabric_deploy").warning(
+        log.warning(
             f"fabdep.yml {template.where} {template.text!r} has no text besides the branch, "
             "so every visible workspace whose name has no ']' counts as one of this repo's, "
             "and its ids found in the content are rewritten to the target's. Add fixed "
@@ -392,18 +419,18 @@ def _warn_open_templates(environments: list[_Environment], default: _Template) -
         )
 
 
-def _warn_unknown_keys(config: Mapping[str, object]) -> None:
-    """Flag fabdep.yml keys fabdep doesn't read, so a typo like `tenan:` is loud.
+def _warn_unknown_keys(config: Mapping[str, object], log: logging.Logger) -> None:
+    """Flag fabdep.yml keys fabdep doesn't read, so a typo like `capacity:` is loud.
 
-    A warning rather than an error: a misspelled optional key silently dropping
-    a feature is the failure mode here, not an unusable config.
+    A warning rather than an error, for a key that could only drop an optional
+    feature; one close to an identity key is an error (AuthSettings.from_config).
     """
     for key in config:
         if key in FABDEP_YML_KEYS:
             continue
         hint = get_close_matches(str(key), FABDEP_YML_KEYS, n=1, cutoff=0.6)
         suggestion = f" — did you mean '{hint[0]}'?" if hint else ""
-        logging.getLogger("fabric_deploy").warning(
+        log.warning(
             f"fabdep.yml: unknown key '{key}' ignored{suggestion} "
             f"(known keys: {', '.join(sorted(FABDEP_YML_KEYS))})"
         )

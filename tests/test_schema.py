@@ -200,11 +200,16 @@ def test_agrees_with_the_loader(tmp_path: Path, body: str, valid: bool):
 
 def test_unknown_top_level_keys_are_invalid_but_only_warned_about(tmp_path: Path, caplog):
     """The loader warns about an unknown key rather than failing; an editor flags it."""
-    body = BASE + f"tenan: {GUID}\n"
+    body = BASE + "capacity: F64\n"
     with caplog.at_level(logging.WARNING, logger="fabric_deploy"):
         assert loader_accepts(tmp_path, body)
-    assert "did you mean 'tenant'" in caplog.text
+    assert "did you mean 'capacity_id'" in caplog.text
     assert not schema_accepts(body)
+
+
+def test_a_misspelled_identity_key_is_rejected_by_both(tmp_path: Path):
+    body = BASE + f"tenan: {GUID}\n"
+    assert (schema_accepts(body), loader_accepts(tmp_path, body)) == (False, False)
 
 
 def test_fabdep_schema_prints_it(monkeypatch, capsys):

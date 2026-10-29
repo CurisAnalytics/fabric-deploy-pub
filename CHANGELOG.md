@@ -73,6 +73,8 @@ Releases before the first public one are summarized in a few lines each.
 - `-N` creates the workspace only once the deploy's options, guards and parameter file pass.
 - A pull request that changed no item deploys nothing with `--pr` (was: an error), creating
   no workspace; its plan says so.
+- A top-level `fabdep.yml` key that looks like a misspelled `tenant`, `auth` or `require_spn`
+  (`tenan:`) is an error; other unknown keys still only warn.
 
 ### Fixed
 
@@ -83,6 +85,8 @@ Releases before the first public one are summarized in a few lines each.
 - With an `environments:` map, the workspaces `workspace_name_template` names (when it uses
   `{base}`) stay the repo's own, so a map naming only `main` no longer leaves dev's IDs
   unchanged.
+- `plan` (and `--output json`) lists `fabdep.yml`'s warnings, such as an unknown key, with
+  its other warnings.
 - Repos without a lakehouse deploy; orphan cleanup no longer spares items named like it.
 - Requests time out and retry 429, and 5xx on reads, honouring `Retry-After`.
 - Lists follow pagination (stopping at a repeated token or 1000 pages). An unreadable model

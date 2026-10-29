@@ -349,6 +349,14 @@ class TestWarnings:
         assert any("Manual parameter 'nowhere'" in w for w in plan.warnings)
         assert "nowhere" not in capsys.readouterr().err
 
+    def test_fabdep_yml_warnings_are_in_the_plan(self, sample_ws, fabric, capsys):
+        (sample_ws / "fabdep.yml").write_text('workspace_base_name: "Fabdep Test"\ncapacity: F64\n')
+
+        warnings = plan_json(_plan(sample_ws))["warnings"]
+
+        assert any("unknown key 'capacity'" in w for w in warnings)
+        assert "capacity" not in capsys.readouterr().err
+
     def test_printed_when_the_plan_fails(self, sample_ws, fabric, capsys):
         (sample_ws / "fabdep.yml").write_text(
             'workspace_base_name: "Fabdep Test"\n'

@@ -49,12 +49,27 @@ class TestParsing:
     def test_no_identity_keys(self, tmp_path):
         assert _config(tmp_path, "").auth is None
 
-    def test_misspelled_key_warns_and_is_ignored(self, tmp_path, caplog):
+    @pytest.mark.parametrize(
+        ("key", "meant"),
+        [
+            ("tenan", "tenant"),
+            ("tenant_id", "tenant"),
+            ("auht", "auth"),
+            ("require_snp", "require_spn"),
+        ],
+    )
+    def test_misspelled_identity_key_is_an_error(self, tmp_path, key, meant):
+        """Ignoring it would drop the check the key asks for, silently."""
+        with pytest.raises(ValueError, match=f"unknown key '{key}'.*did you mean '{meant}'"):
+            _ = _config(tmp_path, f"{key}: {CONTOSO_TENANT}\n")
+        with pytest.raises(ValueError, match=f"unknown key '{key}'"):
+            _ = load_auth_settings(tmp_path)
+
+    def test_other_unknown_key_warns_and_is_ignored(self, tmp_path, caplog):
         with caplog.at_level("WARNING"):
-            cfg = _config(tmp_path, f"tenan: {CONTOSO_TENANT}\n")
+            cfg = _config(tmp_path, "capacity: F64\n")
         assert cfg.auth is None
-        assert "unknown key 'tenan'" in caplog.text
-        assert "did you mean 'tenant'?" in caplog.text
+        assert "unknown key 'capacity' ignored — did you mean 'capacity_id'?" in caplog.text
 
     def test_load_without_fabdep_yml(self, tmp_path):
         assert load_auth_settings(tmp_path) is None
