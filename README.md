@@ -13,6 +13,12 @@ still wired to another workspace. `fabdep plan` shows what a deploy would do fir
 > workflow and is published in case it's useful to others. It is not supported, and it
 > encodes that team's conventions. If you want to use it, have a coding agent review it and
 > adapt it to your setup before pointing it at a workspace you care about.
+>
+> **1.11.1 is the last version the author used in production**, so it reflects the particular
+> Fabric workspace setup and workflow fabdep was designed around. The many commits after it
+> are pre-emptive cleanup to make the tool viable in other Fabric setups; they are covered by
+> the offline test suite but have not been run against a live tenant.
+>
 > Not affiliated with or endorsed by Microsoft.
 
 ## Install
