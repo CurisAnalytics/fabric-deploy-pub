@@ -221,6 +221,21 @@ def test_frame_models_syncs_every_endpoint_the_direct_lake_models_read(frame_env
     assert frame_env.refreshed == ["A", "B"]
 
 
+def test_frame_models_fails_on_a_failed_table_sync(frame_env, tmp_path, monkeypatch):
+    """The model would refresh against stale tables, or fail on them."""
+    frame_env.definitions = {"M": _definition("directLake", EP1)}
+    monkeypatch.setattr(
+        "fabric_deploy.refresh.refresh_sql_endpoint_metadata",
+        lambda ws, ep, timeout_s=600: [
+            {"tableName": "orders", "status": "Success"},
+            {"tableName": "customers", "status": "Failure", "error": {"message": "bad schema"}},
+        ],
+    )
+    with pytest.raises(RuntimeError, match="(?s)lh1.*customers: bad schema"):
+        frame_models(tmp_path, models=["M"], sync=True)
+    assert frame_env.refreshed == []
+
+
 def test_frame_models_import_model_refreshes_without_sync(frame_env, tmp_path, caplog):
     frame_env.definitions = {"M": _definition("import", EP1)}
     with caplog.at_level("INFO"):

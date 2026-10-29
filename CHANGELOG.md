@@ -90,6 +90,8 @@ Releases before the first public one are summarized in a few lines each.
 - The RLS guard warns about a `model.bim` semantic model instead of blocking the deploy (its
   roles aren't read), and `rls pull` leaves such a model alone instead of writing TMDL role
   files into it.
+- `refresh` and `--frame` fail when a SQL endpoint table fails to sync, before refreshing any
+  model (the failure was only a warning).
 - Repos without a lakehouse deploy; orphan cleanup no longer spares items named like it.
 - Requests time out and retry 429, and 5xx on reads, honouring `Retry-After`.
 - Lists follow pagination (stopping at a repeated token or 1000 pages). An unreadable model

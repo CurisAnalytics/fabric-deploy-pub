@@ -169,7 +169,8 @@ def frame_models(
 
     Raises:
         ValueError: If no target models can be determined.
-        RuntimeError: If a refresh fails (with the first framing error).
+        RuntimeError: If a table of a SQL endpoint fails to sync (before any
+            refresh), or a refresh fails (with the first framing error).
     """
     log = logger or get_logger(__name__)
     repo_dir = Path(repo_dir).resolve()
@@ -197,11 +198,14 @@ def frame_models(
         for endpoint in _sql_endpoints_to_sync(workspace_id, items, log):
             log.info(f"Syncing SQL analytics endpoint '{endpoint['displayName']}'...")
             statuses = refresh_sql_endpoint_metadata(workspace_id, endpoint["id"])
-            failures = failed_table_syncs(statuses)
-            for table, msg in failures:
-                log.warning(f"  table sync failed: {table}: {msg}")
-            if not failures:
-                log.info(f"  SQL endpoint synced ({len(statuses)} table(s)).")
+            # A model refreshed over a table that failed to sync reads stale data or fails.
+            if failures := failed_table_syncs(statuses):
+                raise RuntimeError(
+                    f"SQL analytics endpoint '{endpoint['displayName']}' failed to sync "
+                    f"{len(failures)} table(s), so no model was refreshed:\n"
+                    + "\n".join(f"  {table}: {msg}" for table, msg in failures)
+                )
+            log.info(f"  SQL endpoint synced ({len(statuses)} table(s)).")
 
     details: list[dict[str, Any]] = []
     for item in items:
