@@ -1,7 +1,8 @@
 # Architecture
 
-How fabdep is put together, for people changing it. Usage is in [README.md](README.md);
-setup, tests and conventions are in [CONTRIBUTING.md](CONTRIBUTING.md).
+How fabdep is put together, for people changing it. For usage, see [README.md](README.md),
+`fabdep <command> -h`, and the commented `fabdep.yml` that `fabdep init` writes (every key,
+with an example); setup, tests and conventions are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## What fabdep adds to fabric-cicd
 
