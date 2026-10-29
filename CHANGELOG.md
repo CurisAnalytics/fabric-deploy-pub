@@ -80,6 +80,9 @@ Releases before the first public one are summarized in a few lines each.
   lacks) is an error while orphan cleanup is on, instead of unpublishing the target's items.
 - A CopyJob's `artifactId` maps to a lakehouse or a warehouse by its connection's `type`; any
   other type deploys unchanged with a warning (it was always taken for a lakehouse).
+- With an `environments:` map, the workspaces `workspace_name_template` names (when it uses
+  `{base}`) stay the repo's own, so a map naming only `main` no longer leaves dev's IDs
+  unchanged.
 - Repos without a lakehouse deploy; orphan cleanup no longer spares items named like it.
 - Requests time out and retry 429, and 5xx on reads, honouring `Retry-After`.
 - Lists follow pagination (stopping at a repeated token or 1000 pages). An unreadable model

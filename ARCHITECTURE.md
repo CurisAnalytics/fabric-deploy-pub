@@ -158,9 +158,10 @@ fabric-cicd dynamic variable, a literal, or none).
   deploy unchanged, with a warning. A `manual_parameters` entry can remap it.
 
 A sibling is a workspace whose display name `fabdep.yml` could give some branch: a name the
-`environments:` map produces (a glob key stands for its branches) or, without a map,
-`workspace_name_template` with any branch. `{branch}` matches no `]`, so `{base} [DEV] [OLD]`
-is not a sibling of `{base} [DEV]`.
+`environments:` map produces (a glob key stands for its branches) or one
+`workspace_name_template` gives any branch (with a map, only when the template uses `{base}`
+and `workspace_base_name` is set, so a map naming `main` alone keeps dev's workspace the
+repo's). `{branch}` matches no `]`, so `{base} [DEV] [OLD]` is not a sibling of `{base} [DEV]`.
 
 ### Item ids
 

@@ -750,10 +750,29 @@ class TestSiblingWorkspaceAnchors:
         d, _ = _with_listing(
             monkeypatch,
             sample_ws,
-            [_ws(DEV_WORKSPACE_ID, "Fabdep Dev"), _ws(QA_WORKSPACE_ID, "Fabdep Test [QA]")],
+            [_ws(DEV_WORKSPACE_ID, "Fabdep Dev"), _ws(QA_WORKSPACE_ID, "Northwind [QA]")],
         )
 
         assert d.source_workspace_ids == {FAKE_WORKSPACE_ID, DEV_WORKSPACE_ID}
+
+    def test_a_map_naming_only_main_keeps_rewriting_dev(self, monkeypatch, sample_ws):
+        """dev has no entry, so it deploys to the template's workspace: the content
+        exported from there is still the repo's."""
+        (sample_ws / "fabdep.yml").write_text(
+            'workspace_base_name: "Fabdep Test"\nenvironments:\n  MAIN:\n    environment: PROD\n'
+        )
+        d, _ = _with_listing(
+            monkeypatch,
+            sample_ws,
+            [
+                _ws(FAKE_WORKSPACE_ID, "Fabdep Test [MAIN]"),
+                _ws(DEV_WORKSPACE_ID, "Fabdep Test [DEV]"),
+            ],
+        )
+
+        assert d.foreign_workspace_ids == set()
+        assert d._detector is not None
+        assert d._detector.parameters[DEV_WORKSPACE_ID].dynamic_variable == "$workspace.$id"
 
     def test_listing_failure_warns_and_keeps_target_anchor(self, monkeypatch, sample_ws, caplog):
         d, _ = _with_listing(monkeypatch, sample_ws, RuntimeError("403"))

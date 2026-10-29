@@ -15,7 +15,7 @@
       "default": "{base} [{BRANCH}]"
     },
     "environments": {
-      "description": "Settings per branch, keyed by branch name or glob (* matches any characters, ? one). A branch uses the entry of its exact name, else the first glob in file order that matches it, else none.",
+      "description": "Settings per branch, keyed by branch name or glob (* matches any characters, ? one). A branch uses the entry of its exact name, else the first glob in file order that matches it, else none. The repo's own workspaces, whose IDs in item files are rewritten to the target's, are the names the entries give and, when workspace_name_template uses {base}, the names it gives any branch.",
       "type": ["object", "null"],
       "additionalProperties": { "$ref": "#/$defs/environment" }
     },

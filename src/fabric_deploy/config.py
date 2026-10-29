@@ -25,8 +25,10 @@ Templates may use {base}, {branch} and {BRANCH} (the branch upper-cased);
 template fabdep uses needs {base}.
 
 The repo's workspaces are the ones `environments` names (for a glob key, the
-names its branches would get) or, without `environments`, every name
-workspace_name_template produces. A deploy rewrites ids of the repo's other
+names its branches would get) and every name workspace_name_template gives any
+branch; with `environments`, the template's names count only when it uses
+{base} and workspace_base_name is set, so a map naming some branches leaves the
+others' workspaces the repo's. A deploy rewrites ids of the repo's other
 workspaces found in the content to the target's; ids of any other workspace
 deploy unchanged.
 """
@@ -282,7 +284,12 @@ class FabdepConfig:
     auth: AuthSettings | None = None  # fabdep.yml's identity keys; None when unset
 
     def is_repo_workspace(self, name: str) -> bool:
-        """Whether a workspace of this display name is one this fabdep.yml deploys to."""
+        """Whether a workspace of this display name is one this fabdep.yml deploys to.
+
+        That is a name an `environments` entry gives its branches, or one
+        workspace_name_template gives any branch: without a map always, with
+        one when the template uses {base} and workspace_base_name is set.
+        """
         return self.repo_workspaces.fullmatch(name) is not None
 
     @classmethod
@@ -322,9 +329,12 @@ class FabdepConfig:
             raise ValueError("fabdep.yml workspace_name_template must be a non-empty string.")
         default = _Template.parse(template, "workspace_name_template")
         environments = _environments(config.get("environments"), default)
-        repo_workspaces = [env.name_pattern(base) for env in environments] or [
-            default.pattern(base, _ANY_BRANCH)
-        ]
+        # A map that names only some branches leaves the rest on the template:
+        # their workspaces stay the repo's. Without {base} (or a base to fill
+        # it), a template alongside a map adds no names.
+        repo_workspaces = [env.name_pattern(base) for env in environments]
+        if not environments or (default.uses_base and base is not None):
+            repo_workspaces.append(default.pattern(base, _ANY_BRANCH))
         _warn_open_templates(environments, default)
 
         manual_parameters: object = config.get("manual_parameters") or []

@@ -182,7 +182,7 @@ class TestSiblingWorkspaces:
         body = BASE + 'workspace_name_template: "{base} - {BRANCH}"\n'
         assert self._siblings(tmp_path, body, ["Base - QA", "Base [QA]"]) == ["Base - QA"]
 
-    def test_environments_name_the_siblings(self, tmp_path: Path):
+    def test_environments_and_the_template_name_the_siblings(self, tmp_path: Path):
         names = [
             "Contoso Sales",
             "Contoso Sales (Dev)",
@@ -191,11 +191,35 @@ class TestSiblingWorkspaces:
             "Legacy",
             "Pinned",
             "Contoso Sales - hotfix-2",
-            "Contoso Sales [QA]",  # a branch without an entry: not one the map names
+            "Contoso Sales [QA]",  # a branch without an entry gets the template's name
             "Contoso Sales (Test)",
             "Contoso Sales - hotfix-22",
+            "Contoso Sales [DEV] [OLD]",
         ]
-        assert self._siblings(tmp_path, MAP, names) == names[:7]
+        assert self._siblings(tmp_path, MAP, names) == names[:8]
+
+    def test_a_partial_map_keeps_the_template_siblings(self, tmp_path: Path):
+        """Mapping only main must not make dev, still on the template, foreign."""
+        body = BASE + "environments:\n  main:\n    environment: PROD\n"
+        names = ["Base [MAIN]", "Base [DEV]", "Base [FEATURE/X]", "Base", "Other [DEV]"]
+        assert self._siblings(tmp_path, body, names) == names[:3]
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param(
+                'workspace_name_template: "Sales [{BRANCH}]"\n'
+                "environments:\n  dev:\n    workspace: Sales Dev\n",
+                id="template-without-base",
+            ),
+            pytest.param(
+                "environments:\n  dev:\n    workspace: Sales Dev\n", id="no-base-to-fill-it"
+            ),
+        ],
+    )
+    def test_with_a_map_only_a_template_with_base_adds_siblings(self, tmp_path: Path, body: str):
+        names = ["Sales Dev", "Sales [QA]", "Sales [DEV]"]
+        assert self._siblings(tmp_path, body, names) == ["Sales Dev"]
 
     @pytest.mark.parametrize(
         ("body", "open_template"),
