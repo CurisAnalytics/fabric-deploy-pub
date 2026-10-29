@@ -13,7 +13,6 @@ still wired to another workspace. `fabdep plan` shows what a deploy would do fir
 > workflow and is published in case it's useful to others. It is not supported, and it
 > encodes that team's conventions. If you want to use it, have a coding agent review it and
 > adapt it to your setup before pointing it at a workspace you care about.
->
 > Not affiliated with or endorsed by Microsoft.
 
 ## Install
@@ -49,7 +48,7 @@ JSON Schema, and `fabdep <command> -h` documents every option.
 - [ARCHITECTURE.md](ARCHITECTURE.md): how detection, the guards and the deploy flow work,
   and the [known limitations](ARCHITECTURE.md#known-limitations).
 - [examples/](examples/): GitHub Actions and Azure Pipelines workflows.
-- [CHANGELOG.md](CHANGELOG.md) · [CONTRIBUTING.md](CONTRIBUTING.md) ·
-  [SECURITY.md](SECURITY.md)
+- [AGENTS.md](AGENTS.md): setup, tests and conventions, for agents and people.
+- [CHANGELOG.md](CHANGELOG.md)
 
 MIT licensed; see [LICENSE](LICENSE).

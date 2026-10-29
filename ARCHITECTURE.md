@@ -2,7 +2,7 @@
 
 How fabdep is put together, for people changing it. For usage, see [README.md](README.md),
 `fabdep <command> -h`, and the commented `fabdep.yml` that `fabdep init` writes (every key,
-with an example); setup, tests and conventions are in [CONTRIBUTING.md](CONTRIBUTING.md).
+with an example); setup, tests and conventions are in [AGENTS.md](AGENTS.md).
 
 ## What fabdep adds to fabric-cicd
 
@@ -204,7 +204,18 @@ Changes must keep these true.
   pointed at the target.
 - **Guards run before anything is created, published or unpublished.**
 - **One identity.** fabdep's REST calls and fabric-cicd use the same checked credential.
-- **Tests never touch the network** or the developer's sign-in (see CONTRIBUTING.md).
+- **Tests never touch the network** or the developer's sign-in (see AGENTS.md).
+
+## Credentials
+
+fabdep never stores credentials. It gets access tokens through azure-identity (the Azure CLI
+login, `AZURE_*` environment variables, workload identity, a managed identity, or
+`DefaultAzureCredential`, chosen with `--auth`, `FABDEP_AUTH` or `auth:`), keeps them in memory
+for the run, and shares the same credential with fabric-cicd. A token relayed in
+`FABRIC_BEARER_TOKEN` or `POWERBI_BEARER_TOKEN` is used as-is after the `tenant:` /
+`require_spn:` checks and never renewed. Those checks read the token's claims without
+verifying its signature: they stop fabdep from deploying as the wrong identity by mistake,
+and leave verification to the Fabric and Power BI APIs.
 
 ## Known limitations
 
