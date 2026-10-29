@@ -1,13 +1,15 @@
 """Unit tests for the --pr deploy filter: PR-commit discovery and path->item mapping.
 
 Uses a real git repo in tmp_path (git plumbing is the thing under test, so
-mocking it would test nothing) with committer identity forced per-command so
-the suite doesn't depend on the machine's git config.
+mocking it would test nothing), built by git that reads none of the machine's
+global or system config, runs no hooks and commits as a fixed identity, so the
+suite doesn't depend on the developer's git setup.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -23,9 +25,15 @@ from .conftest import make_item
 
 
 def _git(repo: Path, *args: str) -> str:
+    # A global core.hooksPath, init.templateDir or signing setup would otherwise
+    # run the developer's hooks on these commits, or fail them.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env |= {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
     return subprocess.run(
         [
             "git",
+            "-c",
+            "core.hooksPath=/dev/null",
             "-c",
             "user.email=t@example.com",
             "-c",
@@ -35,6 +43,7 @@ def _git(repo: Path, *args: str) -> str:
             *args,
         ],
         cwd=repo,
+        env=env,
         capture_output=True,
         text=True,
         check=True,

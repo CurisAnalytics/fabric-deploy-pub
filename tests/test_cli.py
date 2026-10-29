@@ -5,6 +5,7 @@ import logging
 import shutil
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
 
 import pytest
@@ -21,13 +22,11 @@ from fabric_deploy.workspace import WorkspaceDeployer
 
 from .conftest import SAMPLE_DEV_WORKSPACE_ID, SAMPLE_LAKEHOUSE_ID
 
-# Resolve the fabdep binary once. Prefer PATH; fall back to the venv that
-# launched pytest (sys.executable's bin dir). Tests skip if neither exists.
-_FABDEP = shutil.which("fabdep") or str(Path(sys.executable).parent / "fabdep")
-_FABDEP_AVAILABLE = Path(_FABDEP).exists()
+# The fabdep script of the environment running the tests, never another install
+# that comes first on PATH. Tests skip without one.
+_FABDEP = shutil.which("fabdep", path=sysconfig.get_path("scripts")) or ""
 _REQUIRES_FABDEP = pytest.mark.skipif(
-    not _FABDEP_AVAILABLE,
-    reason="fabdep binary not installed on PATH or in sys.executable's bin dir",
+    not _FABDEP, reason="fabdep is not installed in this environment (uv sync)"
 )
 
 
@@ -53,8 +52,12 @@ class TestCLI:
         """Live: deploy the repo to its MAIN workspace one item type at a time."""
         monkeypatch.chdir(test_workspace_dir)
         deployer = WorkspaceDeployer(test_workspace_dir, branch_override="MAIN")
-        for item_type in repo_item_types(test_workspace_dir):
+        item_types = repo_item_types(test_workspace_dir)
+        assert item_types, "FABDEP_INTEGRATION_REPO has no items"
+        for item_type in item_types:
             deployer.deploy(item_types=[item_type])
+            assert deployer.deployed_items, f"deploying {item_type} published nothing"
+            assert all(key.endswith(f".{item_type}") for key in deployer.deployed_items)
 
     @pytest.mark.integration
     @_REQUIRES_FABDEP
