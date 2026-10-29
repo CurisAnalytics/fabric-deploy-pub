@@ -8,6 +8,8 @@ Releases before the first public one are summarized in a few lines each.
 
 ## Unreleased
 
+## 2.0.0 - 2026-10-29
+
 ### Breaking
 
 - `tenant:` must be a tenant ID (GUID) and every token must match it, relayed ones included;
