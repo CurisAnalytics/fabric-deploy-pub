@@ -206,6 +206,21 @@ Changes must keep these true.
 - **One identity.** fabdep's REST calls and fabric-cicd use the same checked credential.
 - **Tests never touch the network** or the developer's sign-in (see CONTRIBUTING.md).
 
+## Known limitations
+
+Gaps fabdep leaves open; review the plan where one applies.
+
+- **References without a workspace ID bind by type alone**: a Direct Lake on SQL
+  `Sql.Database("<host>", "<id>")` and a notebook's `default_warehouse` / `known_warehouses`
+  bind to the repo's only matching item even when they belong to another workspace.
+- **`-L` keeps the workspace rule**: a notebook that isn't auto-bound deploys with the
+  target's workspace ID beside the source lakehouse's ID.
+- **Not detected**: pipeline linkedService `artifactId`s, Dataflow Gen2 (`mashup.pq`) and
+  SparkJobDefinition lakehouse references; `model.bim` models and `.ipynb` notebooks (skipped
+  with a warning); notebook sources other than `notebook-content.py` / `.sql` (Scala, R).
+- **`--pr` deploys one pull request**: what a dropped or failed CI run missed needs a full
+  deploy (see [examples/README.md](examples/README.md)).
+
 ## fabric-cicd coupling
 
 fabdep relies on `FabricWorkspace`, `publish_all_items`, `unpublish_all_orphan_items`,
