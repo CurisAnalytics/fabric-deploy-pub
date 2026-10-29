@@ -46,7 +46,8 @@ JSON Schema, and `fabdep <command> -h` documents every option.
 
 ## More
 
-- [ARCHITECTURE.md](ARCHITECTURE.md): how detection, the guards and the deploy flow work.
+- [ARCHITECTURE.md](ARCHITECTURE.md): how detection, the guards and the deploy flow work,
+  and the [known limitations](ARCHITECTURE.md#known-limitations).
 - [examples/](examples/): GitHub Actions and Azure Pipelines workflows.
 - [CHANGELOG.md](CHANGELOG.md) · [CONTRIBUTING.md](CONTRIBUTING.md) ·
   [SECURITY.md](SECURITY.md)
