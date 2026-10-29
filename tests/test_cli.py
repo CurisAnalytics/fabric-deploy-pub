@@ -216,13 +216,17 @@ class TestHelp:
     @pytest.mark.parametrize("command", [["deploy"], ["plan"]])
     def test_deploy_include_items_help_is_about_items(self, monkeypatch, capsys, command):
         out = self._help(monkeypatch, capsys, *command)
-        assert "-i ITEM [ITEM ...], --include-items ITEM [ITEM ...] Only these items" in out
-        assert "refresh" not in out.split("--include-items", 1)[1].split("-t TYPE")[0]
+        # Python 3.13 lays options out as "-i, --include-items ITEM [ITEM ...]", so
+        # check the usage line and the help text rather than one layout.
+        assert "[-i ITEM [ITEM ...]]" in out
+        help_text = out.split("--include-items", 1)[1].split("--item-types")[0]
+        assert "Only these items" in help_text
+        assert "refresh" not in help_text
 
     @pytest.mark.parametrize("command", [["refresh"], ["rls", "pull"]])
     def test_model_commands_take_models(self, monkeypatch, capsys, command):
         out = self._help(monkeypatch, capsys, *command)
-        assert "-i MODEL [MODEL ...], --include-items MODEL [MODEL ...]" in out
+        assert "[-i MODEL [MODEL ...]]" in out
         assert "Only these semantic models" in out
 
     @pytest.mark.parametrize(
