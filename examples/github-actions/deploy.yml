@@ -50,8 +50,11 @@ jobs:
   deploy:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    # One deploy per workspace at a time, never cancelling a running one. GitHub keeps
+    # only the newest pending run per group, so when merges land faster than deploys
+    # finish, a middle merge's --pr deploy is dropped: see examples/README.md.
     concurrency:
-      group: fabdep-${{ github.ref_name }} # one deploy per workspace at a time
+      group: fabdep-${{ github.ref_name }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4

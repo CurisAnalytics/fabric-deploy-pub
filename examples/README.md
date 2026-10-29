@@ -93,4 +93,10 @@ of the examples above, which stores no secret at all.
 - `--pr` never unpublishes, and a pull request that changes no item (only
   documentation, say) plans and deploys nothing. A full `fabdep deploy`, previewed with
   `fabdep plan`, removes the items the repository no longer has.
+- `--pr` deploys one pull request at a time. The GitHub Actions deploy job runs one deploy
+  per branch at a time and never cancels a running one, but GitHub keeps only the newest
+  pending run of a group: when a third merge lands while a deploy runs, the second merge's
+  run is dropped and its items stay undeployed until a later pull request changes them. A
+  periodic full `fabdep deploy` (on a schedule or by hand, previewed with `fabdep plan`)
+  republishes every item and catches anything a skipped run missed.
 - Add `--output json` to `fabdep plan` for a plan other tools can read.
