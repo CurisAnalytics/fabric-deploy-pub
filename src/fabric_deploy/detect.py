@@ -122,6 +122,14 @@ class ParameterDetector:
         "datawarehouse": Kind.WAREHOUSE,
     }
 
+    # `connectionSettings.type` of a CopyJob source or destination, lower-cased:
+    # what its `artifactId` is. Any other type deploys unchanged.
+    COPYJOB_ARTIFACT_KINDS: dict[str, Kind] = {
+        "lakehouse": Kind.LAKEHOUSE,
+        "datawarehouse": Kind.WAREHOUSE,
+        "warehouse": Kind.WAREHOUSE,
+    }
+
     UUID_PATTERN = re.compile(UUID, re.IGNORECASE)
 
     # Fabric's "unattached / placeholder" sentinel. Appears as workspaceId in
@@ -671,12 +679,18 @@ class ParameterDetector:
         return False
 
     def _extract_from_copyjob(self, file_path: Path, data: dict[str, Any]) -> None:
-        """Extract workspace and lakehouse IDs from CopyJob JSON."""
+        """Extract the workspace and item IDs of a CopyJob's source and destination.
+
+        The item is what the section's `connectionSettings.type` says (see
+        COPYJOB_ARTIFACT_KINDS); one of another type, or with none, deploys
+        unchanged with a warning.
+        """
         source_file = str(file_path.relative_to(self.repo_dir))
 
         for section_name in ["source", "destination"]:
             section = data.get("properties", {}).get(section_name, {})
-            type_properties = section.get("connectionSettings", {}).get("typeProperties", {})
+            settings = section.get("connectionSettings", {})
+            type_properties = settings.get("typeProperties", {})
 
             ws_id = type_properties.get("workspaceId")
             artifact_id = type_properties.get("artifactId")
@@ -684,11 +698,26 @@ class ParameterDetector:
                 artifact_id = None
             if ws_id and not self._classify_workspace(ws_id, source_file):
                 # The artifact lives in that foreign workspace too — mapping
-                # it to the repo's Lakehouse would corrupt the reference.
+                # it to a repo item would corrupt the reference.
                 if artifact_id:
                     _ = self._add_parameter(artifact_id, source_file, Kind.CROSS_WORKSPACE)
-            elif artifact_id:
-                _ = self._add_parameter(artifact_id, source_file, Kind.LAKEHOUSE)
+                continue
+            if not artifact_id:
+                continue
+            connection_type = settings.get("type")
+            kind = (
+                self.COPYJOB_ARTIFACT_KINDS.get(connection_type.lower())
+                if isinstance(connection_type, str)
+                else None
+            )
+            if kind is None:
+                self.logger.warning(
+                    f"{source_file}: the {section_name} item {artifact_id} has connection "
+                    f"type {connection_type or '(no type)'}, which fabdep doesn't map, so it "
+                    f"deploys unchanged. Map it with a manual_parameters entry in fabdep.yml."
+                )
+                continue
+            _ = self._add_parameter(artifact_id, source_file, kind)
 
     def _index_user_data_functions(self) -> None:
         """Index the repo's `.UserDataFunction` items by the functions they declare.

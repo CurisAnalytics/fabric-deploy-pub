@@ -39,6 +39,14 @@ def _make_copyjob(repo: Path, name: str, content: dict[str, object]) -> None:
     make_item(repo, name, "CopyJob", files={"copyjob-content.json": content})
 
 
+def _lakehouse_connection(artifact_id: str, workspace_id: str | None = None) -> dict[str, object]:
+    """A CopyJob section's `connectionSettings` for a lakehouse."""
+    type_properties = {"artifactId": artifact_id}
+    if workspace_id is not None:
+        type_properties["workspaceId"] = workspace_id
+    return {"type": "Lakehouse", "typeProperties": type_properties}
+
+
 def _lakehouse_meta(
     workspace_id: str, lakehouse_id: str, name: str | None = "lh", prefix: str = "#"
 ) -> str:
@@ -443,20 +451,10 @@ class TestCopyJobExtraction:
             {
                 "properties": {
                     "source": {
-                        "connectionSettings": {
-                            "typeProperties": {
-                                "workspaceId": WORKSPACE_ID,
-                                "artifactId": LAKEHOUSE_ID,
-                            }
-                        }
+                        "connectionSettings": _lakehouse_connection(LAKEHOUSE_ID, WORKSPACE_ID)
                     },
                     "destination": {
-                        "connectionSettings": {
-                            "typeProperties": {
-                                "workspaceId": OTHER_WORKSPACE_ID,
-                                "artifactId": ENDPOINT_ID,
-                            }
-                        }
+                        "connectionSettings": _lakehouse_connection(ENDPOINT_ID, OTHER_WORKSPACE_ID)
                     },
                 }
             },
@@ -479,9 +477,7 @@ class TestCopyJobExtraction:
             "cj",
             {
                 "properties": {
-                    "source": {
-                        "connectionSettings": {"typeProperties": {"artifactId": LAKEHOUSE_ID}}
-                    },
+                    "source": {"connectionSettings": _lakehouse_connection(LAKEHOUSE_ID)},
                 }
             },
         )
@@ -502,12 +498,9 @@ class TestCopyJobExtraction:
             {
                 "properties": {
                     "destination": {
-                        "connectionSettings": {
-                            "typeProperties": {
-                                "workspaceId": ParameterDetector.NULL_UUID,
-                                "artifactId": LAKEHOUSE_ID,
-                            }
-                        }
+                        "connectionSettings": _lakehouse_connection(
+                            LAKEHOUSE_ID, ParameterDetector.NULL_UUID
+                        )
                     },
                 }
             },
@@ -519,6 +512,43 @@ class TestCopyJobExtraction:
         assert d.offtarget_workspace_refs == []
         assert d.parameters[LAKEHOUSE_ID].description == "Lakehouse ID"
         assert d.parameters[LAKEHOUSE_ID].dynamic_variable == "$items.Lakehouse.lh.$id"
+
+    @pytest.mark.parametrize("connection_type", ["DataWarehouse", "Warehouse"])
+    def test_warehouse_artifact_maps_to_the_repo_warehouse(
+        self, tmp_path: Path, connection_type: str
+    ):
+        """The connection's type says what the artifact is, not the repo's lakehouse."""
+        make_item(tmp_path, "lh", "Lakehouse")
+        make_item(tmp_path, "Contoso DW", "Warehouse")
+        connection = {"type": connection_type, "typeProperties": {"artifactId": LAKEHOUSE_ID}}
+        _make_copyjob(
+            tmp_path, "cj", {"properties": {"destination": {"connectionSettings": connection}}}
+        )
+        d = ParameterDetector(tmp_path)
+        d.detect_all()
+
+        assert d.parameters[LAKEHOUSE_ID].description == "Warehouse ID"
+        assert d.parameters[LAKEHOUSE_ID].dynamic_variable == "$items.Warehouse.Contoso DW.$id"
+
+    @pytest.mark.parametrize("connection_type", ["Eventhouse", None])
+    def test_artifact_of_a_type_fabdep_cannot_map_deploys_unchanged(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, connection_type: str | None
+    ):
+        make_item(tmp_path, "lh", "Lakehouse")
+        connection: dict[str, object] = {"typeProperties": {"artifactId": LAKEHOUSE_ID}}
+        if connection_type:
+            connection["type"] = connection_type
+        _make_copyjob(
+            tmp_path, "cj", {"properties": {"source": {"connectionSettings": connection}}}
+        )
+        d = ParameterDetector(tmp_path)
+        with caplog.at_level("WARNING", logger="fabric_deploy.detect"):
+            d.detect_all()
+
+        assert LAKEHOUSE_ID not in str(d.generate_parameter_yml())
+        warnings = [r.getMessage() for r in caplog.records if LAKEHOUSE_ID in r.getMessage()]
+        assert len(warnings) == 1
+        assert str(connection_type or "(no type)") in warnings[0]
 
 
 # --- should_skip_replacement ---------------------------------------------
@@ -1252,13 +1282,7 @@ class TestItemBinding:
         _make_copyjob(
             tmp_path,
             "cj",
-            {
-                "properties": {
-                    "source": {
-                        "connectionSettings": {"typeProperties": {"artifactId": LAKEHOUSE_ID}}
-                    }
-                }
-            },
+            {"properties": {"source": {"connectionSettings": _lakehouse_connection(LAKEHOUSE_ID)}}},
         )
         d = ParameterDetector(tmp_path)
         with caplog.at_level("WARNING", logger="fabric_deploy.detect"):

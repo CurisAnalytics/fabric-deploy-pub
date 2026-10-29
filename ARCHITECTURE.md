@@ -133,7 +133,7 @@ fabric-cicd dynamic variable, a literal, or none).
 | SemanticModel | `definition/**/*.tmdl` | Direct Lake OneLake sources (`<workspace>/<lakehouse>`); `Sql.Database(s)("<host>", "<db>")` hosts and item ids |
 | Report | `definition/**/*.json` (parsed only when it mentions `dataFunction`) | User Data Function button bindings |
 | DataPipeline | `pipeline-content.json` | connection ids; `workspaceId` in activities |
-| CopyJob | `copyjob-content.json` | source and destination `workspaceId` and `artifactId` |
+| CopyJob | `copyjob-content.json` | source and destination `workspaceId` and `artifactId` (a lakehouse or warehouse, by the connection's `type`) |
 
 `model.bim` models and `.ipynb` notebooks are not read; a warning names them.
 
