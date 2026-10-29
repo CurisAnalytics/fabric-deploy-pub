@@ -56,8 +56,8 @@ parameters  [{find_value, replace_value (null: no value for the environment, so
             | detected, kind, items: published items whose files contain it}]
 guards      {fail_on_stale, unbound_udf, rls}, each {verdict: pass | warn |
             block, message, findings}; rls also has models: [{model, status:
-            new | unchanged | changed | skipped, adds, removes, changes,
-            recreates}]
+            new | unchanged | changed | skipped | unsupported (model.bim, not
+            compared), adds, removes, changes, recreates}]
 warnings    [what the deploy would warn about before publishing]
 blocked     whether a guard would block the deploy"""
 
@@ -460,6 +460,8 @@ def _describe(check: RlsCheck) -> str:
         return f"{check.model}: new (not in the target)"
     if check.status == "skipped":
         return f"{check.model}: skipped (--allow-rls-change)"
+    if check.status == "unsupported":
+        return f"{check.model}: not compared (model.bim)"
     changes = "; ".join(
         f"{verb} {', '.join(roles)}" for verb, roles in _changes(check).items() if roles
     )

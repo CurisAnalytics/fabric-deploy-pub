@@ -330,6 +330,19 @@ class TestGuards:
         assert rls.models[0].diff.only_remote == ["Reader"]
         assert plan.blocked
 
+    def test_bim_model_is_not_compared(self, sample_ws, fabric):
+        make_item(sample_ws, "Bim Model", "SemanticModel", files={"model.bim": "{}"})
+
+        plan = _plan(sample_ws)
+
+        rls = plan.guards["rls"]
+        assert rls.status == "warn"
+        assert [(m.model, m.status) for m in rls.models] == [
+            ("Bim Model", "unsupported"),
+            ("SQL DB", "unchanged"),
+        ]
+        assert "Bim Model: not compared (model.bim)" in format_plan(plan)
+
     def test_allow_rls_change_skips_the_read(self, sample_ws, fabric):
         plan = _plan(sample_ws, allow_rls_change=True)
 

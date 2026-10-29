@@ -359,6 +359,20 @@ def test_rls_guard_checks_the_models_the_deploy_publishes(
     assert [(c.model, c.status) for c in rls.models] == [(m, "new") for m in checked]
 
 
+def test_a_bim_model_is_deployed_with_an_rls_warning(
+    tmp_path: Path, mock_fabric_api, fabric_cicd, monkeypatch, caplog
+):
+    (tmp_path / "fabdep.yml").write_text('workspace_base_name: "Contoso"\n')
+    make_item(tmp_path, "Sales", "SemanticModel", files={"model.bim": "{}"})
+    monkeypatch.setattr("fabric_deploy.rls._remote_roles", lambda *_: pytest.fail("read RLS"))
+
+    with caplog.at_level("WARNING"):
+        WorkspaceDeployer(tmp_path, branch_override="dev").deploy()
+
+    fabric_cicd.publish.assert_called_once()
+    assert "RLS not compared" in caplog.text
+
+
 class TestParameterFile:
     """The parameter file fabric-cicd gets: the repo's parameter.yml plus the
     detected rules, written outside the repo. The sample repo's notebook

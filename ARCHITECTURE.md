@@ -94,7 +94,7 @@ results and exits; the other modules log and raise.
 7. **Guards**, before anything is created or published: `--fail-on-stale` (unremappable
    warehouse attachments), report buttons whose User Data Function can't be rebound
    (`--allow-unbound-udf`), and every in-scope semantic model's live RLS roles
-   (`--allow-rls-change`).
+   (`--allow-rls-change`; a `model.bim` model's roles aren't read, so it gets a warning).
 8. **Parameter file.** The repo's `parameter.yml`, if any, with the templates it `extend`s
    merged in as fabric-cicd merges them (so the written file has no `extend`), plus the
    detected rules, written to a temporary directory and passed as `parameter_file_path`. A

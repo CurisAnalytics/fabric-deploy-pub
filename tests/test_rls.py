@@ -331,6 +331,39 @@ def test_guard(
         assert not caplog.records
 
 
+def _make_bim_model(tmp_path, name="B"):
+    """A `.SemanticModel` in the model.bim format, which fabdep reads no roles from."""
+    return make_item(tmp_path, name, "SemanticModel", files={"model.bim": "{}"})
+
+
+def test_guard_warns_about_a_bim_model_instead_of_blocking(tmp_path, monkeypatch, caplog):
+    """fabdep reads roles only as TMDL: a model.bim model would always look role-less,
+    and block every deploy to a target with roles."""
+    _make_bim_model(tmp_path)
+    monkeypatch.setattr("fabric_deploy.rls._remote_roles", lambda *_: pytest.fail("read"))
+
+    checks = check_deploy_rls("ws", tmp_path, None, allow_change=False)
+
+    assert [(c.model, c.status) for c in checks] == [("B", "unsupported")]
+    status, message = rls_verdict(checks)
+    assert status == "warn"
+    assert "model.bim" in message
+    assert "'B'" in message
+
+
+def test_guard_still_blocks_a_tmdl_model_beside_a_bim_one(tmp_path, monkeypatch):
+    _make_bim_model(tmp_path)
+    _make_model(tmp_path, name="M", roles=None)
+    monkeypatch.setattr(
+        "fabric_deploy.rls._remote_roles", lambda _ws, _name: _role("RLS", ROLE_RLS)
+    )
+
+    checks = check_deploy_rls("ws", tmp_path, None, allow_change=False)
+
+    assert [(c.model, c.status) for c in checks] == [("B", "unsupported"), ("M", "changed")]
+    assert rls_verdict(checks)[0] == "block"
+
+
 def test_blocking_verdict_notes_memberships():
     diff = diff_roles(_role("RLS", ROLE_RLS_EDITED), _role("RLS", ROLE_RLS))
     _, message = rls_verdict([RlsCheck("M", "changed", diff)])
@@ -437,6 +470,21 @@ def test_pull_skips_absent_model(tmp_path, monkeypatch, patch_pull_env):
     _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS})
     monkeypatch.setattr("fabric_deploy.rls._remote_roles", lambda ws, name: None)
     assert pull_rls(tmp_path) is False
+
+
+def test_pull_never_writes_tmdl_roles_into_a_bim_model(
+    tmp_path, monkeypatch, patch_pull_env, caplog
+):
+    d = _make_bim_model(tmp_path)
+    monkeypatch.setattr("fabric_deploy.rls._remote_roles", lambda *_: pytest.fail("read"))
+    log = logging.getLogger("test_rls_pull")
+
+    with caplog.at_level(logging.WARNING, logger=log.name):
+        assert pull_rls(tmp_path, write=True, logger=log) is False
+
+    assert not (d / "definition").exists()
+    assert "'B'" in caplog.text
+    assert "model.bim" in caplog.text
 
 
 def test_pull_requires_a_model(tmp_path, patch_pull_env):

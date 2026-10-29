@@ -87,6 +87,9 @@ Releases before the first public one are summarized in a few lines each.
   unchanged.
 - `plan` (and `--output json`) lists `fabdep.yml`'s warnings, such as an unknown key, with
   its other warnings.
+- The RLS guard warns about a `model.bim` semantic model instead of blocking the deploy (its
+  roles aren't read), and `rls pull` leaves such a model alone instead of writing TMDL role
+  files into it.
 - Repos without a lakehouse deploy; orphan cleanup no longer spares items named like it.
 - Requests time out and retry 429, and 5xx on reads, honouring `Retry-After`.
 - Lists follow pagination (stopping at a repeated token or 1000 pages). An unreadable model

@@ -24,6 +24,10 @@ role its members. It powers two entry points:
   it removes every role the target has. ``--allow-rls-change`` skips the
   comparison entirely, since it declares the overwrite intentional before the
   check would run.
+
+Only TMDL models (`definition/`) are compared: a `model.bim` model's roles are
+not read, so the guard warns about it instead of blocking, and ``rls pull``
+leaves it alone.
 """
 
 from __future__ import annotations
@@ -179,8 +183,13 @@ def roles_from_parts(parts: dict[str, str]) -> dict[str, Role]:
     return roles
 
 
+def _is_bim_model(model_dir: Path) -> bool:
+    """Whether a `.SemanticModel` repo directory holds a model.bim, whose roles fabdep can't read."""
+    return (model_dir / "model.bim").is_file()
+
+
 def read_local_roles(model_dir: Path) -> dict[str, Role]:
-    """Read RLS roles from a `.SemanticModel` repo directory."""
+    """Read RLS roles from a TMDL `.SemanticModel` repo directory."""
     roles_dir = model_dir / "definition" / "roles"
     if not roles_dir.is_dir():
         return {}
@@ -267,8 +276,9 @@ class RlsCheck:
     """What a deploy would do to one in-scope model's live role definitions.
 
     `status` is "new" (the model isn't in the target: no live RLS to protect),
-    "unchanged", "changed" (the deploy would change live RLS, which blocks it)
-    or "skipped" (--allow-rls-change: not compared).
+    "unchanged", "changed" (the deploy would change live RLS, which blocks it),
+    "skipped" (--allow-rls-change: not compared) or "unsupported" (a model.bim
+    model, whose roles fabdep doesn't read: not compared, with a warning).
     """
 
     model: str
@@ -288,7 +298,8 @@ def check_deploy_rls(
     Reads only. Any difference (added, removed or modified role, or a changed
     PBI_Id, which wipes the role's members) makes a model "changed". A model
     with no `definition/roles/` folder counts as "no roles", so a target that
-    has roles for it is "changed" too.
+    has roles for it is "changed" too. A model.bim model is "unsupported" and
+    not read.
 
     `allow_change` skips the comparison outright: the operator has already
     decided to overwrite the target's roles, so the live read (slow — each
@@ -313,9 +324,16 @@ def check_deploy_rls(
     if model_names is not None:
         wanted = {m.removesuffix(".SemanticModel") for m in model_names}
         dirs = {n: d for n, d in dirs.items() if n in wanted}
-    guarded = {name: read_local_roles(model_dir) for name, model_dir in sorted(dirs.items())}
-    if allow_change or workspace_id is None or not guarded:
-        return [RlsCheck(name, "skipped" if allow_change else "new") for name in guarded]
+    if allow_change or workspace_id is None:
+        return [RlsCheck(name, "skipped" if allow_change else "new") for name in sorted(dirs)]
+    unsupported = {name for name, model_dir in dirs.items() if _is_bim_model(model_dir)}
+    guarded = {
+        name: read_local_roles(model_dir)
+        for name, model_dir in sorted(dirs.items())
+        if name not in unsupported
+    }
+    if not guarded:
+        return [RlsCheck(name, "unsupported") for name in sorted(unsupported)]
 
     if logger:
         logger.info(
@@ -333,7 +351,7 @@ def check_deploy_rls(
             )
         )
 
-    checks: list[RlsCheck] = []
+    checks = [RlsCheck(name, "unsupported") for name in unsupported]
     for name, local in guarded.items():
         remote = remotes[name]
         diff = None if remote is None else diff_roles(local, remote)
@@ -359,15 +377,16 @@ def check_deploy_rls(
                     pbi_id_label="deploy RECREATES",
                 )
                 logger.error(f"RLS drift for '{name}' — deploy would change live RLS:\n{rendering}")
-    return checks
+    return sorted(checks, key=lambda check: check.model)
 
 
 def rls_verdict(checks: list[RlsCheck]) -> tuple[str, str]:
     """The deploy guard's verdict on these checks, as (status, message).
 
     "block" when the deploy would change a model's live RLS, with the error the
-    deploy stops with; "warn" when --allow-rls-change skipped the comparison,
-    with the warning the deploy logs; else "pass" and no message.
+    deploy stops with; "warn" when --allow-rls-change skipped the comparison or
+    a model.bim model wasn't compared, with the warning the deploy logs; else
+    "pass" and no message.
     """
     if any(check.status == "skipped" for check in checks):
         return "warn", (
@@ -376,6 +395,14 @@ def rls_verdict(checks: list[RlsCheck]) -> tuple[str, str]:
             f"repo's, removing any role the repo lacks. {MEMBERS_NOTE}"
         )
     blocked = [check for check in checks if check.status == "changed"]
+    unsupported = [check.model for check in checks if check.status == "unsupported"]
+    if not blocked and unsupported:
+        return "warn", (
+            f"RLS not compared for {len(unsupported)} model.bim model(s): "
+            f"{', '.join(map(repr, unsupported))}. fabdep reads roles only from TMDL "
+            "(definition/roles/*.tmdl), so the deploy replaces their live role "
+            f"definitions unchecked. {MEMBERS_NOTE}"
+        )
     if not blocked:
         return "pass", ""
     recreates = any(check.diff and check.diff.pbi_id_changed for check in blocked)
@@ -505,6 +532,12 @@ def pull_rls(
 
     any_changed = False
     for name, model_dir in sorted(dirs.items()):
+        if _is_bim_model(model_dir):
+            log.warning(
+                f"'{name}' is a model.bim model: fabdep reads and writes roles only as TMDL "
+                "(definition/roles/*.tmdl), so it is not compared and --write leaves it alone."
+            )
+            continue
         local = read_local_roles(model_dir)
         remote = _remote_roles(workspace_id, name)
         if remote is None:
