@@ -249,6 +249,12 @@ class TestItems:
         assert any("nothing to deploy" in w for w in plan.warnings)
         assert _plan(sample_ws, fail_on_stale=True).guards["fail_on_stale"].status == "block"
 
+    def test_scope_without_items_fails_like_the_deploy(self, sample_ws, fabric):
+        """The deploy would publish nothing, then unpublish the target's reports."""
+        fabric.items[TARGET_ID].append(_item("Sales Report", "Report"))
+        with pytest.raises(RuntimeError, match="Nothing to deploy.*type Report"):
+            _plan(sample_ws, item_types=["Report"])
+
     def test_type_scope_limits_publishing_and_cleanup(self, sample_ws, fabric):
         fabric.items[TARGET_ID].append(_item("Old Notebook", "Notebook"))
 

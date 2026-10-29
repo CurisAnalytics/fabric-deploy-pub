@@ -501,8 +501,10 @@ class WorkspaceDeployer:
 
         Raises:
             RuntimeError: If `pr` is combined with `include_items`, no PR commit
-                is found or HEAD is past it, the PR touched no deployable item,
-                or no `include_items` entry names a repo item.
+                is found or HEAD is past it, no `include_items` entry names a
+                repo item, or the scope selects no repo item while orphan
+                cleanup is on (it would unpublish the target's items). A PR
+                that touched no item is not an error: it deploys nothing.
         """
         if pr:
             if include_items:
@@ -532,18 +534,34 @@ class WorkspaceDeployer:
             )
 
         types = resolve_item_scope(item_types, exclude_types, include_items)
+        items = [
+            item
+            for item in repo_items(self._repo_dir_resolved)
+            if (types is None or item.type in types)
+            and (not include_items or item.key in include_items)
+        ]
+        # include_items + unpublish is a footgun: if names don't match,
+        # nothing publishes and orphan cleanup would wipe the workspace.
+        cleanup = not no_cleanup and not include_items
+        if cleanup and not items:
+            # The same footgun without -i: a wrong directory or a -t the repo
+            # lacks would publish nothing, then unpublish the target's items.
+            if item_types:
+                what = f"no item of type {', '.join(types or [])}"
+            elif exclude_types:
+                what = f"no item outside the excluded types ({', '.join(exclude_types)})"
+            else:
+                what = "no items (no folder with a .platform file of a type fabric-cicd deploys)"
+            raise RuntimeError(
+                f"Nothing to deploy: {self._repo_dir_resolved} has {what}. The deploy "
+                "would publish nothing, then orphan cleanup would unpublish the target's "
+                "items of the types in scope. Check the directory and -t/-x."
+            )
         return DeployScope(
             item_types=types,
             include_items=include_items or None,
-            items=[
-                item
-                for item in repo_items(self._repo_dir_resolved)
-                if (types is None or item.type in types)
-                and (not include_items or item.key in include_items)
-            ],
-            # include_items + unpublish is a footgun: if names don't match,
-            # nothing publishes and orphan cleanup would wipe the workspace.
-            cleanup=not no_cleanup and not include_items,
+            items=items,
+            cleanup=cleanup,
         )
 
     def deploy(

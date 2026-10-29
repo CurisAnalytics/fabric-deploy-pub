@@ -95,6 +95,47 @@ class TestOrphanCleanup:
         fabric_cicd.unpublish.assert_called_once()
 
 
+class TestNothingInScope:
+    """A scope that selects no repo item publishes nothing; with orphan cleanup on, the
+    cleanup would then unpublish the target's items of the in-scope types."""
+
+    @pytest.mark.parametrize(
+        ("options", "error"),
+        [
+            pytest.param({"item_types": ["Report"]}, "type Report", id="-t-type-the-repo-lacks"),
+            pytest.param(
+                {"exclude_types": ["Lakehouse", "Notebook", "SemanticModel"]},
+                "Lakehouse, Notebook, SemanticModel",
+                id="-x-every-type-the-repo-has",
+            ),
+        ],
+    )
+    def test_refused_before_anything_is_published(self, deployer, fabric_cicd, options, error):
+        with pytest.raises(RuntimeError, match=f"(?s)Nothing to deploy.*{error}"):
+            deployer.deploy(**options)
+        fabric_cicd.workspace.assert_not_called()
+
+    def test_folder_without_items_is_refused_before_the_workspace_is_created(
+        self, tmp_path: Path, mock_fabric_api, fabric_cicd, monkeypatch
+    ):
+        (tmp_path / "fabdep.yml").write_text('workspace_base_name: "Contoso"\n')
+        create = MagicMock()
+        monkeypatch.setattr("fabric_deploy.workspace.create_workspace", create)
+        monkeypatch.setattr("fabric_deploy.workspace.find_workspace_id_by_name", lambda _n: None)
+        deployer = WorkspaceDeployer(tmp_path, branch_override="dev", new_workspace=True)
+
+        with pytest.raises(RuntimeError, match="Nothing to deploy.*no items"):
+            deployer.deploy()
+        create.assert_not_called()
+        fabric_cicd.workspace.assert_not_called()
+
+    def test_without_cleanup_it_publishes_nothing(self, deployer, fabric_cicd):
+        deployer.deploy(item_types=["Report"], no_cleanup=True)
+
+        assert deployer.deployed_items == []
+        fabric_cicd.unpublish.assert_not_called()
+
+
 class TestIncludeItems:
     def test_publishes_the_matched_items_with_the_feature_flags(self, deployer, fabric_cicd):
         deployer.deploy(include_items=[NOTEBOOK, "Ghost.Notebook"])

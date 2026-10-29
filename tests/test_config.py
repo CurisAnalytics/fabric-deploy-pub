@@ -10,6 +10,8 @@ import pytest
 from fabric_deploy.config import FabdepConfig
 from fabric_deploy.workspace import PR_LATEST, WorkspaceDeployer
 
+from .conftest import make_item
+
 BASE = "workspace_base_name: Base\n"
 MAP = """\
 workspace_base_name: Contoso Sales
@@ -223,6 +225,11 @@ class TestTargetWorkspace:
 
     CREATED = "00000000-0000-0000-0000-0000000000cc"
     CAPACITY = "00000000-0000-0000-0000-0000000000c1"
+
+    @pytest.fixture(autouse=True)
+    def _an_item(self, tmp_path: Path) -> None:
+        """A deploy of a folder without items is refused before it gets this far."""
+        make_item(tmp_path, "Sales", "Notebook")
 
     @pytest.mark.parametrize(
         ("body", "branch", "new_workspace", "exists", "created_on"),

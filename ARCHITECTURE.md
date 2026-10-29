@@ -88,7 +88,9 @@ results and exits; the other modules log and raise.
    here, having created and published nothing (its plan has no items or rules, and every
    guard passes). `-i` names are checked against `.platform`
    display names (no match is an error); `-t`/`-x` become fabric-cicd's
-   `item_type_in_scope`.
+   `item_type_in_scope`. A scope that selects no repo item while orphan cleanup is on (a
+   folder without items, a `-t` the repo lacks) is an error: step 11 would unpublish the
+   target's items.
 7. **Guards**, before anything is created or published: `--fail-on-stale` (unremappable
    warehouse attachments), report buttons whose User Data Function can't be rebound
    (`--allow-unbound-udf`), and every in-scope semantic model's live RLS roles
@@ -192,10 +194,10 @@ Changes must keep these true.
   `rls pull` without `--write`, `plan`.
 - **Fail closed on ambiguity.** Never pick the first of several candidates: an id fabdep can't
   place deploys unchanged, with a warning. Whatever could make a deploy ship more, less or
-  elsewhere than intended is an error: `-i` matching nothing, `--pr` without a pull-request
-  commit, with HEAD past it, or in a shallow clone, several active capacities without
-  `capacity_id`, an unbound User Data Function button, any RLS difference, an unknown key in
-  an `environments:` or `manual_parameters` entry.
+  elsewhere than intended is an error: `-i` matching nothing, a scope of no items with orphan
+  cleanup on, `--pr` without a pull-request commit, with HEAD past it, or in a shallow clone,
+  several active capacities without `capacity_id`, an unbound User Data Function button, any
+  RLS difference, an unknown key in an `environments:` or `manual_parameters` entry.
 - **Only the repo's own workspaces are rewritten.** An id of an unrelated workspace is never
   pointed at the target.
 - **Guards run before anything is created, published or unpublished.**

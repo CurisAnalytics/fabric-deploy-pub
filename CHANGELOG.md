@@ -76,6 +76,8 @@ Releases before the first public one are summarized in a few lines each.
 
 ### Fixed
 
+- A deploy or plan whose scope has no repo item (a folder without items, a `-t` type the repo
+  lacks) is an error while orphan cleanup is on, instead of unpublishing the target's items.
 - Repos without a lakehouse deploy; orphan cleanup no longer spares items named like it.
 - Requests time out and retry 429, and 5xx on reads, honouring `Retry-After`.
 - Lists follow pagination (stopping at a repeated token or 1000 pages). An unreadable model
