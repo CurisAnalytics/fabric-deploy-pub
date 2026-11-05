@@ -26,14 +26,15 @@ overwrite live row-level security or ship report buttons still wired to another 
 
 ## Install
 
-Requires Python 3.11+ and a way to sign in (the Azure CLI by default).
+Requires Python 3.11+, `git`, and a way to sign in (the Azure CLI by default).
 
 ```sh
-cd fabric-deploy
+git clone https://github.com/CurisAnalytics/fabric-deploy-pub.git
+cd fabric-deploy-pub
 uv tool install .        # or: pipx install .
 ```
 
-Try `uv run fabdep --help`. This prints the available commands and the options of the
+Try `fabdep --help`. This prints the available commands and the options of the
 default command `deploy`. `fabdep <command> -h` covers the others.
 
 ## Use
@@ -46,7 +47,7 @@ fabdep plan              # read-only: what a deploy would create, update and unp
 fabdep                   # deploy the checked-out branch
 ```
 
-By default branch `dev` deploys to the Workspace `<Workspace_base_name> [DEV]`; an
+By default branch `dev` deploys to the Workspace `<workspace_base_name> [DEV]`; an
 `environments:` map in `fabdep.yml` overrides that.
 
 > [!WARNING]
