@@ -19,7 +19,7 @@ from fabric_deploy.client import (
     refresh_semantic_model,
 )
 from fabric_deploy.identity import POWERBI_SCOPE, get_access_token
-from fabric_deploy.transport import poll_fabric_lro
+from fabric_deploy.transport import REQUEST_TIMEOUT_S, http_request, poll_fabric_lro
 
 
 def _jwt(exp_offset: int = 3600) -> str:
@@ -86,6 +86,45 @@ def test_find_item_ambiguous_raises(monkeypatch):
     _items(monkeypatch, [{"id": "1", "displayName": "A"}, {"id": "2", "displayName": "B"}])
     with pytest.raises(ValueError, match="Multiple SemanticModel"):
         find_item_by_name("ws", "SemanticModel")
+
+
+# --- http_request timeout ------------------------------------------------
+
+
+def test_http_request_passes_a_timeout(monkeypatch):
+    seen = {}
+
+    class _Resp:
+        status = 200
+        headers = {}
+
+        def read(self):
+            return b"{}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        seen["timeout"] = timeout
+        return _Resp()
+
+    monkeypatch.setattr("fabric_deploy.transport.get_access_token", lambda _s: "t")
+    monkeypatch.setattr("fabric_deploy.transport.urllib.request.urlopen", fake_urlopen)
+    assert http_request("https://x/y")[0] == 200
+    assert seen["timeout"] == REQUEST_TIMEOUT_S
+
+
+def test_http_request_timeout_is_a_runtime_error(monkeypatch):
+    def fake_urlopen(req, timeout=None):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr("fabric_deploy.transport.get_access_token", lambda _s: "t")
+    monkeypatch.setattr("fabric_deploy.transport.urllib.request.urlopen", fake_urlopen)
+    with pytest.raises(RuntimeError, match="list items.*timed out"):
+        http_request("https://x/y", error_context="list items")
 
 
 # --- poll_fabric_lro ----------------------------------------------------

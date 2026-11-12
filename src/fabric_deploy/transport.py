@@ -15,6 +15,7 @@ from .identity import FABRIC_SCOPE, get_access_token
 __all__ = [
     "FABRIC_HOST",
     "POWERBI_HOST",
+    "REQUEST_TIMEOUT_S",
     "http_request",
     "fabric_api_request",
     "poll_fabric_lro",
@@ -27,6 +28,11 @@ __all__ = [
 
 FABRIC_HOST = "https://api.fabric.microsoft.com"
 POWERBI_HOST = "https://api.powerbi.com"
+
+# Seconds to wait on one request (connect or read) before giving up. Slow work
+# (definitions, syncs, refreshes) is a 202 + polling, so no single call should
+# legitimately take this long; without a timeout a stalled socket hangs forever.
+REQUEST_TIMEOUT_S = 60
 
 
 def http_request(
@@ -71,7 +77,7 @@ def http_request(
         req = urllib.request.Request(
             url, data=request_data, headers=headers, method=method
         )
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_S) as response:
             body = response.read().decode()
             parsed = json.loads(body) if body.strip() else {}
             return response.status, dict(response.headers), parsed
@@ -85,6 +91,11 @@ def http_request(
         raise RuntimeError(
             f"Failed to connect to the API.\n{e.reason}\n\n"
             "Check your network connectivity."
+        ) from e
+    except TimeoutError as e:
+        raise RuntimeError(
+            f"Failed to {error_context}: no response within {REQUEST_TIMEOUT_S}s "
+            "(timed out).\n\nCheck your network connectivity."
         ) from e
 
 
