@@ -43,11 +43,14 @@ fabdep [DIRECTORY] [OPTIONS]
 matches nothing fails loudly (instead of silently deploying nothing) and a
 one-line `Deployed: ...` confirmation prints what landed.
 
-`--pr` automates reading the PR diff before a promotion: it finds the most
-recent merge / `Merged PR N:` (Azure DevOps) / `Merge pull request #N` or
-`(#N)` (GitHub) commit reachable from HEAD, maps the files it changed onto the
-items that own them, and deploys only those. Pass a commit-ish (`--pr abc1234`)
-to pick a specific PR. It resolves into `-i`, so orphan cleanup is off and the
+`--pr` automates reading the PR diff before a promotion: it finds the newest
+commit on HEAD's first-parent line worded as a merged pull request (`Merged PR
+N:` from Azure DevOps, `Merge pull request #N` or a squash's `(#N)` from GitHub,
+GitLab's `See merge request`, Bitbucket's `(pull request #N)`), maps the files
+it changed onto the items that own them, and deploys only those. A plain local
+merge doesn't count, and if HEAD has commits on top of the PR commit `--pr`
+stops rather than deploy an older PR. Pass a commit-ish (`--pr abc1234`) to pick
+a specific PR. It resolves into `-i`, so orphan cleanup is off and the
 two flags can't be combined. Changed paths that belong to no item in the
 working tree — repo config, docs, or an item the PR deleted — are listed and
 skipped; `--pr` never unpublishes.

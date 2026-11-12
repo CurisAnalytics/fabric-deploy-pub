@@ -35,7 +35,7 @@ from .params import (
     resolve_sqldatabase_hostname_params,
     resolve_warehouse_endpoint_params,
 )
-from .git import changed_paths_in, latest_pr_commit
+from .git import changed_paths_in, commits_after, latest_pr_commit
 from .scope import (
     items_for_changed_paths,
     repo_item_types,
@@ -487,18 +487,27 @@ class WorkspaceDeployer:
         to avoid.
 
         Raises:
-            RuntimeError: If no PR commit is found, or it touched no item.
+            RuntimeError: If no PR commit is found, HEAD is past it, or it
+                touched no item.
         """
         if pr == PR_HEAD:
             found = latest_pr_commit(self._repo_dir_resolved)
             if not found:
                 raise RuntimeError(
-                    "--pr found no pull-request commit in the last 50 commits "
-                    "(looked for a merge commit, 'Merged PR N:' from Azure "
-                    "DevOps, or GitHub's 'Merge pull request #N' / '(#N)'). "
-                    "Pass the commit explicitly with --pr <commit-ish>."
+                    "--pr found no pull-request commit in the last 50 commits (one "
+                    "worded the way Azure DevOps, GitHub, GitLab or Bitbucket word a "
+                    "merged pull request). Pass the commit explicitly with --pr "
+                    "<commit-ish>."
                 )
             sha, subject = found
+            # Commits on top of it (a direct push, a local merge or pull) mean the
+            # newest PR-worded commit is an older pull request than what HEAD holds.
+            if newer := commits_after(self._repo_dir_resolved, sha):
+                raise RuntimeError(
+                    f"--pr: HEAD is {newer} commit(s) past the newest pull-request commit "
+                    f"{sha[:8]} ({subject}), so that commit is not what this checkout "
+                    "brought in. Pass the commit whose changes should deploy: --pr <commit>."
+                )
         else:
             sha, subject = pr, ""
 

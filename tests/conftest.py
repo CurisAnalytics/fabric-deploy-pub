@@ -2,9 +2,21 @@
 
 from __future__ import annotations
 
+import os
 from unittest.mock import patch
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _no_inherited_git_env(monkeypatch):
+    """Drop GIT_* variables so git fixtures run in their own tmp repos.
+
+    Under `git rebase --exec` or a git hook, GIT_DIR / GIT_INDEX_FILE point at
+    the enclosing repo, and a test's `git commit` would land there instead.
+    """
+    for name in [n for n in os.environ if n.startswith("GIT_")]:
+        monkeypatch.delenv(name)
 
 
 FAKE_WORKSPACE_ID = "00000000-0000-0000-0000-000000000001"

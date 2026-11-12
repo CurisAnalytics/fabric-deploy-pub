@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from fabric_deploy.git import changed_paths_in, latest_pr_commit
+from fabric_deploy.git import changed_paths_in, commits_after, latest_pr_commit
 from fabric_deploy.scope import items_for_changed_paths
 
 
@@ -78,6 +78,7 @@ class TestLatestPrCommit:
             "Merged PR 412: add orders pipeline",  # Azure DevOps
             "Merge pull request #12 from contoso/feature",  # GitHub merge
             "feat: add orders pipeline (#12)",  # GitHub squash
+            "Merged in feature (pull request #5)",  # Bitbucket
         ],
     )
     def test_recognizes_host_pr_subjects(self, tmp_path: Path, subject: str):
@@ -89,16 +90,41 @@ class TestLatestPrCommit:
         assert found[0] == sha
         assert found[1] == subject
 
-    def test_merge_commit_counts_without_a_pr_subject(self, tmp_path: Path):
+    def test_recognizes_gitlab_body(self, tmp_path: Path):
+        repo = _repo(tmp_path)
+        (repo / "a.txt").write_text("a")
+        sha = _commit(repo, "Merge branch 'feature' into 'main'\n\nSee merge request grp/proj!7")
+        found = latest_pr_commit(repo)
+        assert found is not None and found[0] == sha
+
+    def test_plain_merge_commit_does_not_count(self, tmp_path: Path):
+        """A local `git merge` / `git pull` is not a pull request."""
         repo = _repo(tmp_path)
         _git(repo, "checkout", "-b", "feature")
         (repo / "a.txt").write_text("a")
         _commit(repo, "feat: work")
         _git(repo, "checkout", "main")
         _git(repo, "merge", "--no-ff", "-m", "merge branch", "feature")
-        found = latest_pr_commit(repo)
-        assert found is not None
-        assert found[1] == "merge branch"
+        assert latest_pr_commit(repo) is None
+
+    def test_pr_commits_inside_a_merged_branch_are_not_searched(self, tmp_path: Path):
+        """Only HEAD's own first-parent line counts, not what a merge brought in."""
+        repo = _repo(tmp_path)
+        _git(repo, "checkout", "-b", "feature")
+        (repo / "a.txt").write_text("a")
+        _commit(repo, "Merged PR 3: on another branch")
+        _git(repo, "checkout", "main")
+        _git(repo, "merge", "--no-ff", "-m", "merge branch", "feature")
+        assert latest_pr_commit(repo) is None
+
+    def test_commits_after_counts_first_parent_commits_on_top(self, tmp_path: Path):
+        repo = _repo(tmp_path)
+        (repo / "a.txt").write_text("a")
+        sha = _commit(repo, "Merged PR 1: a")
+        assert commits_after(repo, sha) == 0
+        (repo / "b.txt").write_text("b")
+        _commit(repo, "direct push")
+        assert commits_after(repo, sha) == 1
 
     def test_most_recent_pr_wins(self, tmp_path: Path):
         repo = _repo(tmp_path)
@@ -234,6 +260,7 @@ class TestItemsFromPr:
             "fabric_deploy.workspace.latest_pr_commit",
             lambda _d: ("abc123def", "Merged PR 7: gl fix"),
         )
+        monkeypatch.setattr("fabric_deploy.workspace.commits_after", lambda _d, _c: 0)
         monkeypatch.setattr(
             "fabric_deploy.workspace.changed_paths_in",
             lambda _d, _c: ["Load GL.Notebook/notebook-content.py", "README.md"],
@@ -260,12 +287,27 @@ class TestItemsFromPr:
         with pytest.raises(RuntimeError, match="found no pull-request commit"):
             deployer._items_from_pr("HEAD")
 
+    def test_raises_when_head_is_past_the_pr_commit(self, deployer, monkeypatch):
+        """Commits on top mean the newest PR commit is older than what HEAD holds."""
+        monkeypatch.setattr(
+            "fabric_deploy.workspace.latest_pr_commit",
+            lambda _d: ("abc123def", "Merged PR 6: older"),
+        )
+        monkeypatch.setattr("fabric_deploy.workspace.commits_after", lambda _d, _c: 2)
+        monkeypatch.setattr(
+            "fabric_deploy.workspace.changed_paths_in",
+            lambda _d, _c: pytest.fail("should stop before reading the diff"),
+        )
+        with pytest.raises(RuntimeError, match="HEAD is 2 commit"):
+            deployer._items_from_pr("HEAD")
+
     def test_raises_when_pr_touched_no_item(self, deployer, monkeypatch):
         """Deploying everything would be the wrong recovery — say nothing matched."""
         monkeypatch.setattr(
             "fabric_deploy.workspace.latest_pr_commit",
             lambda _d: ("abc123def", "Merged PR 7: docs"),
         )
+        monkeypatch.setattr("fabric_deploy.workspace.commits_after", lambda _d, _c: 0)
         monkeypatch.setattr(
             "fabric_deploy.workspace.changed_paths_in",
             lambda _d, _c: ["README.md"],
