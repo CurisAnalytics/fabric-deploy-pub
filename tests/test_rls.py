@@ -167,15 +167,29 @@ def test_reconcile_ref_roles_quotes_names_with_spaces():
 # --- guard ---------------------------------------------------------------
 
 
-def test_guard_skips_model_without_local_roles(tmp_path, monkeypatch):
-    """A model with no roles in the repo must not trigger any API call."""
+def test_guard_blocks_model_without_repo_roles_when_target_has_roles(tmp_path, monkeypatch):
+    """Deploying a model with no roles/ folder removes every role the target has."""
     _make_model(tmp_path, name="M", roles=None)
+    monkeypatch.setattr(
+        "fabric_deploy.rls._remote_roles", lambda ws, name: _role("RLS", ROLE_RLS)
+    )
+    with pytest.raises(RuntimeError, match="Deploy blocked.*row-level security"):
+        guard_deploy_rls("ws", tmp_path, model_names=None, allow_change=False)
 
-    def _boom(*a, **k):
-        raise AssertionError("remote roles should not be fetched")
 
-    monkeypatch.setattr("fabric_deploy.rls._remote_roles", _boom)
+def test_guard_passes_model_without_roles_on_either_side(tmp_path, monkeypatch):
+    _make_model(tmp_path, name="M", roles=None)
+    monkeypatch.setattr("fabric_deploy.rls._remote_roles", lambda ws, name: {})
     guard_deploy_rls("ws", tmp_path, model_names=None, allow_change=False)
+
+
+def test_guard_with_allow_change_skips_read_for_model_without_roles(tmp_path, monkeypatch):
+    _make_model(tmp_path, name="M", roles=None)
+    monkeypatch.setattr(
+        "fabric_deploy.rls._remote_roles",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no call")),
+    )
+    guard_deploy_rls("ws", tmp_path, model_names=None, allow_change=True)
 
 
 def test_guard_empty_model_names_is_noop(tmp_path, monkeypatch):
@@ -247,21 +261,6 @@ def test_guard_with_allow_change_announces_the_skip(tmp_path, monkeypatch, caplo
     assert not any("reading live role definitions" in r.message for r in caplog.records)
 
 
-def test_guard_with_allow_change_silent_without_repo_rls(tmp_path, monkeypatch, caplog):
-    """No RLS in the repo -> nothing is being overwritten, so say nothing."""
-    _make_model(tmp_path, name="M", roles=None)
-    monkeypatch.setattr(
-        "fabric_deploy.rls._remote_roles",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no call")),
-    )
-    with caplog.at_level(logging.INFO, logger="test_rls_guard"):
-        guard_deploy_rls(
-            "ws", tmp_path, model_names=None, allow_change=True,
-            logger=logging.getLogger("test_rls_guard"),
-        )
-    assert not caplog.records
-
-
 def test_guard_skips_when_model_absent_in_target(tmp_path, monkeypatch):
     """First deploy: the model isn't in the target yet -> nothing to protect."""
     _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS})
@@ -310,21 +309,6 @@ def test_guard_permitted_change_logs_members_note(tmp_path, monkeypatch, caplog)
             logger=logging.getLogger("test_rls_guard"),
         )
     assert any(MEMBERS_NOTE in r.message for r in caplog.records)
-
-
-def test_guard_no_local_rls_stays_silent(tmp_path, monkeypatch, caplog):
-    """No repo RLS -> no API call, so no fetch-cost announcement either."""
-    _make_model(tmp_path, name="M", roles=None)
-    monkeypatch.setattr(
-        "fabric_deploy.rls._remote_roles",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no call")),
-    )
-    with caplog.at_level(logging.INFO, logger="test_rls_guard"):
-        guard_deploy_rls(
-            "ws", tmp_path, model_names=None, allow_change=False,
-            logger=logging.getLogger("test_rls_guard"),
-        )
-    assert not caplog.records
 
 
 def test_guard_blocks_on_wipe(tmp_path, monkeypatch):

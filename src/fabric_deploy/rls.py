@@ -17,12 +17,12 @@ role its members. It powers two entry points:
 
 * ``fabdep rls pull`` — read the target model's live roles, diff against the
   repo, and (with ``--write``) pull them into the working tree for review.
-* the deploy guard — before ``fabdep deploy`` publishes a semantic model that
-  carries RLS *in the repo*, compare the repo's roles to the target's live
-  roles and **block** the deploy on any difference. If the repo has no roles
-  for a model, the guard makes no API call (most workspaces have no RLS, so
-  this stays free); ``--allow-rls-change`` skips the comparison entirely, since
-  it declares the overwrite intentional before the check would run.
+* the deploy guard — before ``fabdep deploy`` publishes semantic models,
+  compare each in-scope model's repo roles to the target's live roles and
+  **block** the deploy on any difference. A model without ``definition/roles/``
+  is checked too: deploying it removes every role the target has.
+  ``--allow-rls-change`` skips the comparison entirely, since it declares the
+  overwrite intentional before the check would run.
 """
 
 from __future__ import annotations
@@ -280,11 +280,11 @@ def guard_deploy_rls(
 ) -> None:
     """Block a deploy that would change a target model's live RLS definitions.
 
-    Only models that carry RLS *in the repo* are checked — a model with no
-    `definition/roles/` folder is skipped without any API call. For each model
-    that does, the target's live roles are fetched and compared; any difference
-    (added, removed or modified role, or a changed PBI_Id, which wipes the
-    role's members) blocks the deploy.
+    Every in-scope model's live roles are fetched and compared with the repo's;
+    any difference (added, removed or modified role, or a changed PBI_Id, which
+    wipes the role's members) blocks the deploy. A model with no
+    `definition/roles/` folder counts as "no roles", so a target that has roles
+    for it blocks too.
 
     `allow_change` skips the comparison outright: the operator has already
     decided to overwrite the target's roles, so the live read (slow — each
@@ -316,22 +316,20 @@ def guard_deploy_rls(
         wanted = {m.removesuffix(".SemanticModel") for m in model_names}
         dirs = {n: d for n, d in dirs.items() if n in wanted}
 
-    # Only models that carry RLS in the repo cost anything to guard.
-    guarded = {
-        name: local
-        for name, model_dir in sorted(dirs.items())
-        if (local := read_local_roles(model_dir))
-    }
-    if not guarded:
+    if not dirs:
         return
+
+    # A model with no roles in the repo is guarded too: deploying it removes
+    # every role the target has for it.
+    guarded = {name: read_local_roles(model_dir) for name, model_dir in sorted(dirs.items())}
 
     # --allow-rls-change is the operator saying "overwrite the target's roles".
     # Reading them back first can't change that outcome, so don't pay for it.
     if allow_change:
         log.warning(
             f"RLS check skipped for {len(guarded)} model(s) (--allow-rls-change): "
-            "the deploy will overwrite the target's live role definitions with "
-            f"the repo's. {MEMBERS_NOTE}"
+            "the deploy replaces the target's live role definitions with the "
+            f"repo's, removing any role the repo lacks. {MEMBERS_NOTE}"
         )
         return
 

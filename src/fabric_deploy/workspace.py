@@ -410,21 +410,20 @@ class WorkspaceDeployer:
         """Block a deploy that would change a target model's live RLS.
 
         Resolves which SemanticModels are in deploy scope and delegates to
-        `guard_deploy_rls`, which no-ops (no API call) for any model the repo
-        carries no RLS for.
+        `guard_deploy_rls`, which compares each one's roles with the target's.
         """
         from .rls import guard_deploy_rls
 
-        if include_items:
+        if item_type_in_scope is not None and "SemanticModel" not in item_type_in_scope:
+            models = []  # SemanticModel not in scope -> skip the guard
+        elif include_items:
             models = [
                 it.rsplit(".", 1)[0]
                 for it in include_items
                 if it.endswith(".SemanticModel")
             ]
-        elif item_type_in_scope is None or "SemanticModel" in item_type_in_scope:
-            models = None  # every SemanticModel in the repo is in scope
         else:
-            models = []  # SemanticModel not in scope -> skip the guard
+            models = None  # every SemanticModel in the repo is in scope
 
         guard_deploy_rls(
             workspace_id=self.workspace_id,
