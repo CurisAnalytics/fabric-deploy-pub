@@ -238,7 +238,7 @@ NO_READ = object()  # the guard must not read the target at all
             None,
             "skipped",
             "warn",
-            "(?s)RLS check skipped.*--allow-rls-change.*role memberships",
+            "(?s)RLS check skipped.*--allow-rls-change.*Role MEMBERSHIPS",
             [],
             id="allow-change-skips-the-read-but-says-so",
         ),

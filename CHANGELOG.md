@@ -8,6 +8,11 @@ Releases before the first public one are summarized in a few lines each.
 
 ## Unreleased
 
+### Changed
+
+- The run summary prints the source and target workspaces the same way, and the RLS
+  membership note is one sentence.
+
 ## 2.0.0 - 2026-10-29
 
 ### Breaking

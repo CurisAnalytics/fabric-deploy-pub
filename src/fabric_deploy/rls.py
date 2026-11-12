@@ -63,11 +63,8 @@ __all__ = [
 ]
 
 MEMBERS_NOTE = (
-    "Note: role memberships (who is assigned to each role) are not part of the "
-    "model definition, so they are not compared here and the repo cannot restore "
-    "them. A deploy keeps a role's members only while the role keeps its name and "
-    "annotation PBI_Id; a role that is removed, renamed or given a new PBI_Id "
-    "loses them."
+    "Note: this compares role DEFINITIONS only. Role MEMBERSHIPS (who is "
+    "assigned to each role) are not part of this deploy payload."
 )
 
 _ROLE_DECL = re.compile(r"^\s*role\s+(.+?)\s*$")

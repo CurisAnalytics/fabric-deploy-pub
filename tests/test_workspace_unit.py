@@ -905,5 +905,5 @@ def test_deploy_names_source_and_target_without_a_banner(deployer, fabric_cicd, 
     messages = [r.message for r in caplog.records]
     assert not any("fabdep v" in m for m in messages)
     assert f"Source Workspace: Fabdep Test [QA] ({QA_WORKSPACE_ID})" in messages
-    assert f"Target Workspace: 'Fabdep Test [MAIN]' ({FAKE_WORKSPACE_ID})" in messages
+    assert f"Target Workspace: Fabdep Test [MAIN] ({FAKE_WORKSPACE_ID})" in messages
     assert not any(m.startswith(("Workspace Name", "Parameter file")) for m in messages)

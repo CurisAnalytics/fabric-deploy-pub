@@ -616,7 +616,7 @@ class WorkspaceDeployer:
         for ws_id, name in sorted(self.source_workspaces.items(), key=lambda kv: kv[1]):
             self.logger.info(f"Source Workspace: {name} ({ws_id})")
         self.logger.info(
-            f"Target Workspace: '{self.workspace_name}' "
+            f"Target Workspace: {self.workspace_name} "
             + (f"({self.workspace_id})" if self.workspace_id else "(to be created)")
         )
 
