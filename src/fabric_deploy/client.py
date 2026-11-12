@@ -446,6 +446,9 @@ def get_semantic_model_definition(
     Returns:
         Mapping of definition part path (e.g. "definition/roles/RLS.tmdl") to
         its UTF-8-decoded text.
+
+    Raises:
+        RuntimeError: If the response carries no definition parts.
     """
     status, headers, body = http_request(
         f"{FABRIC_HOST}/v1/workspaces/{workspace_id}/semanticModels/{item_id}"
@@ -459,7 +462,16 @@ def get_semantic_model_definition(
             headers, error_context="semantic model getDefinition", timeout_s=timeout_s
         )
 
-    parts = (body or {}).get("definition", {}).get("parts", [])
+    # No parts means the definition wasn't read (e.g. the operation result
+    # couldn't be fetched), not an empty model: reading it as "no roles" would
+    # let `rls pull --write` delete every role file and the guard compare
+    # against nothing.
+    parts = ((body or {}).get("definition") or {}).get("parts") or []
+    if not parts:
+        raise RuntimeError(
+            f"Could not read the definition of semantic model {item_id}: the "
+            "getDefinition response held no definition parts."
+        )
     result: dict[str, str] = {}
     for part in parts:
         path = part.get("path")

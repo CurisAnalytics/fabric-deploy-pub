@@ -14,6 +14,7 @@ import pytest
 
 from fabric_deploy.client import (
     find_item_by_name,
+    get_semantic_model_definition,
     get_sqldatabase_server_host,
     list_workspace_items,
     refresh_semantic_model,
@@ -211,6 +212,33 @@ def test_refresh_semantic_model_ignores_trace_request_id(monkeypatch):
     monkeypatch.setattr("fabric_deploy.client.http_request", fake_http)
     with pytest.raises(RuntimeError, match="no Location"):
         refresh_semantic_model("ws", "ds", timeout_s=100, poll_s=1)
+
+
+# --- get_semantic_model_definition ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{}, {"status": "Succeeded"}, {"definition": {}}, {"definition": {"parts": []}}],
+)
+def test_unreadable_model_definition_raises(monkeypatch, body):
+    """A response without parts is an error, never an empty model ("no roles")."""
+    monkeypatch.setattr(
+        "fabric_deploy.client.http_request", lambda *a, **k: (200, {}, body)
+    )
+    with pytest.raises(RuntimeError, match="no definition parts"):
+        get_semantic_model_definition("ws", "model-id")
+
+
+def test_model_definition_decodes_parts(monkeypatch):
+    payload = base64.b64encode(b"role Reader").decode()
+    body = {"definition": {"parts": [{"path": "definition/roles/Reader.tmdl", "payload": payload}]}}
+    monkeypatch.setattr(
+        "fabric_deploy.client.http_request", lambda *a, **k: (200, {}, body)
+    )
+    assert get_semantic_model_definition("ws", "m") == {
+        "definition/roles/Reader.tmdl": "role Reader"
+    }
 
 
 # --- get_access_token scope fallbacks ------------------------------------
