@@ -188,6 +188,31 @@ def test_refresh_semantic_model_polls_until_completed(monkeypatch):
     assert gets["n"] == 2
 
 
+def test_refresh_semantic_model_waits_through_not_started(monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr("fabric_deploy.client.time.sleep", sleeps.append)
+    statuses = iter(["NotStarted", "InProgress", "Completed"])
+
+    def fake_http(url, method="GET", data=None, scope=None, error_context=""):
+        if method == "POST":
+            return 202, {"Location": "https://api.powerbi.com/r/req1"}, {}
+        return 200, {}, {"status": next(statuses)}
+
+    monkeypatch.setattr("fabric_deploy.client.http_request", fake_http)
+    detail = refresh_semantic_model("ws", "ds", timeout_s=100, poll_s=1)
+    assert detail["status"] == "Completed"
+    assert len(sleeps) == 3  # waited before every poll, the first included
+
+
+def test_refresh_semantic_model_ignores_trace_request_id(monkeypatch):
+    def fake_http(url, method="GET", data=None, scope=None, error_context=""):
+        return 202, {"RequestId": "trace-1"}, {}
+
+    monkeypatch.setattr("fabric_deploy.client.http_request", fake_http)
+    with pytest.raises(RuntimeError, match="no Location"):
+        refresh_semantic_model("ws", "ds", timeout_s=100, poll_s=1)
+
+
 # --- get_access_token scope fallbacks ------------------------------------
 
 

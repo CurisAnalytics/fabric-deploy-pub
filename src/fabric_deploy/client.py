@@ -384,35 +384,45 @@ def refresh_semantic_model(
     )
 
     location = headers.get("Location") or headers.get("location")
-    request_id = headers.get("x-ms-request-id") or headers.get("RequestId")
+    # x-ms-request-id names the refresh; the generic RequestId header is a
+    # per-call trace id, and polling it points at a refresh that doesn't exist.
+    request_id = headers.get("x-ms-request-id") or headers.get("X-Ms-Request-Id")
     if location and location.startswith("/"):
         location = f"{POWERBI_HOST}{location}"
-    if not location:
+    elif not location and request_id:
         location = (
             f"{POWERBI_HOST}/v1.0/myorg/groups/{workspace_id}"
             f"/datasets/{dataset_id}/refreshes/{request_id}"
+        )
+    if not location:
+        raise RuntimeError(
+            "Semantic model refresh: 202 Accepted but no Location or "
+            "x-ms-request-id to poll."
         )
 
     waited = 0
     detail: dict = {}
     while True:
+        # A just-queued refresh is never done; wait before every poll.
+        sleep_for = min(poll_s, max(1, timeout_s - waited))
+        time.sleep(sleep_for)
+        waited += sleep_for
         _s, _h, detail = http_request(
             location, scope=POWERBI_SCOPE, error_context="poll semantic model refresh"
         )
         status = detail.get("status")
-        # "Unknown" with no endTime means still in progress.
-        if status and status != "InProgress" and not (
+        # A queued refresh reports NotStarted; "Unknown" with no endTime is
+        # still running. Anything else is terminal.
+        in_progress = status in (None, "", "NotStarted", "InProgress") or (
             status == "Unknown" and not detail.get("endTime")
-        ):
+        )
+        if not in_progress:
             return detail
         if waited >= timeout_s:
             raise RuntimeError(
                 f"Semantic model refresh did not finish within {timeout_s}s "
                 f"(last status: {status})."
             )
-        sleep_for = min(poll_s, max(1, timeout_s - waited))
-        time.sleep(sleep_for)
-        waited += sleep_for
 
 
 # --- Item definition read ------------------------------------------------
