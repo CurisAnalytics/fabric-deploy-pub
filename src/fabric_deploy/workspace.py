@@ -624,9 +624,7 @@ class WorkspaceDeployer:
                 include_items, self._repo_dir_resolved, self.logger
             )
 
-        item_type_in_scope = resolve_item_scope(
-            item_types, exclude_types, include_items, self.logger
-        )
+        item_type_in_scope = resolve_item_scope(item_types, exclude_types, include_items)
 
         if fail_on_stale and self._detector and self._detector.stale_attachments:
             files = ", ".join(f for f, _ in self._detector.stale_attachments)

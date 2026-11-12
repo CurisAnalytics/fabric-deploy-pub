@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import pytest
 import yaml
 
 from fabric_deploy.detect import DetectedParameter, ParameterDetector
@@ -28,16 +29,16 @@ LOG = logging.getLogger("test.scope")
 
 class TestResolveItemScope:
     def test_no_filters_returns_none(self):
-        assert resolve_item_scope(None, None, None, LOG) is None
+        assert resolve_item_scope(None, None, None) is None
 
     def test_item_types_returned_directly(self):
-        assert resolve_item_scope(["Notebook", "Report"], None, None, LOG) == [
+        assert resolve_item_scope(["Notebook", "Report"], None, None) == [
             "Notebook",
             "Report",
         ]
 
     def test_item_types_normalized_to_canonical_case(self):
-        assert resolve_item_scope(["notebook", "REPORT"], None, None, LOG) == [
+        assert resolve_item_scope(["notebook", "REPORT"], None, None) == [
             "Notebook",
             "Report",
         ]
@@ -45,35 +46,47 @@ class TestResolveItemScope:
     def test_exclude_types_subtracts_from_accepted(self):
         from fabric_cicd.constants import ACCEPTED_ITEM_TYPES
 
-        scope = resolve_item_scope(None, ["Notebook"], None, LOG)
+        scope = resolve_item_scope(None, ["Notebook"], None)
         assert "Notebook" not in scope
         assert "Report" in scope
         assert len(scope) == len(ACCEPTED_ITEM_TYPES) - 1
 
     def test_item_types_takes_priority_over_exclude(self):
         """When both are given, --item-types wins."""
-        assert resolve_item_scope(["Notebook"], ["Notebook", "Report"], None, LOG) == [
+        assert resolve_item_scope(["Notebook"], ["Notebook", "Report"], None) == [
             "Notebook"
         ]
 
     def test_include_items_derives_scope_from_suffixes(self):
-        scope = resolve_item_scope(None, None, ["Foo.Notebook", "Bar.Report"], LOG)
+        scope = resolve_item_scope(None, None, ["Foo.Notebook", "Bar.Report"])
         assert sorted(scope) == ["Notebook", "Report"]
 
     def test_include_items_ignored_when_item_types_provided(self):
-        assert resolve_item_scope(["SemanticModel"], None, ["Foo.Notebook"], LOG) == [
+        assert resolve_item_scope(["SemanticModel"], None, ["Foo.Notebook"]) == [
             "SemanticModel"
         ]
 
-    def test_unknown_item_type_logged_as_warning(self, caplog):
-        with caplog.at_level("WARNING"):
-            resolve_item_scope(["Notebook", "BogusType"], None, None, LOG)
-        assert any("BogusType" in rec.message for rec in caplog.records)
+    @pytest.mark.parametrize(
+        ("item_types", "exclude_types", "flag"),
+        [
+            (["Notebook", "Notebok"], None, "-t/--item-types"),
+            (None, ["Notebok"], "-x/--exclude-types"),
+        ],
+    )
+    def test_unknown_item_type_is_an_error_naming_the_closest(
+        self, item_types, exclude_types, flag
+    ):
+        with pytest.raises(ValueError, match=rf"(?s)'Notebok' in {flag}.*Did you mean 'Notebook'"):
+            resolve_item_scope(item_types, exclude_types, None)
+
+    def test_unknown_item_type_without_a_close_match(self):
+        with pytest.raises(ValueError, match="Unknown item type 'Bogus'") as e:
+            resolve_item_scope(None, ["Bogus"], None)
+        assert "Did you mean" not in str(e.value)
 
     def test_include_items_skips_entries_without_known_suffix(self):
         scope = resolve_item_scope(
-            None, None, ["Foo.Notebook", "PlainName", "Bar.NotAType"], LOG
-        )
+            None, None, ["Foo.Notebook", "PlainName", "Bar.NotAType"])
         assert scope == ["Notebook"]
 
 

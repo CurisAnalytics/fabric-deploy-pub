@@ -7,6 +7,7 @@ instead of bloating WorkspaceDeployer.
 
 from __future__ import annotations
 
+import difflib
 import logging
 from json import loads
 from pathlib import Path
@@ -112,12 +113,11 @@ def resolve_item_scope(
     item_types: list[str] | None,
     exclude_types: list[str] | None,
     include_items: list[str] | None,
-    logger: logging.Logger,
 ) -> list[str] | None:
     """Normalize, validate, and combine item-type filters into a single scope.
 
     Returns the list of item types that fabric-cicd should deploy, or None if
-    no scope filtering is requested. Logs warnings for unrecognized types.
+    no scope filtering is requested.
 
     Combines (in priority order):
     1. Explicit `item_types` (after canonical-case normalization).
@@ -132,18 +132,23 @@ def resolve_item_scope(
             return types
         return [canonical.get(t.lower(), t) for t in types]
 
-    def _warn_unknown(types: list[str] | None, label: str) -> None:
-        if not types:
-            return
-        invalid = [t for t in types if t not in ACCEPTED_ITEM_TYPES]
-        if invalid:
-            logger.warning(f"Unrecognized item types in {label}: {', '.join(invalid)}")
-            logger.warning(f"Supported types: {', '.join(ACCEPTED_ITEM_TYPES)}")
+    def _reject_unknown(types: list[str] | None, flag: str) -> None:
+        # A typo must not pass: `-x Notebok` would exclude nothing and deploy
+        # (and clean up) every type, the opposite of what was asked.
+        for t in types or []:
+            if t in ACCEPTED_ITEM_TYPES:
+                continue
+            close = difflib.get_close_matches(t, ACCEPTED_ITEM_TYPES, n=1)
+            hint = f" Did you mean '{close[0]}'?" if close else ""
+            raise ValueError(
+                f"Unknown item type '{t}' in {flag}.{hint}\n"
+                f"Supported types: {', '.join(ACCEPTED_ITEM_TYPES)}"
+            )
 
     item_types = _normalize(item_types)
     exclude_types = _normalize(exclude_types)
-    _warn_unknown(item_types, "filter")
-    _warn_unknown(exclude_types, "exclusion filter")
+    _reject_unknown(item_types, "-t/--item-types")
+    _reject_unknown(exclude_types, "-x/--exclude-types")
 
     if item_types:
         return item_types
