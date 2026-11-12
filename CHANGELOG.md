@@ -2,6 +2,11 @@
 
 Brief status per release. Newest first. Dates are release/commit dates.
 
+## [Unreleased]
+RLS guard: a role whose `annotation PBI_Id` would change blocks the deploy (the service recreates it without its members; `rls pull --write` adopts the target's id), models with no roles in the repo are checked too, and an unreadable model definition is an error instead of "no roles".
+`--pr` only counts commits worded as a merged pull request on HEAD's first-parent line (a plain local merge no longer does), and stops when HEAD has commits on top of that PR commit instead of deploying an older PR. An unknown `-t`/`-x` item type is an error.
+`refresh` / `--frame` wait out a queued refresh and stop when a SQL endpoint table fails to sync; API requests time out after 60 s.
+
 ## [1.11.1] — 2026-10-21
 The `fabdep vX` header (renamed from "Fabric CI/CD") is printed before anything else; the run summary names the source and target workspaces and drops the parameter-file timestamp. The RLS guard reads the target's models in parallel.
 

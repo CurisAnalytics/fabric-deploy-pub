@@ -90,7 +90,8 @@ resolved to the target's lakehouse before any parameter applies.
 
 Re-frames a Direct Lake model: **sync SQL endpoint → refresh → poll → surface
 the first framing error.** The SQL-endpoint sync first is required, or the
-refresh fails with *"cannot access the source Delta table."*
+refresh fails with *"cannot access the source Delta table."* A table that fails
+to sync stops the run before any model refreshes (`--no-sync` skips the sync).
 
 ```
 fabdep refresh [DIRECTORY] [OPTIONS]
