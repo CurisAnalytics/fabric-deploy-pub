@@ -297,7 +297,8 @@ def parse_args() -> argparse.Namespace:
         help="Permit a deploy to change a model's live row-level security. "
         "By default, if the repo carries RLS and the target's live RLS differs, "
         "the deploy is blocked (someone may have edited RLS directly in the "
-        "target). Role memberships are never read or changed.",
+        "target, or a role's annotation PBI_Id changed, which makes the "
+        "service recreate the role without its members).",
     )
     _ = deploy_parser.add_argument(
         "--allow-unbound-udf",
@@ -350,7 +351,7 @@ def parse_args() -> argparse.Namespace:
         help="Inspect/reconcile row-level security (role definitions) vs the target",
         description="Read a semantic model's live RLS role definitions and compare "
         "them to the repo. Definitions only — role memberships are Service state "
-        "and are never read or changed.",
+        "and are never read; a role whose annotation PBI_Id changes loses them.",
     )
     rls_subparsers = rls_parser.add_subparsers(
         dest="rls_command", required=True, help="RLS actions"

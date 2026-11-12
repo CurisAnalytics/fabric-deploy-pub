@@ -7,11 +7,13 @@ RLS on a Fabric semantic model is two separate things in two stores:
   `model.tmdl`). A from-git deploy **overwrites** these — this is the real
   clobber risk when someone edits RLS live in prod for speed.
 * **Role memberships** (which users/groups are assigned) are engine/Service
-  state. They are NOT in the deploy payload, `getDefinition` cannot read them,
-  and a deploy never changes them. Manage them via Entra security groups.
+  state. They are NOT in the deploy payload and `getDefinition` cannot read
+  them, so the repo can neither compare nor restore them. A deploy keeps a
+  role's members only while the role keeps its name and `annotation PBI_Id`;
+  the service recreates a role deployed under a different PBI_Id without them.
 
-This module handles definitions only — the thing a deploy can silently destroy.
-It powers two entry points:
+This module compares definitions, including the PBI_Id changes that cost a
+role its members. It powers two entry points:
 
 * ``fabdep rls pull`` — read the target model's live roles, diff against the
   repo, and (with ``--write``) pull them into the working tree for review.
@@ -54,34 +56,32 @@ __all__ = [
 ]
 
 MEMBERS_NOTE = (
-    "Note: this compares role DEFINITIONS only. Role MEMBERSHIPS (who is "
-    "assigned to each role) are Service state — never in the deploy payload, "
-    "not readable here, and never changed by a deploy. Manage them via Entra "
-    "security groups."
+    "Note: role memberships (who is assigned to each role) are not part of the "
+    "model definition, so they are not compared here and the repo cannot restore "
+    "them. A deploy keeps a role's members only while the role keeps its name and "
+    "annotation PBI_Id; a role that is removed, renamed or given a new PBI_Id "
+    "loses them."
 )
 
 _ROLE_DECL = re.compile(r"^\s*role\s+(.+?)\s*$")
 _REF_ROLE = re.compile(r"^(\s*)ref\s+role\s+(.+?)\s*$")
 # A TMDL name is bare when it is a simple identifier; otherwise it is quoted.
 _BARE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-# PBI_Id is a per-object GUID Power BI regenerates in each environment — two
-# roles with identical security rules get different PBI_Ids across dev/prod,
-# so it is drift-detection noise and is dropped before comparison.
-_PBI_ID_ANNOTATION = re.compile(r"^\s*annotation\s+PBI_Id\s*=")
+# PBI_Id identifies a role to the service; a role created separately in two
+# environments gets a different one in each. Deploying a role under a different
+# PBI_Id makes the service drop and recreate it, wiping its members, so it is
+# compared on its own (Role.pbi_id) rather than as part of the rules.
+_PBI_ID_ANNOTATION = re.compile(r"^\s*annotation\s+PBI_Id\s*=\s*(.*?)\s*$")
 
 
 def _normalize_tmdl(text: str) -> str:
-    """Normalize TMDL for comparison: LF endings, no trailing/edge blank lines.
+    """Normalize a role's rules for comparison: LF endings, no trailing/edge blank lines.
 
     Deliberately conservative — only cosmetic serialization noise (line
-    endings, trailing whitespace, surrounding blank lines) and the environment-
-    specific `annotation PBI_Id` GUID are folded away. Indentation and DAX
-    bodies are left intact so a real edit is never masked as "unchanged" (a
-    false match would let a deploy silently clobber prod).
-
-    `annotation PBI_Id` is dropped because Power BI regenerates that GUID per
-    environment; keeping it would flag two roles with identical security rules
-    as drift and block a legitimate dev->prod deploy.
+    endings, trailing whitespace, surrounding blank lines) is folded away.
+    Indentation and DAX bodies are left intact so a real edit is never masked
+    as "unchanged" (a false match would let a deploy silently clobber prod).
+    `annotation PBI_Id` is left out here and compared separately.
     """
     lines = [
         ln.rstrip()
@@ -129,8 +129,16 @@ class Role:
 
     @property
     def body(self) -> str:
-        """Normalized text used for equality comparison."""
+        """Normalized rules text (without `annotation PBI_Id`) for comparison."""
         return _normalize_tmdl(self.raw)
+
+    @property
+    def pbi_id(self) -> str | None:
+        """The role's `annotation PBI_Id` value, or None when it has none."""
+        for line in self.raw.splitlines():
+            if m := _PBI_ID_ANNOTATION.match(line):
+                return m.group(1)
+        return None
 
 
 @dataclass
@@ -144,14 +152,17 @@ class RlsDiff:
 
     only_local: list[str]  # role names present only in the repo
     only_remote: list[str]  # role names present only in the target
-    modified: list[str]  # names present in both, definitions differ
-    unchanged: list[str]  # names present in both, definitions identical
+    modified: list[str]  # names present in both, rules differ
+    pbi_id_changed: list[str]  # names present in both, annotation PBI_Id differs
+    unchanged: list[str]  # names present in both, rules and PBI_Id identical
     local: dict[str, Role]
     remote: dict[str, Role]
 
     @property
     def changed(self) -> bool:
-        return bool(self.only_local or self.only_remote or self.modified)
+        return bool(
+            self.only_local or self.only_remote or self.modified or self.pbi_id_changed
+        )
 
 
 def roles_from_parts(parts: dict[str, str]) -> dict[str, Role]:
@@ -181,20 +192,25 @@ def read_local_roles(model_dir: Path) -> dict[str, Role]:
 
 
 def diff_roles(local: dict[str, Role], remote: dict[str, Role]) -> RlsDiff:
-    """Compare two role sets by normalized definition text."""
+    """Compare two role sets by normalized rules text and by PBI_Id."""
     lk, rk = set(local), set(remote)
     both = lk & rk
+    modified = {n for n in both if local[n].body != remote[n].body}
+    pbi_id_changed = {n for n in both if local[n].pbi_id != remote[n].pbi_id}
     return RlsDiff(
         only_local=sorted(lk - rk),
         only_remote=sorted(rk - lk),
-        modified=sorted(n for n in both if local[n].body != remote[n].body),
-        unchanged=sorted(n for n in both if local[n].body == remote[n].body),
+        modified=sorted(modified),
+        pbi_id_changed=sorted(pbi_id_changed),
+        unchanged=sorted(both - modified - pbi_id_changed),
         local=local,
         remote=remote,
     )
 
 
-def _render_diff(diff: RlsDiff, add_label: str, remove_label: str, change_label: str) -> str:
+def _render_diff(
+    diff: RlsDiff, add_label: str, remove_label: str, change_label: str, pbi_id_label: str
+) -> str:
     """Render a role diff as a human-readable block with unified DAX diffs."""
     out: list[str] = []
     for name in diff.only_local:
@@ -211,6 +227,12 @@ def _render_diff(diff: RlsDiff, add_label: str, remove_label: str, change_label:
             lineterm="",
         )
         out.extend("      " + ln for ln in udiff)
+    for name in diff.pbi_id_changed:
+        out.append(
+            f"  [{pbi_id_label}] role '{name}': annotation PBI_Id differs "
+            f"(target {diff.remote[name].pbi_id or 'none'}, "
+            f"repo {diff.local[name].pbi_id or 'none'})"
+        )
     return "\n".join(out)
 
 
@@ -261,7 +283,8 @@ def guard_deploy_rls(
     Only models that carry RLS *in the repo* are checked — a model with no
     `definition/roles/` folder is skipped without any API call. For each model
     that does, the target's live roles are fetched and compared; any difference
-    (added, removed, or modified role) blocks the deploy.
+    (added, removed or modified role, or a changed PBI_Id, which wipes the
+    role's members) blocks the deploy.
 
     `allow_change` skips the comparison outright: the operator has already
     decided to overwrite the target's roles, so the live read (slow — each
@@ -328,6 +351,7 @@ def guard_deploy_rls(
         )
 
     blocked: list[str] = []
+    recreates = False
     for name, local in guarded.items():
         remote = remotes[name]
         if remote is None:
@@ -343,10 +367,15 @@ def guard_deploy_rls(
             continue
 
         rendering = _render_diff(
-            diff, add_label="deploy ADDS", remove_label="deploy WIPES", change_label="deploy CHANGES"
+            diff,
+            add_label="deploy ADDS",
+            remove_label="deploy WIPES",
+            change_label="deploy CHANGES",
+            pbi_id_label="deploy RECREATES",
         )
         log.error(f"RLS drift for '{name}' — deploy would change live RLS:\n{rendering}")
         blocked.append(name)
+        recreates = recreates or bool(diff.pbi_id_changed)
 
     if blocked:
         raise RuntimeError(
@@ -355,7 +384,17 @@ def guard_deploy_rls(
             "The target's live RLS differs from the repo (someone may have "
             "edited it directly). Reconcile with `fabdep rls pull` (--write to "
             "adopt the target's roles), or re-run deploy with --allow-rls-change "
-            "to intentionally overwrite it.\n" + MEMBERS_NOTE
+            "to intentionally overwrite it.\n"
+            + (
+                "A role marked RECREATES has a different annotation PBI_Id in the "
+                "repo: the deploy makes the service drop and recreate it, which "
+                "wipes its member assignments. To keep them, give the repo's role "
+                "the target's PBI_Id (`fabdep rls pull --write` adopts the target's "
+                "role files).\n"
+                if recreates
+                else ""
+            )
+            + MEMBERS_NOTE
         )
 
 
@@ -410,7 +449,8 @@ def _apply_pull(model_dir: Path, diff: RlsDiff, log: logging.Logger) -> None:
             f.unlink()
             log.info(f"  deleted {f.relative_to(model_dir)}")
 
-    for name in diff.only_remote + diff.modified:  # write target's version
+    # Write the target's version of every role that differs from it.
+    for name in sorted({*diff.only_remote, *diff.modified, *diff.pbi_id_changed}):
         role = diff.remote[name]
         f = roles_dir / role.filename
         f.write_text(role.raw if role.raw.endswith("\n") else role.raw + "\n", encoding="utf-8")
@@ -478,7 +518,11 @@ def pull_rls(
 
         any_changed = True
         rendering = _render_diff(
-            diff, add_label="pull DELETES", remove_label="pull ADDS", change_label="pull UPDATES"
+            diff,
+            add_label="pull DELETES",
+            remove_label="pull ADDS",
+            change_label="pull UPDATES",
+            pbi_id_label="pull UPDATES",
         )
         log.info(f"'{name}': RLS differs from target —\n{rendering}")
         if write:

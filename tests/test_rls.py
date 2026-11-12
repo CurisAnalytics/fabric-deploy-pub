@@ -27,6 +27,8 @@ from fabric_deploy.rls import (
 ROLE_RLS = "role RLS\n\tmodelPermission: read\n\n\ttablePermission contact = [User Name] = USERNAME()\n"
 ROLE_RLS_EDITED = ROLE_RLS.replace("USERNAME()", "USERPRINCIPALNAME()")
 ROLE_FS = "role fs_rls\n\tmodelPermission: read\n"
+ID_A = "\tannotation PBI_Id = 000000000000000000000000000000a1\n"
+ID_B = "\tannotation PBI_Id = 000000000000000000000000000000b2\n"
 
 
 def _make_model(tmp_path, name="M", roles=None, model_tmdl=None):
@@ -94,27 +96,37 @@ def test_diff_ignores_cosmetic_whitespace():
     assert not diff_roles(local, remote).changed
 
 
-def test_diff_ignores_pbi_id_annotation():
-    """Identical security rule, different per-env PBI_Id GUID -> not drift.
+@pytest.mark.parametrize(
+    ("local_text", "remote_text"),
+    [
+        pytest.param(ROLE_RLS + ID_A, ROLE_RLS + ID_B, id="different"),
+        pytest.param(ROLE_RLS, ROLE_RLS + ID_B, id="repo-has-none"),
+        pytest.param(ROLE_RLS + ID_A, ROLE_RLS, id="target-has-none"),
+    ],
+)
+def test_diff_reports_pbi_id_change_apart_from_rules(local_text, remote_text):
+    """Same rules, different PBI_Id: not a rule change, but still a change.
 
-    Mirrors the real Woodgrove dev-vs-prod case: same tablePermission, different
-    annotation PBI_Id. Must read as unchanged so a legit deploy isn't blocked.
+    Deploying a role under a new PBI_Id makes the service drop and recreate it,
+    wiping its members.
     """
-    base = (
-        'role GOTHAM\n\tmodelPermission: read\n\n'
-        '\ttablePermission V_REGIONS = [region] == "GOTHAM CITY"\n\n'
-        "\tannotation PBI_Id = "
-    )
-    local = _role("GOTHAM", base + "0123456789abcdef0123456789abcdef")
-    remote = _role("GOTHAM", base + "fedcba9876543210fedcba9876543210")
-    assert not diff_roles(local, remote).changed
+    d = diff_roles(_role("RLS", local_text), _role("RLS", remote_text))
+    assert d.pbi_id_changed == ["RLS"]
+    assert d.modified == []
+    assert d.unchanged == []
+    assert d.changed
 
 
-def test_diff_detects_real_rule_change_despite_pbi_id():
-    """A genuine DAX change is still caught even with PBI_Id stripped."""
-    a = _role("GOTHAM", 'role GOTHAM\n\ttablePermission t = [x] == "A"\n\tannotation PBI_Id = 1\n')
-    b = _role("GOTHAM", 'role GOTHAM\n\ttablePermission t = [x] == "B"\n\tannotation PBI_Id = 2\n')
-    assert diff_roles(a, b).modified == ["GOTHAM"]
+def test_diff_same_pbi_id_is_unchanged():
+    d = diff_roles(_role("RLS", ROLE_RLS + ID_A), _role("RLS", ROLE_RLS + ID_A))
+    assert d.unchanged == ["RLS"]
+    assert not d.changed
+
+
+def test_diff_rule_change_with_new_pbi_id_is_both():
+    d = diff_roles(_role("RLS", ROLE_RLS + ID_A), _role("RLS", ROLE_RLS_EDITED + ID_B))
+    assert d.modified == ["RLS"]
+    assert d.pbi_id_changed == ["RLS"]
 
 
 def test_diff_detects_modified():
@@ -189,6 +201,19 @@ def test_guard_blocks_on_drift(tmp_path, monkeypatch):
     )
     with pytest.raises(RuntimeError, match="Deploy blocked.*row-level security"):
         guard_deploy_rls("ws", tmp_path, model_names=None, allow_change=False)
+
+
+def test_guard_blocks_pbi_id_change_as_membership_wipe(tmp_path, monkeypatch, caplog):
+    _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS + ID_A})
+    monkeypatch.setattr(
+        "fabric_deploy.rls._remote_roles", lambda ws, name: _role("RLS", ROLE_RLS + ID_B)
+    )
+    with caplog.at_level("ERROR"), pytest.raises(
+        RuntimeError, match=r"(?s)annotation PBI_Id.*recreate it.*wipes its member assignments"
+    ):
+        guard_deploy_rls("ws", tmp_path, model_names=None, allow_change=False)
+    assert "[deploy RECREATES] role 'RLS'" in caplog.text
+    assert "deploy CHANGES" not in caplog.text
 
 
 def test_guard_allows_drift_with_flag(tmp_path, monkeypatch):
@@ -373,6 +398,16 @@ def test_pull_write_syncs_working_tree(tmp_path, monkeypatch, patch_pull_env):
     assert "ref role stale" not in model
 
 
+def test_pull_write_adopts_target_pbi_id(tmp_path, monkeypatch, patch_pull_env):
+    """Taking the target's PBI_Id is what lets the next deploy keep the role's members."""
+    d = _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS + ID_A})
+    monkeypatch.setattr(
+        "fabric_deploy.rls._remote_roles", lambda ws, name: _role("RLS", ROLE_RLS + ID_B)
+    )
+    assert pull_rls(tmp_path, write=True) is True
+    assert (d / "definition" / "roles" / "RLS.tmdl").read_text() == ROLE_RLS + ID_B
+
+
 def test_pull_skips_absent_model(tmp_path, monkeypatch, patch_pull_env):
     _make_model(tmp_path, name="M", roles={"RLS.tmdl": ROLE_RLS})
     monkeypatch.setattr("fabric_deploy.rls._remote_roles", lambda ws, name: None)
@@ -384,8 +419,8 @@ def test_pull_requires_a_model(tmp_path, patch_pull_env):
         pull_rls(tmp_path)
 
 
-def test_members_note_mentions_entra():
-    assert "Entra" in MEMBERS_NOTE and "membership" in MEMBERS_NOTE.lower()
+def test_members_note_says_a_new_pbi_id_loses_members():
+    assert "membership" in MEMBERS_NOTE.lower() and "PBI_Id" in MEMBERS_NOTE
 
 
 def test_guard_reads_models_concurrently(tmp_path, monkeypatch):
