@@ -197,12 +197,16 @@ def frame_models(
         if endpoint_id:
             log.info("Syncing SQL analytics endpoint metadata...")
             statuses = refresh_sql_endpoint_metadata(workspace_id, endpoint_id)
-            failures = failed_table_syncs(statuses)
-            if failures:
-                for name, msg in failures:
-                    log.warning(f"  table sync failed: {name}: {msg}")
-            else:
-                log.info(f"  SQL endpoint synced ({len(statuses)} table(s)).")
+            # A model refreshed over a table that failed to sync reads stale data or fails.
+            if failures := failed_table_syncs(statuses):
+                raise RuntimeError(
+                    f"The SQL analytics endpoint failed to sync {len(failures)} "
+                    "table(s), so no model was refreshed:\n"
+                    + "\n".join(f"  {table}: {msg}" for table, msg in failures)
+                    + "\nFix those tables, or refresh without the sync "
+                    "(`fabdep refresh --no-sync`)."
+                )
+            log.info(f"  SQL endpoint synced ({len(statuses)} table(s)).")
 
     details: list[dict] = []
     for name in targets:

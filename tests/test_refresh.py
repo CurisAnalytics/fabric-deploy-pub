@@ -211,3 +211,24 @@ def test_frame_models_syncs_sql_endpoint(patch_api, monkeypatch, tmp_path):
     )
     frame_models(tmp_path, models=["My Model"], sync=True)
     assert calls["sync"] == 1
+
+
+def test_frame_models_stops_when_a_table_fails_to_sync(patch_api, monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "fabric_deploy.refresh.list_workspace_items",
+        lambda ws, t: [{"id": "ep", "displayName": "lh"}],
+    )
+    monkeypatch.setattr(
+        "fabric_deploy.refresh.refresh_sql_endpoint_metadata",
+        lambda ws, ep, timeout_s=600: [
+            {"tableName": "ok", "status": "Success"},
+            {"tableName": "bad", "status": "Failure", "error": {"message": "boom"}},
+        ],
+    )
+
+    def _refresh(ws, ds, timeout_s=900):
+        raise AssertionError("refreshed a model after a failed sync")
+
+    monkeypatch.setattr("fabric_deploy.refresh.refresh_semantic_model", _refresh)
+    with pytest.raises(RuntimeError, match=r"(?s)failed to sync 1 table\(s\).*bad.*--no-sync"):
+        frame_models(tmp_path, models=["My Model"], sync=True)
