@@ -591,7 +591,7 @@ class TestRunSummaryLines:
         messages = [r.message for r in caplog.records]
         assert not any("fabdep v" in m for m in messages)
         assert "Source Workspace: Fabdep Test [DEV] (00000000-0000-0000-0000-00000000000d)" in messages
-        assert f"Target Workspace: 'Fabdep Test [MAIN]' ({FAKE_WORKSPACE_ID})" in messages
+        assert f"Target Workspace: Fabdep Test [MAIN] ({FAKE_WORKSPACE_ID})" in messages
         assert not any(m.startswith("Workspace Name") or m.startswith("Parameter file") for m in messages)
 
     def test_banner_names_fabdep(self, caplog):

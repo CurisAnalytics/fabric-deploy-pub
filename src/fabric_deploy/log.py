@@ -216,22 +216,30 @@ def print_error(message: str) -> None:
     print(f"{Fore.RED}{message}{Style.RESET_ALL}")
 
 
-def format_account_list(accounts: Sequence[AzureAccount]) -> str:
+def format_account_list(accounts: Sequence[AzureAccount], color: bool = False) -> str:
     """
     Format list of Azure accounts with current marker.
     Args:
         accounts: List of Azure account dictionaries
+        color: Add ANSI colour (bold names, green [CURRENT], dim labels, cyan
+            ids). Only for a terminal: the auth error message embeds this list
+            inside its own red text, so it stays plain there.
     Returns: Formatted string with account information
     """
+
+    def paint(text: str, *codes: str) -> str:
+        return f"{''.join(codes)}{text}{Style.RESET_ALL}" if color else text
+
     sorted_accounts = sorted(accounts, key=lambda a: a.get("name", "").lower())
     lines: list[str] = []
     for acct in sorted_accounts:
-        marker = " [CURRENT]" if acct.get("isDefault") else ""
-        lines.append(f"  • {acct['name']}{marker}")
+        marker = " " + paint("[CURRENT]", Style.BRIGHT, Fore.GREEN) if acct.get("isDefault") else ""
+        lines.append(f"  • {paint(acct['name'], Style.BRIGHT)}{marker}")
         user_type = acct['user'].get('type', '')
-        qualifier = "SPN" if user_type.lower() == "serviceprincipal" else "User"
-        lines.append(f"    {qualifier}: {acct['user']['name']}")
-        lines.append(f"    Subscription: {acct['id']}")
+        is_spn = user_type.lower() == "serviceprincipal"
+        qualifier = paint("SPN:", Fore.YELLOW) if is_spn else paint("User:", Style.DIM)
+        lines.append(f"    {qualifier} {acct['user']['name']}")
+        lines.append(f"    {paint('Subscription:', Style.DIM)} {paint(acct['id'], Fore.CYAN)}")
     return "\n".join(lines)
 
 

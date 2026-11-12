@@ -604,7 +604,7 @@ class WorkspaceDeployer:
             )
         for ws_id, name in sorted(self.source_workspaces.items(), key=lambda kv: kv[1]):
             self.logger.info(f"Source Workspace: {name} ({ws_id})")
-        self.logger.info(f"Target Workspace: '{self.workspace_name}' ({self.workspace_id})")
+        self.logger.info(f"Target Workspace: {self.workspace_name} ({self.workspace_id})")
 
         if pr:
             if include_items:

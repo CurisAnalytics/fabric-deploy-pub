@@ -1,6 +1,7 @@
 """CLI interface for fabric-deploy package."""
 
 import argparse
+import os
 import sys
 from pathlib import Path
 from textwrap import dedent
@@ -409,7 +410,8 @@ def handle_auth_command(args: argparse.Namespace) -> None:
     if args.auth_command == "list":
         try:
             all_accounts = list_accounts()
-            print(format_account_list(all_accounts))
+            color = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+            print(format_account_list(all_accounts, color=color))
         except Exception as e:
             print_error(f"Failed to list accounts: {e}")
             sys.exit(1)

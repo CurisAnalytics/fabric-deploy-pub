@@ -403,8 +403,8 @@ def test_pull_requires_a_model(tmp_path, patch_pull_env):
         pull_rls(tmp_path)
 
 
-def test_members_note_says_a_new_pbi_id_loses_members():
-    assert "membership" in MEMBERS_NOTE.lower() and "PBI_Id" in MEMBERS_NOTE
+def test_members_note_says_memberships_are_not_deployed():
+    assert "MEMBERSHIPS" in MEMBERS_NOTE and "not part of this deploy payload" in MEMBERS_NOTE
 
 
 def test_guard_reads_models_concurrently(tmp_path, monkeypatch):
