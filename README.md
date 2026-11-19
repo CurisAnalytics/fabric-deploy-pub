@@ -17,10 +17,11 @@ overwrite live row-level security or ship report buttons still wired to another 
 > supported by the author. If you want to use it, have a coding agent review it and
 > adapt it to your setup before pointing it at a Workspace you care about.
 >
-> **1.11.1 is the last version the author used in production**, so it reflects the particular
-> Fabric Workspace setup and workflow fabdep was designed around. The many commits after it
-> are pre-emptive cleanup to make the tool viable in other Fabric setups; they are covered by
-> the offline test suite but have not been run against a live tenant.
+> **1.12.0 is the last version the author has used in production.** It is tagged `1.12.0` on the
+> [`1.x`](../../tree/1.x) branch, a scrubbed copy of the internal build, and reflects the
+> particular Fabric Workspace setup and workflow fabdep was designed around. `main` (2.x)
+> branched off at 1.11.1 for pre-emptive cleanup to make the tool viable in other Fabric
+> setups; it is covered by the offline test suite but has not been run against a live tenant.
 >
 > Not affiliated with or endorsed by Microsoft.
 

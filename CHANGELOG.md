@@ -119,6 +119,16 @@ Releases before the first public one are summarized in a few lines each.
 - `fabdep auth list`, `switch`, `rename`, `login` and `bind`, the fabdep profile and tenant
   aliases: set `tenant:` to the tenant ID and choose the credential with `auth:`.
 
+## 1.12.0 - 2026-11-12
+
+On the `1.x` branch, which continues from 1.11.1 beside 2.x. The RLS guard blocks a role
+whose `annotation PBI_Id` would change (the service recreates it without its members), checks
+models with no roles in the repo, and errors on an unreadable model definition. `--pr` only
+counts merged pull-request commits on HEAD's first-parent line and stops when HEAD is past
+them. An unknown `-t`/`-x` item type is an error. `refresh` / `--frame` wait out a queued
+refresh and stop when a SQL endpoint table fails to sync; API requests time out after 60 s.
+`auth list` is coloured on a terminal.
+
 ## 1.11.1 - 2026-10-21
 
 The `fabdep vX` header prints before anything else; the run summary names the source and
